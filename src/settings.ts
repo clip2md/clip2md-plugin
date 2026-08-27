@@ -210,7 +210,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderOnboarding(containerEl: HTMLElement) {
         new Setting(containerEl)
-            .setName('欢迎使用 Clip2MD')
+            .setName('开始设置')
             .setHeading();
         containerEl.createEl('p', {
             text: '使用微信扫码绑定，或切换为手动填写 API Key。',
@@ -813,13 +813,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         this.templatePreviewEl.empty();
 
         if (!validation.valid) {
-            const errorEl = this.templatePreviewEl.createDiv({
+            this.templatePreviewEl.createDiv({
                 cls: 'clip2md-preview-block clip2md-template-error clip2md-error-text clip2md-preview-compact',
                 text: validation.message,
             });
         }
 
-        const previewEl = this.templatePreviewEl.createDiv({
+        this.templatePreviewEl.createDiv({
             cls: 'clip2md-preview-block clip2md-template-preview clip2md-preview-compact',
             text: previewContent,
         });
