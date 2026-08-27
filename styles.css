@@ -1,0 +1,338 @@
+.clip2md-ribbon-loading {
+    animation: clip2md-spin 1s linear infinite;
+}
+
+.clip2md-view-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 24px;
+    transition: color 0.2s ease;
+}
+
+.clip2md-view-action.is-syncing {
+    color: var(--text-accent);
+    width: auto;
+}
+
+.clip2md-view-action.is-syncing svg {
+    animation: clip2md-spin 1s linear infinite;
+}
+
+.clip2md-view-action-progress {
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+    letter-spacing: -1px;
+    white-space: nowrap;
+}
+
+.clip2md-view-action-label {
+    font-size: var(--font-ui-smaller);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.clip2md-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    margin: 12px 0 18px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 10px;
+    background: var(--background-secondary);
+    flex-wrap: wrap;
+}
+
+.clip2md-status-indicator {
+    font-weight: 600;
+}
+
+.clip2md-status-indicator.is-connected {
+    color: var(--color-green);
+}
+
+.clip2md-status-indicator.is-configured,
+.clip2md-status-indicator.is-syncing {
+    color: var(--text-accent);
+}
+
+.clip2md-status-indicator.is-unconfigured,
+.clip2md-status-indicator.is-error {
+    color: var(--text-error);
+}
+
+.clip2md-status-summary {
+    color: var(--text-muted);
+    flex: 1 1 280px;
+}
+
+.clip2md-status-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.clip2md-inline-button {
+    padding: 6px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    cursor: pointer;
+}
+
+.clip2md-guide-card {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 12px;
+    background: var(--background-secondary);
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.clip2md-binding-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.clip2md-binding-tabs button {
+    padding: 8px 12px;
+    border-radius: 8px;
+}
+
+.clip2md-binding-tabs button.is-active {
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+}
+
+.clip2md-binding-card {
+    text-align: center;
+}
+
+.clip2md-binding-title {
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.clip2md-binding-qrcode,
+.clip2md-binding-placeholder {
+    display: block;
+    width: 220px;
+    height: 220px;
+    margin: 0 auto 12px;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.clip2md-binding-qrcode {
+    object-fit: contain;
+}
+
+.clip2md-binding-placeholder {
+    box-sizing: border-box;
+    padding: 92px 12px 0;
+    color: var(--text-muted);
+    background: var(--background-primary);
+    border: 1px dashed var(--background-modifier-border);
+}
+
+.clip2md-binding-code {
+    display: inline-block;
+    margin: 4px 0 8px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 16px;
+    letter-spacing: 2px;
+}
+
+.clip2md-template-editor {
+    width: 100%;
+}
+
+.clip2md-template-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0;
+}
+
+.clip2md-chip-button {
+    padding: 4px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 999px;
+    background: var(--background-primary);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.clip2md-chip-button:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--text-accent);
+    color: var(--text-accent);
+}
+
+.clip2md-preview-block {
+    white-space: pre-wrap;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 10px;
+    margin: 8px 0 12px;
+    background: var(--background-primary);
+}
+
+.clip2md-error-text {
+    color: var(--text-error);
+}
+
+@keyframes clip2md-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Folder Picker Modal */
+.clip2md-folder-picker-current {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    padding: 8px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    word-break: break-all;
+}
+
+.clip2md-folder-picker-current code {
+    background: var(--background-primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.clip2md-folder-picker-tree {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 16px;
+    background: var(--background-secondary);
+}
+
+.clip2md-tree-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+
+.clip2md-tree-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-tree-item.selected {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.clip2md-tree-toggle {
+    font-size: 10px;
+    width: 12px;
+    text-align: center;
+    display: inline-block;
+}
+
+.clip2md-tree-icon {
+    font-size: 14px;
+}
+
+.clip2md-folder-picker-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.clip2md-folder-picker-buttons button {
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    cursor: pointer;
+}
+
+.clip2md-folder-picker-buttons button.mod-cta {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+}
+
+/* 目标文件夹未配置提醒 */
+.clip2md-folder-reminder {
+    background: var(--background-secondary);
+    color: var(--text-warning, var(--text-error));
+    border: 1px solid var(--text-warning, var(--text-error));
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 8px 0 16px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 高级设置折叠 */
+.clip2md-advanced-settings {
+    margin-top: 16px;
+}
+
+.clip2md-advanced-summary {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-muted);
+    padding: 8px 0;
+    user-select: none;
+}
+
+.clip2md-advanced-summary:hover {
+    color: var(--text-normal);
+}
+
+/* 变量工具栏标签 */
+.clip2md-toolbar-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-right: 4px;
+    line-height: 28px;
+}
+
+/* 前置元数据预览 */
+.clip2md-fm-preview {
+    font-family: var(--font-monospace);
+    font-size: 12px;
+}
+
+/* 文件夹输入闪烁提醒 */
+@keyframes clip2md-flash {
+    0%, 100% {
+        background-color: transparent;
+        box-shadow: none;
+    }
+    50% {
+        background-color: rgba(var(--text-warning-rgb, 255, 165, 0), 0.12);
+        box-shadow: 0 0 0 2px var(--text-warning, var(--text-accent));
+    }
+}
+
+.clip2md-flash {
+    animation: clip2md-flash 0.4s ease 3 !important;
+    border-color: var(--text-warning, var(--text-accent)) !important;
+}
