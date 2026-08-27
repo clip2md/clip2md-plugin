@@ -35,6 +35,15 @@ for (const file of sourceFiles) read(file);
 if (manifest.version !== packageJson.version) {
   fail(`manifest/package 版本不一致（${manifest.version} / ${packageJson.version}）`);
 }
+if (manifest.id !== 'clipmd'
+    || !/^[a-z-]+$/.test(manifest.id)
+    || manifest.id.endsWith('plugin')
+    || manifest.id.includes('obsidian')) {
+  fail(`插件 ID 必须为符合 Obsidian 官方规则的 clipmd，实际为 ${manifest.id}`);
+}
+if (packageJson.name !== manifest.id) {
+  fail(`package.json name 必须与 manifest.id 一致（${packageJson.name} / ${manifest.id}）`);
+}
 if (manifest.minAppVersion !== '1.12.7') {
   fail(`最低 Obsidian 版本必须为 1.12.7，实际为 ${manifest.minAppVersion}`);
 }

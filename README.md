@@ -31,7 +31,7 @@
 
 ### 手动安装
 
-从 GitHub Releases 下载与版本号对应的以下文件，并放入 Vault 的 `.obsidian/plugins/clip2md/` 目录：
+从 GitHub Releases 下载与版本号对应的以下文件，并放入 Vault 的 `.obsidian/plugins/clipmd/` 目录：
 
 - `main.js`
 - `manifest.json`
@@ -59,6 +59,9 @@
 npm ci
 npm run verify
 ```
+
+本插件的 manifest ID 为 `clipmd`；`Clip2MD` 是展示名称，手动安装目录必须使用
+`.obsidian/plugins/clipmd/`。
 
 `npm run verify` 会执行类型检查、测试、压缩生产构建和市场合规扫描。主仓库的 `scripts/build-obsidian-local.sh` 负责从包含本地版本功能的源码生成市场变体，不复制到本仓库；主仓库的 `scripts/build-prod.sh` 负责整个 Clip2MD 产品发布，也不属于本仓库。
 
@@ -99,7 +102,7 @@ npm run verify
 
 ## 反馈
 
-请在 [GitHub Issues](https://github.com/clip2md/clip2md-obsidian-plugin/issues) 中反馈问题或提出建议。
+请在 [GitHub Issues](https://github.com/clip2md/clip2md-plugin/issues) 中反馈问题或提出建议。
 
 ## 许可证
 

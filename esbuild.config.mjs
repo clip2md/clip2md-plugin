@@ -9,7 +9,7 @@ const sourceDir = path.resolve(process.env.OBSIDIAN_BUILD_SOURCE_DIR || process.
 const configuredOutputDir = process.env.OBSIDIAN_BUILD_OUTPUT_DIR;
 const outputDir = configuredOutputDir
   ? path.resolve(configuredOutputDir)
-  : (prod ? sourceDir : (vaultPath ? path.join(vaultPath, ".obsidian/plugins/clip2md") : sourceDir));
+  : (prod ? sourceDir : (vaultPath ? path.join(vaultPath, ".obsidian/plugins/clipmd") : sourceDir));
 
 fs.mkdirSync(outputDir, { recursive: true });
 
