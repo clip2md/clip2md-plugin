@@ -105,6 +105,39 @@ interface LocalizeResult {
     failedAssets: boolean;
 }
 
+interface MarkdownImageParts {
+    altText: string;
+    remoteUrl: string;
+    suffix: string;
+}
+
+function parseMarkdownImage(whole: string): MarkdownImageParts | null {
+    const separator = whole.indexOf('](');
+    const targetStart = separator + 2;
+    const targetEnd = whole.length - 1;
+    if (!whole.startsWith('![') || separator < 2 || !whole.endsWith(')') || targetStart >= targetEnd) {
+        return null;
+    }
+
+    let urlEnd = targetStart;
+    while (urlEnd < targetEnd) {
+        const character = whole[urlEnd];
+        if (character === ')' || character === ' ' || character === '\t') {
+            break;
+        }
+        urlEnd += 1;
+    }
+    if (urlEnd === targetStart) {
+        return null;
+    }
+
+    return {
+        altText: whole.slice(2, separator),
+        remoteUrl: whole.slice(targetStart, urlEnd),
+        suffix: whole.slice(urlEnd, targetEnd),
+    };
+}
+
 export class SyncService {
     private settings: BijiSyncSettings;
     private fileManager: FileManager | null;
@@ -493,9 +526,15 @@ export class SyncService {
             }
             const regex = /!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)/g;
             const replacements = new Map<string, string | null>();
-            let match: RegExpExecArray | null;
-            while ((match = regex.exec(markdown)) !== null) {
-                const remoteUrl = match[2] ?? '';
+            const imageMatches: MarkdownImageParts[] = [];
+            markdown.replace(regex, (whole: string) => {
+                const parsed = parseMarkdownImage(whole);
+                if (parsed) {
+                    imageMatches.push(parsed);
+                }
+                return whole;
+            });
+            for (const { remoteUrl } of imageMatches) {
                 if (!remoteUrl.startsWith('/api/v1/assets/')) {
                     continue;
                 }
@@ -553,11 +592,9 @@ export class SyncService {
             }
 
             return markdown.replace(regex, (whole: string) => {
-                const match = /^!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)$/.exec(whole);
-                if (!match) return whole;
-                const altText = match[1] ?? '';
-                const remoteUrl = match[2] ?? '';
-                const suffix = match[3] ?? '';
+                const parsed = parseMarkdownImage(whole);
+                if (!parsed) return whole;
+                const { altText, remoteUrl, suffix } = parsed;
                 if (!replacements.has(remoteUrl)) {
                     return whole;
                 }

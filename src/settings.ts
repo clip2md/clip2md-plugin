@@ -104,6 +104,18 @@ const INSERTABLE_TEMPLATE_VARIABLES = [
     '{{tags}}',
 ];
 
+const FRONTMATTER_PREVIEW_VALUES: ReadonlyArray<readonly [string, string]> = [
+    ['{{title}}', '示例标题'],
+    ['{{source_date}}', '2026-08-08'],
+    ['{{created_at}}', '2026-08-08T09:30:00Z'],
+    ['{{source}}', '微信公众号'],
+    ['{{duration}}', '5m'],
+    ['{{content_type}}', 'LINK'],
+    ['{{task_id}}', '12345'],
+    ['{{tags}}', '示例, 知识管理'],
+    ['{{url}}', 'https://example.com/article'],
+];
+
 function normalizeSyncContentMode(value: string): SyncContentMode {
     return value === 'note' || value === 'source' ? value : 'full';
 }
@@ -798,21 +810,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             return;
         }
 
-        const sample: Record<string, string> = {
-            '{{title}}': '示例标题',
-            '{{source_date}}': '2026-08-08',
-            '{{created_at}}': '2026-08-08T09:30:00Z',
-            '{{source}}': '微信公众号',
-            '{{duration}}': '5m',
-            '{{content_type}}': 'LINK',
-            '{{task_id}}': '12345',
-            '{{tags}}': '示例, 知识管理',
-            '{{url}}': 'https://example.com/article',
-        };
-
         let rendered = template;
-        for (const key of Object.keys(sample)) {
-            const value = sample[key];
+        for (const [key, value] of FRONTMATTER_PREVIEW_VALUES) {
             rendered = rendered.split(key).join(value);
         }
 

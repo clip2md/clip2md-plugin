@@ -57,8 +57,15 @@ function isSyncRunSummary(value: unknown): value is SyncRunSummary {
 }
 
 function isTaskFileMapping(value: unknown): value is Record<number, string> {
-    if (!isRecord(value)) return false;
-    return Object.keys(value).every(key => typeof value[key] === 'string');
+    if (!isRecord(value)) {
+        return false;
+    }
+    for (const key of Object.keys(value)) {
+        if (typeof value[key] !== 'string') {
+            return false;
+        }
+    }
+    return true;
 }
 
 function isNumberArray(value: unknown): value is number[] {
