@@ -1,4 +1,5 @@
-import { App, FuzzySuggestModal, Modal, Notice, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, TextAreaComponent } from 'obsidian';
+import { App, Modal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
 
@@ -103,6 +104,10 @@ const INSERTABLE_TEMPLATE_VARIABLES = [
     '{{tags}}',
 ];
 
+function normalizeSyncContentMode(value: string): SyncContentMode {
+    return value === 'note' || value === 'source' ? value : 'full';
+}
+
 export class BijiSyncSettingTab extends PluginSettingTab {
     plugin: BijiSyncPlugin;
     private onboardingDraft: OnboardingDraft | null = null;
@@ -117,10 +122,15 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private bindingMessage = '';
     private bindingTimer: number | null = null;
     private bindingExpiresAt = 0;
+    private activeContainerEl: HTMLElement | null = null;
 
     constructor(app: App, plugin: BijiSyncPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+    }
+
+    private runAsync(task: () => Promise<void>): void {
+        void task().catch(error => this.plugin.handleConnectionError(error));
     }
 
     async testConnection(btnEl: HTMLElement): Promise<void> {
@@ -139,18 +149,36 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         try {
             await this.plugin.verifyConnection();
             new Notice('Clip2MD: 连接成功，可以开始同步。', 5000);
-            this.display();
+            this.refreshDisplay();
         } catch (err) {
             this.plugin.handleConnectionError(err);
-            this.display();
+            this.refreshDisplay();
         } finally {
             btnEl.textContent = origText;
             btnEl.toggleClass('is-loading', false);
         }
     }
 
+    getSettingDefinitions(): SettingDefinitionItem[] {
+        return [{
+            name: '插件设置',
+            desc: '剪藏同步设置',
+            render: (setting) => {
+                this.renderInto(setting.settingEl);
+            },
+        }];
+    }
+
     display(): void {
-        const { containerEl } = this;
+        this.renderInto(this.containerEl);
+    }
+
+    refresh(): void {
+        this.refreshDisplay();
+    }
+
+    private renderInto(containerEl: HTMLElement): void {
+        this.activeContainerEl = containerEl;
         containerEl.empty();
 
         // 重置预览元素引用（DOM 已被清空）
@@ -173,6 +201,10 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         this.renderBasicSettings(containerEl);
         this.renderAdvancedSettings(containerEl);
     }
+
+    private refreshDisplay(): void {
+        this.renderInto(this.activeContainerEl ?? this.containerEl);
+    }
     private renderStatusBar(containerEl: HTMLElement) {
         const status = this.plugin.getStatusSnapshot();
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
@@ -193,9 +225,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         });
         syncButton.toggleClass('clip2md-inline-button', true);
         syncButton.disabled = status.runtimeState === 'syncing';
-        syncButton.addEventListener('click', async () => {
-            await this.plugin.syncNow('manual');
-            this.display();
+        syncButton.addEventListener('click', () => {
+            this.runAsync(async () => {
+                await this.plugin.syncNow('manual');
+                this.refreshDisplay();
+            });
         });
 
         const testButton = actions.createEl('button', {
@@ -203,8 +237,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             cls: 'clip2md-inline-button',
         });
         testButton.disabled = !this.plugin.settings.apiKey || status.runtimeState === 'syncing';
-        testButton.addEventListener('click', async () => {
-            await this.testConnection(testButton);
+        testButton.addEventListener('click', () => {
+            this.runAsync(() => this.testConnection(testButton));
         });
     }
 
@@ -223,12 +257,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         manualTab.toggleClass('is-active', this.bindingMode === 'manual');
         qrTab.addEventListener('click', () => {
             this.bindingMode = 'qr';
-            this.display();
+            this.refreshDisplay();
         });
         manualTab.addEventListener('click', () => {
             this.bindingMode = 'manual';
             this.stopBindingPolling();
-            this.display();
+            this.refreshDisplay();
         });
         if (this.bindingMode === 'qr') {
             this.renderQrOnboarding(containerEl);
@@ -265,7 +299,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             const retry = card.createEl('button', { text: '重新生成', cls: 'mod-cta' });
             retry.addEventListener('click', () => {
                 this.resetBindingSession();
-                this.display();
+                this.refreshDisplay();
             });
         }
         if (!this.bindingSession && this.bindingState !== 'starting') {
@@ -301,20 +335,22 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         new Setting(card)
             .setName('保存并连接')
             .setDesc('连接后点击“立即同步”创建目录并拉取内容')
-            .addButton(btn => btn.setButtonText('保存并连接').setCta().onClick(async () => {
-                const draft = this.onboardingDraft ?? { apiKey: '', targetFolder: 'Clip2MD' };
-                if (!draft.apiKey || !this.plugin.validateTargetFolder(draft.targetFolder)) {
-                    new Notice('Clip2MD: 请填写有效的 API Key 和目标文件夹。', 5000);
-                    return;
-                }
-                btn.setDisabled(true);
-                try {
-                    await this.plugin.applyOnboardingSettings(draft);
-                    this.onboardingDraft = null;
-                    this.display();
-                } finally {
-                    btn.setDisabled(false);
-                }
+            .addButton(btn => btn.setButtonText('保存并连接').setCta().onClick(() => {
+                this.runAsync(async () => {
+                    const draft = this.onboardingDraft ?? { apiKey: '', targetFolder: 'Clip2MD' };
+                    if (!draft.apiKey || !this.plugin.validateTargetFolder(draft.targetFolder)) {
+                        new Notice('Clip2MD: 请填写有效的 API Key 和目标文件夹。', 5000);
+                        return;
+                    }
+                    btn.setDisabled(true);
+                    try {
+                        await this.plugin.applyOnboardingSettings(draft);
+                        this.onboardingDraft = null;
+                        this.refreshDisplay();
+                    } finally {
+                        btn.setDisabled(false);
+                    }
+                });
             }));
     }
 
@@ -327,21 +363,21 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             this.bindingExpiresAt = Date.now() + session.expires_in * 1000;
             this.bindingState = 'waiting';
             this.bindingMessage = '请使用微信扫码，并在小程序中确认绑定。';
-            this.display();
+            this.refreshDisplay();
             try {
                 this.bindingQrDataUrl = await this.bindingClient.qrcode(session.device_code);
             } catch (error) {
                 this.bindingState = 'error';
                 this.bindingMessage = error instanceof Error ? error.message : '小程序码加载失败，请重试。';
-                this.display();
+                this.refreshDisplay();
                 return;
             }
-            this.display();
+            this.refreshDisplay();
             this.scheduleBindingPoll(session.interval);
         } catch (error) {
             this.bindingState = 'error';
             this.bindingMessage = error instanceof Error ? error.message : '无法创建绑定请求。';
-            this.display();
+            this.refreshDisplay();
         }
     }
 
@@ -357,7 +393,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         if (Date.now() >= this.bindingExpiresAt) {
             this.bindingState = 'expired';
             this.bindingMessage = '小程序码已过期，请重新生成。';
-            this.display();
+            this.refreshDisplay();
             return;
         }
         try {
@@ -366,24 +402,24 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 this.stopBindingPolling();
                 await this.plugin.applyDeviceCredential(result);
                 this.resetBindingSession();
-                this.display();
+                this.refreshDisplay();
                 return;
             }
             this.bindingState = result.status === 'approving' ? 'approving' : 'waiting';
             this.bindingMessage = result.status === 'approving' ? '手机端已确认，正在安全下发 API Key…' : '等待手机端确认…';
-            this.display();
+            this.refreshDisplay();
             this.scheduleBindingPoll(result.retry_after || session.interval);
         } catch (error) {
             if (error instanceof DeviceBindingError && ['access_denied', 'expired_token'].includes(error.code)) {
                 this.bindingState = 'expired';
                 this.bindingMessage = error.code === 'access_denied' ? '本次绑定已被拒绝。' : '绑定请求已过期。';
-                this.display();
+                this.refreshDisplay();
                 return;
             }
             const retryAfter = error instanceof DeviceBindingError && error.code === 'slow_down'
                 ? Math.min(60, session.interval + 5) : 10;
             this.bindingMessage = '网络暂时不可用，正在重试…';
-            this.display();
+            this.refreshDisplay();
             this.scheduleBindingPoll(retryAfter);
         }
     }
@@ -419,9 +455,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('clip2md_...')
                 .setValue(this.plugin.settings.apiKey)
-                .onChange(async (value) => {
-                    this.plugin.settings.apiKey = value.trim();
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.apiKey = value.trim();
+                        await this.plugin.saveSettings();
+                    });
                 }))
             .addExtraButton(btn => btn
                 .setIcon('external-link')
@@ -435,12 +473,14 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('留空则不同步')
                 .setValue(this.plugin.settings.targetFolder)
-                .onChange(async (value) => {
-                    const trimmed = value.trim();
-                    this.plugin.settings.targetFolder = trimmed;
-                    await this.plugin.saveSettings();
-                    this.syncFolderInputs(containerEl, trimmed);
-                    this.updateFolderReminder(trimmed);
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        const trimmed = value.trim();
+                        this.plugin.settings.targetFolder = trimmed;
+                        await this.plugin.saveSettings();
+                        this.syncFolderInputs(containerEl, trimmed);
+                        this.updateFolderReminder(trimmed);
+                    });
                 }))
             .addExtraButton(btn => btn
                 .setIcon('folder')
@@ -496,9 +536,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .setDesc('Obsidian 完成加载 3 秒后自动执行一次同步')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.syncOnStart)
-                .onChange(async (value) => {
-                    this.plugin.settings.syncOnStart = value;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.syncOnStart = value;
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
         new Setting(containerEl)
@@ -510,9 +552,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 }
                 dropdown
                     .setValue(String(this.plugin.settings.syncInterval))
-                    .onChange(async (value) => {
-                        this.plugin.settings.syncInterval = Number(value);
-                        await this.plugin.saveSettings();
+                    .onChange((value) => {
+                        this.runAsync(async () => {
+                            this.plugin.settings.syncInterval = Number(value);
+                            await this.plugin.saveSettings();
+                        });
                     });
             });
 
@@ -525,14 +569,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 }
                 dropdown
                     .setValue(this.plugin.settings.syncContentMode)
-                    .onChange(async (value) => {
-                        const preset = TEMPLATE_PRESETS.find(item => item.value === value);
-                        this.plugin.settings.syncContentMode = value as SyncContentMode;
-                        if (preset) {
-                            this.plugin.settings.template = preset.template;
-                        }
-                        await this.plugin.saveSettings();
-                        this.updateTemplatePreviewOnly(containerEl);
+                    .onChange((value) => {
+                        this.runAsync(async () => {
+                            const preset = TEMPLATE_PRESETS.find(item => item.value === value);
+                            this.plugin.settings.syncContentMode = normalizeSyncContentMode(value);
+                            if (preset) {
+                                this.plugin.settings.template = preset.template;
+                            }
+                            await this.plugin.saveSettings();
+                            this.updateTemplatePreviewOnly(containerEl);
+                        });
                     });
             });
 
@@ -542,29 +588,31 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addDropdown(dropdown => {
                 dropdown.addOption('', '选择预设');
                 FOLDER_PRESETS.forEach((preset, index) => dropdown.addOption(String(index), preset.label));
-                dropdown.onChange(async (value) => {
-                    if (value === '') return;
-                    const preset = FOLDER_PRESETS[Number(value)];
-                    if (!preset) return;
-                    const folderWasEmpty = !this.plugin.settings.targetFolder;
-                    // 只保存文件名模板，文件夹由用户确认后保存
-                    this.plugin.settings.filenameTemplate = preset.filenameTemplate;
-                    await this.plugin.saveSettings();
-                    // 更新文件夹输入框的显示值（不保存到设置）
-                    containerEl.querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
-                        input.value = preset.targetFolder;
+                dropdown.onChange((value) => {
+                    this.runAsync(async () => {
+                        if (value === '') return;
+                        const preset = FOLDER_PRESETS[Number(value)];
+                        if (!preset) return;
+                        const folderWasEmpty = !this.plugin.settings.targetFolder;
+                        // 只保存文件名模板，文件夹由用户确认后保存
+                        this.plugin.settings.filenameTemplate = preset.filenameTemplate;
+                        await this.plugin.saveSettings();
+                        // 更新文件夹输入框的显示值（不保存到设置）
+                        containerEl.querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
+                            input.value = preset.targetFolder;
+                        });
+                        const filenameInput = containerEl.querySelector<HTMLInputElement>('input[placeholder="{{created_date}}-{{title}}"]');
+                        if (filenameInput) filenameInput.value = preset.filenameTemplate;
+                        this.updatePreview(containerEl);
+                        // 如果文件夹之前为空，滚动到文件夹区域，滚动结束后闪烁提醒
+                        if (folderWasEmpty) {
+                            this.folderSettingEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            this.insertFolderReminder();
+                            window.setTimeout(() => {
+                                this.flashFolderInput(containerEl);
+                            }, 500);
+                        }
                     });
-                    const filenameInput = containerEl.querySelector<HTMLInputElement>('input[placeholder="{{created_date}}-{{title}}"]');
-                    if (filenameInput) filenameInput.value = preset.filenameTemplate;
-                    this.updatePreview(containerEl);
-                    // 如果文件夹之前为空，滚动到文件夹区域，滚动结束后闪烁提醒
-                    if (folderWasEmpty) {
-                        this.folderSettingEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        this.insertFolderReminder();
-                        window.setTimeout(() => {
-                            this.flashFolderInput(containerEl);
-                        }, 500);
-                    }
                 });
             });
 
@@ -574,10 +622,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('{{created_date}}-{{title}}')
                 .setValue(this.plugin.settings.filenameTemplate)
-                .onChange(async (value) => {
-                    this.plugin.settings.filenameTemplate = value.trim() || '{{created_date}}-{{title}}';
-                    await this.plugin.saveSettings();
-                    this.updatePreview(containerEl);
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.filenameTemplate = value.trim() || '{{created_date}}-{{title}}';
+                        await this.plugin.saveSettings();
+                        this.updatePreview(containerEl);
+                    });
                 }));
 
         new Setting(containerEl)
@@ -586,10 +636,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('yyyy-MM-dd')
                 .setValue(this.plugin.settings.filenameDateFormat)
-                .onChange(async (value) => {
-                    this.plugin.settings.filenameDateFormat = value.trim() || 'yyyy-MM-dd';
-                    await this.plugin.saveSettings();
-                    this.updatePreview(containerEl);
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.filenameDateFormat = value.trim() || 'yyyy-MM-dd';
+                        await this.plugin.saveSettings();
+                        this.updatePreview(containerEl);
+                    });
                 }));
 
         const preview = this.plugin.getTemplatePreview();
@@ -611,9 +663,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 .addOption('local', '下载到本地')
                 .addOption('disabled', '不保存图片')
                 .setValue(this.plugin.settings.imageMode)
-                .onChange(async (value) => {
-                    this.plugin.settings.imageMode = value as ImageMode;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.imageMode = value === 'disabled' ? 'disabled' : 'local';
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
         new Setting(containerEl)
@@ -623,9 +677,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 .addOption('none', '关闭')
                 .addOption('daily', '按日合并')
                 .setValue(this.plugin.settings.mergeMode)
-                .onChange(async (value) => {
-                    this.plugin.settings.mergeMode = value as MergeMode;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.mergeMode = value === 'daily' ? 'daily' : 'none';
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
     }
@@ -643,10 +699,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addTextArea(text => {
                 text.setPlaceholder('')
                     .setValue(this.plugin.settings.frontmatterTemplate)
-                    .onChange(async (value) => {
-                        this.plugin.settings.frontmatterTemplate = value;
-                        await this.plugin.saveSettings();
-                        this.debouncedUpdateFmPreview(containerEl);
+                    .onChange((value) => {
+                        this.runAsync(async () => {
+                            this.plugin.settings.frontmatterTemplate = value;
+                            await this.plugin.saveSettings();
+                            this.debouncedUpdateFmPreview(containerEl);
+                        });
                     });
                 text.inputEl.rows = 6;
                 text.inputEl.addClass('clip2md-template-editor');
@@ -658,7 +716,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         FM_VARIABLES.forEach(variable => {
             const button = toolbarWrap.createEl('button', { text: variable, cls: 'clip2md-chip-button' });
             button.addEventListener('click', () => {
-                const textarea = fmSetting.controlEl.querySelector('textarea');
+                const textarea = fmSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
                 if (!textarea) return;
                 const start = textarea.selectionStart ?? textarea.value.length;
                 const end = textarea.selectionEnd ?? textarea.value.length;
@@ -667,20 +725,22 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 textarea.focus();
                 textarea.selectionStart = textarea.selectionEnd = start + variable.length;
                 this.plugin.settings.frontmatterTemplate = nextValue;
-                this.plugin.saveSettings();
+                this.runAsync(() => this.plugin.saveSettings());
                 this.debouncedUpdateFmPreview(containerEl);
             });
         });
 
         const resetButton = toolbarWrap.createEl('button', { text: '恢复默认', cls: 'clip2md-chip-button' });
-        resetButton.addEventListener('click', async () => {
-            this.plugin.settings.frontmatterTemplate = DEFAULT_FRONTMATTER_TEMPLATE;
-            const textarea = fmSetting.controlEl.querySelector('textarea') as HTMLTextAreaElement | null;
-            if (textarea) {
-                textarea.value = DEFAULT_FRONTMATTER_TEMPLATE;
-            }
-            await this.plugin.saveSettings();
-            this.updateFmPreview();
+        resetButton.addEventListener('click', () => {
+            this.runAsync(async () => {
+                this.plugin.settings.frontmatterTemplate = DEFAULT_FRONTMATTER_TEMPLATE;
+                const textarea = fmSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
+                if (textarea) {
+                    textarea.value = DEFAULT_FRONTMATTER_TEMPLATE;
+                }
+                await this.plugin.saveSettings();
+                this.updateFmPreview();
+            });
         });
 
         // 预览容器
@@ -695,16 +755,18 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addTextArea(text => {
                 text.setPlaceholder('{{content}}')
                     .setValue(this.plugin.settings.template)
-                    .onChange(async (value) => {
+                .onChange((value) => {
+                    this.runAsync(async () => {
                         this.plugin.settings.template = value;
                         await this.plugin.saveSettings();
                         this.debouncedUpdateTemplatePreview(containerEl);
                     });
+                });
                 text.inputEl.rows = 10;
                 text.inputEl.addClass('clip2md-template-editor');
             });
 
-        const templateEditor = templateSetting.controlEl.querySelector('textarea') as HTMLTextAreaElement | null;
+        const templateEditor = templateSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
         if (templateEditor) {
             this.renderTemplateToolbar(containerEl, templateEditor);
             this.renderTemplatePreview(containerEl);
@@ -829,26 +891,30 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         const buttonWrap = containerEl.createDiv({ cls: 'clip2md-template-toolbar' });
         INSERTABLE_TEMPLATE_VARIABLES.forEach((variable) => {
             const button = buttonWrap.createEl('button', { text: variable, cls: 'clip2md-chip-button' });
-            button.addEventListener('click', async () => {
-                const start = editor.selectionStart ?? editor.value.length;
-                const end = editor.selectionEnd ?? editor.value.length;
-                const nextValue = `${editor.value.slice(0, start)}${variable}${editor.value.slice(end)}`;
-                editor.value = nextValue;
-                editor.focus();
-                editor.selectionStart = editor.selectionEnd = start + variable.length;
-                this.plugin.settings.template = nextValue;
-                await this.plugin.saveSettings();
-                this.updateTemplatePreviewOnly(containerEl);
+            button.addEventListener('click', () => {
+                this.runAsync(async () => {
+                    const start = editor.selectionStart ?? editor.value.length;
+                    const end = editor.selectionEnd ?? editor.value.length;
+                    const nextValue = `${editor.value.slice(0, start)}${variable}${editor.value.slice(end)}`;
+                    editor.value = nextValue;
+                    editor.focus();
+                    editor.selectionStart = editor.selectionEnd = start + variable.length;
+                    this.plugin.settings.template = nextValue;
+                    await this.plugin.saveSettings();
+                    this.updateTemplatePreviewOnly(containerEl);
+                });
             });
         });
 
         const resetButton = buttonWrap.createEl('button', { text: '恢复默认', cls: 'clip2md-chip-button' });
-        resetButton.addEventListener('click', async () => {
-            this.plugin.settings.template = '{{content}}';
-            editor.value = '{{content}}';
-            editor.focus();
-            await this.plugin.saveSettings();
-            this.updateTemplatePreviewOnly(containerEl);
+        resetButton.addEventListener('click', () => {
+            this.runAsync(async () => {
+                this.plugin.settings.template = '{{content}}';
+                editor.value = '{{content}}';
+                editor.focus();
+                await this.plugin.saveSettings();
+                this.updateTemplatePreviewOnly(containerEl);
+            });
         });
     }
 
@@ -897,7 +963,6 @@ class FolderPickerModal extends Modal {
             });
         }
 
-        console.log('[FolderPicker] Root:', this.root.name, 'path:', this.root.path);
     }
 
     onOpen() {
@@ -979,11 +1044,11 @@ class FolderPickerModal extends Modal {
         // 递归渲染子文件夹
         if (hasSubfolders && isExpanded) {
             const subfolders = folder.children
-                .filter(child => child instanceof TFolder)
-                .sort((a, b) => (a as TFolder).name.localeCompare((b as TFolder).name));
+                .filter((child): child is TFolder => child instanceof TFolder)
+                .sort((a, b) => a.name.localeCompare(b.name));
 
             subfolders.forEach(subfolder => {
-                this.renderFolderTree(containerEl, subfolder as TFolder, depth + 1);
+                this.renderFolderTree(containerEl, subfolder, depth + 1);
             });
         }
     }

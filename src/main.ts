@@ -39,6 +39,51 @@ const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
 const CONFIG_CORRUPTION_THRESHOLD = 100 * 1024;
 
+type StoredPluginData = Record<string, unknown>;
+
+function isRecord(value: unknown): value is StoredPluginData {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSyncContentMode(value: unknown): value is SyncContentMode {
+    return value === 'full' || value === 'note' || value === 'source';
+}
+
+function isImageMode(value: unknown): value is ImageMode {
+    return value === 'local' || value === 'disabled';
+}
+
+function isMergeMode(value: unknown): value is MergeMode {
+    return value === 'none' || value === 'daily';
+}
+
+function isSyncRunSummary(value: unknown): value is SyncRunSummary {
+    if (!isRecord(value)) return false;
+    return typeof value.startedAt === 'string'
+        && typeof value.finishedAt === 'string'
+        && (value.trigger === 'manual'
+            || value.trigger === 'scheduled'
+            || value.trigger === 'startup'
+            || value.trigger === 'onboarding')
+        && (value.outcome === 'success' || value.outcome === 'partial' || value.outcome === 'failed')
+        && typeof value.pages === 'number'
+        && typeof value.processed === 'number'
+        && typeof value.succeeded === 'number'
+        && typeof value.pending === 'number'
+        && typeof value.skipped === 'number'
+        && typeof value.failed === 'number'
+        && (value.errorMessage === undefined || typeof value.errorMessage === 'string');
+}
+
+function isTaskFileMapping(value: unknown): value is Record<number, string> {
+    if (!isRecord(value)) return false;
+    return Object.values(value).every(item => typeof item === 'string');
+}
+
+function isNumberArray(value: unknown): value is number[] {
+    return Array.isArray(value) && value.every(item => typeof item === 'number');
+}
+
 type ConnectionState = 'unconfigured' | 'configured' | 'connected' | 'error';
 
 interface StatusSnapshot {
@@ -100,38 +145,43 @@ export default class BijiSyncPlugin extends Plugin {
     private startupSyncTriggered = false;
 
     async onload() {
-        let saved = await this.loadData();
-        const legacyApiUrl = typeof saved?.apiUrl === 'string' ? saved.apiUrl : '';
-        const legacySchemaVersion = Number(saved?.settingsSchemaVersion || 0);
+        let saved: unknown = await this.loadStoredData();
+        let savedData = isRecord(saved) ? saved : {};
+        const legacyApiUrl = typeof savedData.apiUrl === 'string' ? savedData.apiUrl : '';
+        const legacySchemaVersion = typeof savedData.settingsSchemaVersion === 'number'
+            ? savedData.settingsSchemaVersion
+            : Number(savedData.settingsSchemaVersion || 0);
 
         if (this.isConfigCorrupted(saved)) {
             console.warn('Clip2MD: 检测到配置文件损坏，尝试从备份恢复...');
             const restored = await this.restoreConfigFromBackup();
             if (restored) {
                 saved = restored;
+                savedData = restored;
                 new Notice('Clip2MD: 配置文件已损坏，已从备份恢复。请检查设置。', 10000);
             } else {
                 new Notice('Clip2MD: 配置文件已损坏且无可用备份，请重新配置 API Key。', 10000);
                 saved = null;
+                savedData = {};
             }
         }
 
-        const hasLegacyVersionSettings = Object.keys(saved || {})
+        const hasLegacyVersionSettings = Object.keys(savedData)
             .some(key => key.toLowerCase().includes('update'));
 
-        this.settings = this.normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, saved));
+        this.settings = this.normalizeSettings(savedData);
         let settingsMigrated = false;
         if (!this.settings.installationId) {
             this.settings.installationId = this.createInstallationId();
             settingsMigrated = true;
         }
-        if (typeof saved?.frontmatterTemplate === 'string'
-            && saved.frontmatterTemplate.trim() === LEGACY_DEFAULT_FRONTMATTER_TEMPLATE.trim()) {
+        if (typeof savedData.frontmatterTemplate === 'string'
+            && savedData.frontmatterTemplate.trim() === LEGACY_DEFAULT_FRONTMATTER_TEMPLATE.trim()) {
             this.settings.frontmatterTemplate = DEFAULT_FRONTMATTER_TEMPLATE;
             settingsMigrated = true;
         }
         if (legacySchemaVersion < 4
-            || Object.prototype.hasOwnProperty.call(saved || {}, 'apiUrl')
+            || Object.prototype.hasOwnProperty.call(savedData, 'apiUrl')
             || hasLegacyVersionSettings) {
             this.settings.settingsSchemaVersion = 4;
             settingsMigrated = true;
@@ -143,20 +193,20 @@ export default class BijiSyncPlugin extends Plugin {
             new Notice('Clip2MD: 服务地址已统一为官方地址，旧自定义地址不再生效。', 8000);
         }
 
-        if (saved && saved.syncContentMode === undefined && saved.apiKey) {
-            this.settings.syncContentMode = 'source' as SyncContentMode;
+        if (savedData.syncContentMode === undefined && typeof savedData.apiKey === 'string' && savedData.apiKey) {
+            this.settings.syncContentMode = 'source';
         }
 
-        this.syncService = new SyncService(this.settings);
+        this.syncService = new SyncService(this.settings, this.app.fileManager);
 
-        if (saved && saved.cursor) {
-            this.syncService.setCursor(saved.cursor);
+        if (typeof savedData.cursor === 'string') {
+            this.syncService.setCursor(savedData.cursor);
         }
-        if (saved && saved.taskFileMap) {
-            this.syncService.loadTaskFileMap(saved.taskFileMap);
+        if (isTaskFileMapping(savedData.taskFileMap)) {
+            this.syncService.loadTaskFileMap(savedData.taskFileMap);
         }
-        if (saved && saved.pendingTaskIds) {
-            this.syncService.loadPendingTaskIds(saved.pendingTaskIds);
+        if (isNumberArray(savedData.pendingTaskIds)) {
+            this.syncService.loadPendingTaskIds(savedData.pendingTaskIds);
         }
 
         this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
@@ -188,7 +238,9 @@ export default class BijiSyncPlugin extends Plugin {
         this.addCommand({
             id: 'sync-now',
             name: '立即同步剪藏',
-            callback: () => this.syncNow('manual')
+            callback: () => {
+                void this.syncNow('manual');
+            }
         });
 
 
@@ -206,19 +258,19 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const saved = await this.loadData();
-        this.settings = this.normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, saved));
-        if (saved && saved.syncContentMode === undefined && saved.apiKey) {
-            this.settings.syncContentMode = 'source' as SyncContentMode;
+        const saved = await this.loadStoredData();
+        this.settings = this.normalizeSettings(saved);
+        if (saved.syncContentMode === undefined && typeof saved.apiKey === 'string' && saved.apiKey) {
+            this.settings.syncContentMode = 'source';
         }
 
-        if (saved && saved.cursor && this.syncService) {
+        if (typeof saved.cursor === 'string' && this.syncService) {
             this.syncService.setCursor(saved.cursor);
         }
-        if (saved && saved.taskFileMap && this.syncService) {
+        if (isTaskFileMapping(saved.taskFileMap) && this.syncService) {
             this.syncService.loadTaskFileMap(saved.taskFileMap);
         }
-        if (saved && saved.pendingTaskIds && this.syncService) {
+        if (isNumberArray(saved.pendingTaskIds) && this.syncService) {
             this.syncService.loadPendingTaskIds(saved.pendingTaskIds);
         }
         this.syncService.updateSettings(this.settings);
@@ -239,7 +291,7 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     async persistSyncState() {
-        const data = await this.loadData();
+        const data = await this.loadStoredData();
         if (this.syncService) {
             data.cursor = this.syncService.getCursor();
             data.taskFileMap = this.syncService.getTaskFileMap();
@@ -264,7 +316,6 @@ export default class BijiSyncPlugin extends Plugin {
     handleConnectionError(error: unknown) {
         const message = this.getFriendlyErrorMessage(error);
         this.updateConnectionState('error', message);
-        console.error('Clip2MD: 连接失败', error);
         new Notice(`Clip2MD: ${message}`, 8000);
         this.refreshSettingTab();
     }
@@ -539,7 +590,6 @@ export default class BijiSyncPlugin extends Plugin {
             });
 
             this.updateConnectionState('connected', '已验证连接');
-            this.logSyncSummary(summary);
             this.completeSyncProgressNotice(summary);
             return summary;
         } catch (error) {
@@ -587,30 +637,31 @@ export default class BijiSyncPlugin extends Plugin {
         }
     }
 
-    isConfigCorrupted(data: any): boolean {
-        if (!data) return false;
+    isConfigCorrupted(data: unknown): boolean {
+        if (data === null || data === undefined) return false;
+        if (!isRecord(data)) return true;
 
         try {
             const jsonStr = JSON.stringify(data);
-            if (jsonStr.length > CONFIG_CORRUPTION_THRESHOLD) {
-                console.warn(`Clip2MD: 配置文件过大 (${jsonStr.length} bytes)，视为损坏`);
+            const jsonLength = jsonStr?.length ?? 0;
+            if (!jsonStr || jsonLength > CONFIG_CORRUPTION_THRESHOLD) {
+                console.warn(`Clip2MD: 配置文件过大 (${jsonLength} bytes)，视为损坏`);
                 return true;
             }
         } catch {
             return true;
         }
 
-        if (data.apiKey && typeof data.apiKey !== 'string') return true;
-        if (data.targetFolder && typeof data.targetFolder !== 'string') return true;
-        if (data.syncInterval && typeof data.syncInterval !== 'number') return true;
+        if (data.apiKey !== undefined && typeof data.apiKey !== 'string') return true;
+        if (data.targetFolder !== undefined && typeof data.targetFolder !== 'string') return true;
+        if (data.syncInterval !== undefined && typeof data.syncInterval !== 'number') return true;
 
         return false;
     }
 
     async backupConfig(): Promise<void> {
         try {
-            const data = await this.loadData();
-            if (!data) return;
+            const data = await this.loadStoredData();
 
             const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -629,7 +680,7 @@ export default class BijiSyncPlugin extends Plugin {
         }
     }
 
-    async restoreConfigFromBackup(): Promise<any | null> {
+    async restoreConfigFromBackup(): Promise<StoredPluginData | null> {
         try {
             const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
             const listing = await this.app.vault.adapter.list(backupBaseDir);
@@ -642,7 +693,8 @@ export default class BijiSyncPlugin extends Plugin {
 
             const latestBackup = files[files.length - 1];
             const content = await this.app.vault.adapter.read(`${backupBaseDir}/${latestBackup}`);
-            return JSON.parse(content);
+            const restored: unknown = JSON.parse(content);
+            return isRecord(restored) ? restored : null;
         } catch (error) {
             console.warn('Clip2MD: 从备份恢复配置失败', error);
             return null;
@@ -735,12 +787,6 @@ export default class BijiSyncPlugin extends Plugin {
                 : 'success';
         void this.saveSettings();
         return summary;
-    }
-
-    private logSyncSummary(summary: SyncRunSummary) {
-        console.log(
-            `Clip2MD: 同步完成 (${summary.trigger}) - ${summary.succeeded} 成功, ${summary.pending} 待重试, ${summary.skipped} 跳过, ${summary.failed} 失败`
-        );
     }
 
     private updateConnectionState(state: ConnectionState, message?: string) {
@@ -904,33 +950,46 @@ export default class BijiSyncPlugin extends Plugin {
     private refreshSettingTab() {
         const openTab = ((this.app as App & { setting?: { activeTab?: PluginSettingTab } }).setting?.activeTab);
         if (openTab === this.settingTab) {
-            this.settingTab?.display();
+            this.settingTab?.refresh();
         }
     }
 
-    private normalizeSettings(settings: BijiSyncSettings & { apiUrl?: unknown }): BijiSyncSettings {
-        const withoutLegacySettings = Object.entries(settings).reduce<Record<string, unknown>>((result, [key, value]) => {
-            if (key !== 'apiUrl' && !key.toLowerCase().includes('update')) {
-                result[key] = value;
-            }
-            return result;
-        }, {});
-        const normalizedInterval = settings.syncInterval === 0 ? 0 : Math.max(5, settings.syncInterval || 60);
+    private async loadStoredData(): Promise<StoredPluginData> {
+        const data = await this.loadData() as unknown;
+        return isRecord(data) ? data : {};
+    }
+
+    private normalizeSettings(settings: BijiSyncSettings | StoredPluginData): BijiSyncSettings {
+        const rawInterval = typeof settings.syncInterval === 'number' ? settings.syncInterval : 60;
+        const normalizedInterval = rawInterval === 0 ? 0 : Math.max(5, rawInterval || 60);
+        const frontmatterTemplate = typeof settings.frontmatterTemplate === 'string'
+            ? settings.frontmatterTemplate
+            : DEFAULT_FRONTMATTER_TEMPLATE;
         return {
-            ...DEFAULT_SETTINGS,
-            ...withoutLegacySettings,
-            installationId: settings.installationId || '',
+            apiKey: typeof settings.apiKey === 'string' ? settings.apiKey : '',
+            credentialId: typeof settings.credentialId === 'number' ? settings.credentialId : undefined,
+            credentialName: typeof settings.credentialName === 'string' ? settings.credentialName : undefined,
+            installationId: typeof settings.installationId === 'string' ? settings.installationId : '',
             settingsSchemaVersion: 4,
             syncInterval: normalizedInterval,
             syncOnStart: settings.syncOnStart !== false,
-            targetFolder: settings.targetFolder ?? '',
-            filenameTemplate: settings.filenameTemplate || '{{created_date}}-{{title}}',
-            filenameDateFormat: settings.filenameDateFormat || 'yyyy-MM-dd',
-            frontmatterTemplate: settings.frontmatterTemplate?.trim() === LEGACY_DEFAULT_FRONTMATTER_TEMPLATE.trim()
+            targetFolder: typeof settings.targetFolder === 'string' ? settings.targetFolder : '',
+            filenameTemplate: typeof settings.filenameTemplate === 'string' && settings.filenameTemplate
+                ? settings.filenameTemplate
+                : '{{created_date}}-{{title}}',
+            filenameDateFormat: typeof settings.filenameDateFormat === 'string' && settings.filenameDateFormat
+                ? settings.filenameDateFormat
+                : 'yyyy-MM-dd',
+            template: typeof settings.template === 'string' ? settings.template : '{{content}}',
+            frontmatterTemplate: frontmatterTemplate.trim() === LEGACY_DEFAULT_FRONTMATTER_TEMPLATE.trim()
                 ? DEFAULT_FRONTMATTER_TEMPLATE
-                : settings.frontmatterTemplate || DEFAULT_FRONTMATTER_TEMPLATE,
-            imageMode: (settings.imageMode || 'local') as ImageMode,
-            mergeMode: (settings.mergeMode || 'none') as MergeMode,
+                : frontmatterTemplate,
+            syncContentMode: isSyncContentMode(settings.syncContentMode) ? settings.syncContentMode : 'full',
+            imageMode: isImageMode(settings.imageMode) ? settings.imageMode : 'local',
+            mergeMode: isMergeMode(settings.mergeMode) ? settings.mergeMode : 'none',
+            lastSyncSummary: isSyncRunSummary(settings.lastSyncSummary)
+                ? settings.lastSyncSummary
+                : undefined,
         };
     }
 

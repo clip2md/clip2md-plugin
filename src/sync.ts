@@ -1,5 +1,5 @@
-import { requestUrl, Vault } from 'obsidian';
-import { BijiSyncSettings, MergeMode, SyncContentMode } from './settings';
+import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
+import { BijiSyncSettings, SyncContentMode } from './settings';
 import { CLIP2MD_API_BASE_URL } from './config';
 
 export interface SyncTask {
@@ -57,6 +57,48 @@ export interface TemplatePreviewData {
     filename: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+    return value === null || typeof value === 'string';
+}
+
+function isSyncTask(value: unknown): value is SyncTask {
+    if (!isRecord(value)) return false;
+
+    const numberFields = [
+        'id', 'note_content_version', 'source_content_version', 'asset_count',
+        'asset_ready_count', 'asset_pending_count', 'asset_failed_count',
+    ];
+    const stringFields = ['url', 'status', 'content_source', 'created_at', 'updated_at'];
+    const nullableStringFields = [
+        'title', 'summary', 'note_markdown_content', 'source_markdown_content',
+        'source_date', 'content_type', 'assets_updated_at', 'source_title', 'source_description',
+    ];
+
+    return numberFields.every(field => typeof value[field] === 'number')
+        && stringFields.every(field => typeof value[field] === 'string')
+        && nullableStringFields.every(field => isNullableString(value[field]))
+        && (value.duration_seconds === null || typeof value.duration_seconds === 'number')
+        && (value.tags === undefined || (
+            Array.isArray(value.tags)
+            && value.tags.every(tag => isRecord(tag)
+                && typeof tag.id === 'number'
+                && typeof tag.name === 'string'
+                && (tag.source === 'AI' || tag.source === 'USER')
+                && typeof tag.upstream_type === 'string')
+        ));
+}
+
+function parseSyncTask(value: unknown): SyncTask {
+    if (!isSyncTask(value)) {
+        throw new Error('服务返回了格式无效的同步任务');
+    }
+    return value;
+}
+
 interface LocalizeResult {
     task: SyncTask;
     pendingAssets: boolean;
@@ -65,12 +107,14 @@ interface LocalizeResult {
 
 export class SyncService {
     private settings: BijiSyncSettings;
+    private fileManager: FileManager | null;
     private cursor: string | null = null;
     private taskFileMap: TaskFileMapping = {};
     private pendingTaskIds: number[] = [];
 
-    constructor(settings: BijiSyncSettings) {
+    constructor(settings: BijiSyncSettings, fileManager?: FileManager) {
         this.settings = settings;
+        this.fileManager = fileManager || null;
     }
 
     updateSettings(settings: BijiSyncSettings) {
@@ -136,7 +180,7 @@ export class SyncService {
                 }
                 return {
                     taskId,
-                    task: response.json as SyncTask,
+                    task: parseSyncTask(response.json as unknown),
                     missing: false,
                 };
             } catch (error) {
@@ -253,20 +297,30 @@ export class SyncService {
 
         const mappedPath = this.taskFileMap[task.id];
         if (mappedPath) {
-            const mappedFile = vault.getAbstractFileByPath(mappedPath);
+            const mappedFile = vault.getFileByPath(mappedPath);
             if (mappedFile) {
-                const fileContent = await vault.read(mappedFile as never);
+                const fileContent = await vault.read(mappedFile);
                 if (this.hasTaskMarker(fileContent, task.id)) {
                     if (mappedPath !== filepath) {
                         const existingTarget = vault.getAbstractFileByPath(filepath);
                         if (existingTarget) {
-                            const targetContent = await vault.read(existingTarget as never);
+                            if (!(existingTarget instanceof TFile)) {
+                                return {
+                                    filepath: null,
+                                    skipped: true,
+                                    reason: `目标路径 ${filename} 已被文件夹占用，已跳过`,
+                                };
+                            }
+                            const targetContent = await vault.read(existingTarget);
                             if (this.hasTaskMarker(targetContent, task.id)) {
-                                await vault.modify(existingTarget as never, content);
+                                await vault.modify(existingTarget, content);
                                 try {
-                                    await vault.delete(mappedFile as never);
-                                } catch (e) {
-                                    console.warn(`Clip2MD: 清理旧文件失败 ${mappedPath}: ${e}`);
+                                    if (!this.fileManager) {
+                                        throw new Error('FileManager unavailable');
+                                    }
+                                    await this.fileManager.trashFile(mappedFile);
+                                } catch (error) {
+                                    console.warn(`Clip2MD: 清理旧文件失败 ${mappedPath}: ${String(error)}`);
                                 }
                                 this.taskFileMap[task.id] = filepath;
                                 return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
@@ -277,9 +331,13 @@ export class SyncService {
                                 reason: `目标文件 ${filename} 已存在且不含任务标记，无法重命名，已跳过`,
                             };
                         }
-                        await vault.rename(mappedFile as never, filepath);
+                        await vault.rename(mappedFile, filepath);
                     }
-                    await vault.modify(vault.getAbstractFileByPath(filepath) as never, content);
+                    const targetFile = vault.getFileByPath(filepath);
+                    if (!targetFile) {
+                        throw new Error(`无法定位同步文件 ${filepath}`);
+                    }
+                    await vault.modify(targetFile, content);
                     this.taskFileMap[task.id] = filepath;
                     return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
                 }
@@ -287,11 +345,11 @@ export class SyncService {
             delete this.taskFileMap[task.id];
         }
 
-        const existingFile = vault.getAbstractFileByPath(filepath);
+        const existingFile = vault.getFileByPath(filepath);
         if (existingFile) {
-            const fileContent = await vault.read(existingFile as never);
+            const fileContent = await vault.read(existingFile);
             if (this.hasTaskMarker(fileContent, task.id)) {
-                await vault.modify(existingFile as never, content);
+                await vault.modify(existingFile, content);
                 this.taskFileMap[task.id] = filepath;
                 return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
             }
@@ -332,12 +390,16 @@ export class SyncService {
             throw this.buildRequestError(response.status);
         }
 
-        const page: { items: SyncTask[]; total: number; next_cursor: string | null; has_more: boolean } = response.json;
+        const body = response.json as unknown;
+        if (!isRecord(body) || !Array.isArray(body.items)) {
+            throw new Error('服务返回了格式无效的同步任务列表');
+        }
+        const items = body.items.map(item => parseSyncTask(item));
         return {
-            tasks: page.items.filter(task => this.hasSyncableContent(task)),
-            total: Number.isFinite(page.total) ? page.total : page.items.length,
-            nextCursor: page.next_cursor,
-            hasMore: page.has_more,
+            tasks: items.filter(task => this.hasSyncableContent(task)),
+            total: typeof body.total === 'number' && Number.isFinite(body.total) ? body.total : items.length,
+            nextCursor: typeof body.next_cursor === 'string' ? body.next_cursor : null,
+            hasMore: body.has_more === true,
         };
     }
 
@@ -356,7 +418,7 @@ export class SyncService {
         const mergedFilename = `${this.formatDateForFilename(task.created_at)}-${this.getSourceLabel(task)}.md`;
         const filepath = `${folder}/${this.sanitizeFilenameSegment(mergedFilename)}`;
         const block = this.buildMergeBlock(task.id, task.title || this.extractTitle(content), content);
-        const existing = vault.getAbstractFileByPath(filepath);
+        const existing = vault.getFileByPath(filepath);
 
         if (!existing) {
             const initial = `# ${this.getSourceLabel(task)} · ${this.formatDateForFilename(task.created_at)}\n\n${block}`;
@@ -365,9 +427,9 @@ export class SyncService {
             return { filepath, skipped: false, pendingAssets };
         }
 
-        const existingContent = await vault.read(existing as never);
+        const existingContent = await vault.read(existing);
         const nextContent = this.upsertMergeBlock(existingContent, task.id, block);
-        await vault.modify(existing as never, nextContent);
+        await vault.modify(existing, nextContent);
         this.taskFileMap[task.id] = filepath;
         return { filepath, skipped: false, pendingAssets };
     }
@@ -432,7 +494,7 @@ export class SyncService {
             const regex = /!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)/g;
             const replacements = new Map<string, string | null>();
             for (const match of markdown.matchAll(regex)) {
-                const remoteUrl = match[2];
+                const remoteUrl = match[2] ?? '';
                 if (!remoteUrl.startsWith('/api/v1/assets/')) {
                     continue;
                 }
@@ -489,7 +551,12 @@ export class SyncService {
                 }
             }
 
-            return markdown.replace(regex, (whole, altText, remoteUrl, suffix) => {
+            return markdown.replace(regex, (whole: string) => {
+                const match = /^!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)$/.exec(whole);
+                if (!match) return whole;
+                const altText = match[1] ?? '';
+                const remoteUrl = match[2] ?? '';
+                const suffix = match[3] ?? '';
                 if (!replacements.has(remoteUrl)) {
                     return whole;
                 }
@@ -683,9 +750,10 @@ export class SyncService {
         };
 
         let result = template;
-        Object.entries(replacements).forEach(([key, value]) => {
+        for (const key of Object.keys(replacements)) {
+            const value = replacements[key];
             result = result.replace(new RegExp(this.escapeRegExp(key), 'g'), value);
-        });
+        }
         return result;
     }
 
@@ -726,7 +794,10 @@ export class SyncService {
     }
 
     private sanitizeFilenameSegment(value: string): string {
-        return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().substring(0, 120);
+        return Array.from(value, char => {
+            const code = char.charCodeAt(0);
+            return '<>:"/\\|?*'.includes(char) || code < 32 ? '_' : char;
+        }).join('').trim().substring(0, 120);
     }
 
     private normalizePathTemplate(path: string): string {
@@ -774,8 +845,12 @@ export class SyncService {
             return '';
         }
         const expected = name.toLowerCase();
-        const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === expected);
-        return entry?.[1] || '';
+        for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === expected) {
+                return headers[key];
+            }
+        }
+        return '';
     }
 
     private escapeRegExp(value: string): string {

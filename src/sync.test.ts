@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { TFile } from 'obsidian';
 import { SyncService, type SyncTask } from './sync';
 import { DEFAULT_FRONTMATTER_TEMPLATE, type BijiSyncSettings } from './settings';
 
@@ -65,8 +66,16 @@ const makeTask = (overrides: Partial<SyncTask> = {}): SyncTask => ({
 class FakeVault {
     private files = new Map<string, string | ArrayBuffer>();
 
+    private file(path: string): TFile {
+        return Object.assign(new TFile(), { path });
+    }
+
     getAbstractFileByPath(path: string) {
-        return this.files.has(path) ? ({ path } as { path: string }) : null;
+        return this.files.has(path) ? this.file(path) : null;
+    }
+
+    getFileByPath(path: string) {
+        return this.files.has(path) ? this.file(path) : null;
     }
 
     async createFolder(path: string) {
@@ -81,22 +90,18 @@ class FakeVault {
         this.files.set(path, bytes);
     }
 
-    async read(file: { path: string }) {
+    async read(file: TFile) {
         return String(this.files.get(file.path) || '');
     }
 
-    async modify(file: { path: string }, content: string) {
+    async modify(file: TFile, content: string) {
         this.files.set(file.path, content);
     }
 
-    async rename(file: { path: string }, nextPath: string) {
+    async rename(file: TFile, nextPath: string) {
         const value = this.files.get(file.path);
         this.files.delete(file.path);
         this.files.set(nextPath, value || '');
-    }
-
-    async delete(file: { path: string }) {
-        this.files.delete(file.path);
     }
 
     content(path: string) {
@@ -179,7 +184,7 @@ describe('SyncService', () => {
 
         await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
         const mergedPath = 'Clippings/2026-08-08-微信公众号.md';
-        await vault.modify({ path: mergedPath }, `${String(vault.content(mergedPath))}\n\n用户手写内容\n`);
+        await vault.modify(Object.assign(new TFile(), { path: mergedPath }), `${String(vault.content(mergedPath))}\n\n用户手写内容\n`);
         await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
 
         const content = String(vault.content(mergedPath));
