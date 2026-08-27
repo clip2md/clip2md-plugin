@@ -209,7 +209,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderOnboarding(containerEl: HTMLElement) {
-        containerEl.createEl('h3', { text: '欢迎使用 Clip2MD' });
+        new Setting(containerEl)
+            .setName('欢迎使用 Clip2MD')
+            .setHeading();
         containerEl.createEl('p', {
             text: '使用微信扫码绑定，或切换为手动填写 API Key。',
             cls: 'setting-item-description',
@@ -407,7 +409,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderBasicSettings(containerEl: HTMLElement) {
-        containerEl.createEl('h3', { text: '基本设置' });
+        new Setting(containerEl)
+            .setName('基本设置')
+            .setHeading();
 
         new Setting(containerEl)
             .setName('API Key')
@@ -557,7 +561,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     if (folderWasEmpty) {
                         this.folderSettingEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         this.insertFolderReminder();
-                        setTimeout(() => {
+                        window.setTimeout(() => {
                             this.flashFolderInput(containerEl);
                         }, 500);
                     }
@@ -708,17 +712,17 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     // 防抖定时器
-    private fmDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-    private templateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private fmDebounceTimer: number | null = null;
+    private templateDebounceTimer: number | null = null;
 
     private debouncedUpdateFmPreview(_containerEl: HTMLElement) {
-        if (this.fmDebounceTimer) clearTimeout(this.fmDebounceTimer);
-        this.fmDebounceTimer = setTimeout(() => this.updateFmPreview(), 400);
+        if (this.fmDebounceTimer !== null) window.clearTimeout(this.fmDebounceTimer);
+        this.fmDebounceTimer = window.setTimeout(() => this.updateFmPreview(), 400);
     }
 
     private debouncedUpdateTemplatePreview(containerEl: HTMLElement) {
-        if (this.templateDebounceTimer) clearTimeout(this.templateDebounceTimer);
-        this.templateDebounceTimer = setTimeout(() => this.updateTemplatePreviewOnly(containerEl), 400);
+        if (this.templateDebounceTimer !== null) window.clearTimeout(this.templateDebounceTimer);
+        this.templateDebounceTimer = window.setTimeout(() => this.updateTemplatePreviewOnly(containerEl), 400);
     }
 
     private updateFmPreview() {
@@ -748,10 +752,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
 
         const previewEl = this.fmPreviewEl.createDiv({
-            cls: 'clip2md-preview-block clip2md-fm-preview',
+            cls: 'clip2md-preview-block clip2md-fm-preview clip2md-preview-compact',
         });
-        previewEl.style.margin = '0';
-        previewEl.style.whiteSpace = 'pre-wrap';
         previewEl.setText(rendered);
     }
 
@@ -769,9 +771,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         // 避免重复插入
         const existing = this.folderSettingEl.parentElement?.querySelector('.clip2md-folder-reminder');
         if (existing) return;
-        const reminder = document.createElement('div');
-        reminder.className = 'clip2md-folder-reminder';
-        reminder.textContent = '⚠️ 未配置目标文件夹，同步功能不会生效。请设置文件夹路径。';
+        const parentEl = this.folderSettingEl.parentElement;
+        if (!parentEl) return;
+        const reminder = parentEl.createDiv({
+            cls: 'clip2md-folder-reminder',
+            text: '⚠️ 未配置目标文件夹，同步功能不会生效。请设置文件夹路径。',
+        });
         this.folderSettingEl.after(reminder);
     }
 
@@ -809,18 +814,15 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
         if (!validation.valid) {
             const errorEl = this.templatePreviewEl.createDiv({
-                cls: 'clip2md-preview-block clip2md-template-error clip2md-error-text',
+                cls: 'clip2md-preview-block clip2md-template-error clip2md-error-text clip2md-preview-compact',
                 text: validation.message,
             });
-            // 保持样式一致
-            errorEl.style.margin = '0';
         }
 
         const previewEl = this.templatePreviewEl.createDiv({
-            cls: 'clip2md-preview-block clip2md-template-preview',
+            cls: 'clip2md-preview-block clip2md-template-preview clip2md-preview-compact',
             text: previewContent,
         });
-        previewEl.style.margin = '0';
     }
 
     private renderTemplateToolbar(containerEl: HTMLElement, editor: HTMLTextAreaElement) {
@@ -942,7 +944,7 @@ class FolderPickerModal extends Modal {
         const itemEl = containerEl.createDiv({
             cls: `clip2md-tree-item ${isSelected ? 'selected' : ''}`,
         });
-        itemEl.style.paddingLeft = `${depth * 16 + 8}px`;
+        itemEl.setCssProps({ '--clip2md-tree-item-padding-left': `${depth * 16 + 8}px` });
 
         // 展开/折叠图标
         const hasSubfolders = folder.children.some(child => child instanceof TFolder);

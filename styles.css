@@ -182,6 +182,10 @@
     background: var(--background-primary);
 }
 
+.clip2md-preview-compact {
+    margin: 0;
+}
+
 .clip2md-error-text {
     color: var(--text-error);
 }
@@ -227,7 +231,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 8px;
+    padding: 6px 8px 6px var(--clip2md-tree-item-padding-left, 8px);
     cursor: pointer;
     border-radius: 4px;
     transition: background 0.15s;
@@ -332,7 +336,8 @@
     }
 }
 
-.clip2md-flash {
-    animation: clip2md-flash 0.4s ease 3 !important;
-    border-color: var(--text-warning, var(--text-accent)) !important;
+.setting-item.clip2md-flash,
+input.clip2md-flash {
+    animation: clip2md-flash 0.4s ease 3;
+    border-color: var(--text-warning, var(--text-accent));
 }
