@@ -1,7 +1,7 @@
 {
   "name": "clipmd",
   "version": "1.0.4",
-  "description": "Clip2MD 一键剪藏全网内容为纯净Markdown，自动同步至Obsidian，让每一次浏览都沉淀为你的私人知识资产。",
+  "description": "一键剪藏全网内容为纯净 Markdown，自动同步至你的知识库，让每一次浏览都沉淀为可检索的私人知识资产.",
   "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs production",

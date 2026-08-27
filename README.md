@@ -63,6 +63,21 @@ npm run verify
 本插件的 manifest ID 为 `clipmd`；`Clip2MD` 是展示名称，手动安装目录必须使用
 `.obsidian/plugins/clipmd/`。
 
+## Installation (English)
+
+Install Clip2MD from the Obsidian Community Plugins browser after the plugin is
+approved. For manual installation, download `main.js`, `manifest.json`, and
+`styles.css` from the matching GitHub Release and place them in
+`.obsidian/plugins/clipmd/` inside your vault. Then enable the plugin in
+**Settings → Community plugins**.
+
+## Usage (English)
+
+Open **Settings → Community plugins → Clip2MD**, connect your account with the
+QR code or API key, choose a target folder, and click **Sync now**. The plugin
+downloads completed clipping tasks as Markdown files and can also save images
+locally. The ribbon button and command palette provide the same sync action.
+
 `npm run verify` 会执行类型检查、测试、压缩生产构建和市场合规扫描。主仓库的 `scripts/build-obsidian-local.sh` 负责从包含本地版本功能的源码生成市场变体，不复制到本仓库；主仓库的 `scripts/build-prod.sh` 负责整个 Clip2MD 产品发布，也不属于本仓库。
 
 本仓库没有 `deploy` 命令；`main.js` 是构建产物，不提交到 Git，发布时作为与 `manifest.json` 版本一致的 GitHub Release 附件上传。发布前应执行 `npm ci && npm run verify`。

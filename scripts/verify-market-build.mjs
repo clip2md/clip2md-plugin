@@ -52,8 +52,10 @@ if (manifest.isDesktopOnly !== false) {
 }
 if (typeof manifest.description !== 'string'
     || manifest.description.length > 250
-    || !manifest.description.endsWith('.')) {
-  fail('manifest.description 必须不超过 250 字符并以英文句号结尾');
+    || !manifest.description.endsWith('.')
+    || /\bobsidian\b/i.test(manifest.description)
+    || manifest.description.trim().toLowerCase().startsWith(String(manifest.name || '').trim().toLowerCase())) {
+  fail('manifest.description 必须不超过 250 字符、以英文句号结尾，且不能包含 Obsidian 或以插件名开头');
 }
 if (packageJson.scripts?.deploy) {
   fail('package.json 仍引用不存在的 deploy.sh');
