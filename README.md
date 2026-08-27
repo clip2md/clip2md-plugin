@@ -1,5 +1,10 @@
 # Clip2MD
 
+Clip2MD is an Obsidian plugin that turns captured web content into clean
+Markdown and syncs completed clipping tasks to your knowledge base. It can
+save images locally, preserve task metadata, update previously synchronized
+notes, and organize files with customizable folder and filename templates.
+
 将网页剪藏内容转换为 Markdown，并同步到 Obsidian。Clip2MD 负责网页内容的提取与整理，Obsidian 插件负责把已完成的剪藏任务写入你的 Vault。
 
 ## 功能
