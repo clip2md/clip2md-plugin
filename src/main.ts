@@ -16,25 +16,6 @@ import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
 
-const DEFAULT_SETTINGS: BijiSyncSettings = {
-    apiKey: '',
-    credentialId: undefined,
-    credentialName: undefined,
-    installationId: '',
-    settingsSchemaVersion: 4,
-    syncInterval: 60,
-    syncOnStart: true,
-    targetFolder: '',
-    filenameTemplate: '{{created_date}}-{{title}}',
-    filenameDateFormat: 'yyyy-MM-dd',
-    template: '{{content}}',
-    frontmatterTemplate: DEFAULT_FRONTMATTER_TEMPLATE,
-    syncContentMode: 'full',
-    imageMode: 'local',
-    mergeMode: 'none',
-    lastSyncSummary: undefined,
-};
-
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
 const CONFIG_CORRUPTION_THRESHOLD = 100 * 1024;
@@ -77,7 +58,7 @@ function isSyncRunSummary(value: unknown): value is SyncRunSummary {
 
 function isTaskFileMapping(value: unknown): value is Record<number, string> {
     if (!isRecord(value)) return false;
-    return Object.values(value).every(item => typeof item === 'string');
+    return Object.keys(value).every(key => typeof value[key] === 'string');
 }
 
 function isNumberArray(value: unknown): value is number[] {

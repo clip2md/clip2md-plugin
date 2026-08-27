@@ -276,7 +276,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderQrOnboarding(containerEl: HTMLElement): void {
         const card = containerEl.createDiv({ cls: 'clip2md-guide-card clip2md-binding-card' });
-        card.createEl('div', { text: '打开微信扫一扫，确认后自动完成绑定', cls: 'clip2md-binding-title' });
+        card.createDiv({ text: '打开微信扫一扫，确认后自动完成绑定', cls: 'clip2md-binding-title' });
         if (this.bindingQrDataUrl) {
             card.createEl('img', {
                 attr: { src: this.bindingQrDataUrl, alt: 'Clip2MD 小程序码' },
@@ -587,7 +587,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .setDesc('快速应用推荐的输出组织方式')
             .addDropdown(dropdown => {
                 dropdown.addOption('', '选择预设');
-                FOLDER_PRESETS.forEach((preset, index) => dropdown.addOption(String(index), preset.label));
+                FOLDER_PRESETS.forEach((preset, index) => {
+                    dropdown.addOption(String(index), preset.label);
+                });
                 dropdown.onChange((value) => {
                     this.runAsync(async () => {
                         if (value === '') return;
@@ -645,7 +647,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 }));
 
         const preview = this.plugin.getTemplatePreview();
-        containerEl.createEl('div', {
+        containerEl.createDiv({
             cls: 'setting-item-description clip2md-preview-block',
             text: `示例目录：${preview.folder}\n示例文件：${preview.filename}`,
         });
@@ -809,7 +811,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         };
 
         let rendered = template;
-        for (const [key, value] of Object.entries(sample)) {
+        for (const key of Object.keys(sample)) {
+            const value = sample[key];
             rendered = rendered.split(key).join(value);
         }
 

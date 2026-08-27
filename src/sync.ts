@@ -452,7 +452,7 @@ export class SyncService {
         if (pattern.test(existing)) {
             return existing.replace(pattern, block);
         }
-        const trimmed = existing.trimEnd();
+        const trimmed = existing.replace(/\s+$/, '');
         return `${trimmed}\n\n${block}\n`;
     }
 
@@ -493,7 +493,8 @@ export class SyncService {
             }
             const regex = /!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)/g;
             const replacements = new Map<string, string | null>();
-            for (const match of markdown.matchAll(regex)) {
+            let match: RegExpExecArray | null;
+            while ((match = regex.exec(markdown)) !== null) {
                 const remoteUrl = match[2] ?? '';
                 if (!remoteUrl.startsWith('/api/v1/assets/')) {
                     continue;
@@ -760,10 +761,10 @@ export class SyncService {
     private formatDateForFilename(dateInput: string): string {
         const date = new Date(this.normalizeDateInput(dateInput));
         const year = String(date.getFullYear());
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const month = this.padNumber(date.getMonth() + 1);
+        const day = this.padNumber(date.getDate());
+        const hours = this.padNumber(date.getHours());
+        const minutes = this.padNumber(date.getMinutes());
 
         return (this.settings.filenameDateFormat || 'yyyy-MM-dd')
             .replace(/yyyy/g, year)
@@ -782,6 +783,10 @@ export class SyncService {
             dateStr += 'Z';
         }
         return dateStr;
+    }
+
+    private padNumber(value: number): string {
+        return value < 10 ? `0${value}` : String(value);
     }
 
     private getSourceLabel(task: SyncTask): string {
