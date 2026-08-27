@@ -14,8 +14,8 @@
 
 ## 使用要求
 
-- Obsidian 0.15.0 或更高版本。
-- 桌面版 Obsidian。
+- Obsidian 1.12.7 或更高版本。
+- 桌面版或移动版 Obsidian。
 - Clip2MD 账号或有效的 API Key。
 - 网络连接。插件需要访问 Clip2MD 服务才能绑定账号、获取任务和下载图片。
 
@@ -49,13 +49,29 @@
 
 默认情况下，笔记会保存到 Vault 根目录下的 `Clip2MD` 文件夹，文件名格式为 `{{created_date}}-{{title}}`。
 
+插件会在配置异常恢复前创建 `.obsidian/.clip2md-config-backup/` 配置备份。备份包含同步设置和状态，但会主动移除 API Key；如果从备份恢复，需重新填写 API Key。该目录属于运行数据，不应提交到 GitHub。
+
+## 构建与验证
+
+本仓库是官方 Obsidian 社区插件市场的独立源码仓库。安装依赖并执行完整校验：
+
+```bash
+npm ci
+npm run verify
+```
+
+`npm run verify` 会执行类型检查、测试、压缩生产构建和市场合规扫描。主仓库的 `scripts/build-obsidian-local.sh` 负责从包含本地版本功能的源码生成市场变体，不复制到本仓库；主仓库的 `scripts/build-prod.sh` 负责整个 Clip2MD 产品发布，也不属于本仓库。
+
+本仓库没有 `deploy` 命令；`main.js` 是构建产物，不提交到 Git，发布时作为与 `manifest.json` 版本一致的 GitHub Release 附件上传。发布前应执行 `npm ci && npm run verify`。
+
+兼容性审计确认运行时未使用 Node.js 或 Electron API，因此 manifest 声明支持移动端；当前已在 macOS 的 Obsidian 1.13.7 窗口完成加载和设置页 UI 冒烟测试，移动端以及最低版本 1.12.7 仍需在真实环境中补充验证。
+
 ## 网络与数据说明
 
 插件会通过 HTTPS 访问以下 Clip2MD 官方服务：
 
 - `https://api.clip2md.cn/api/v1`：账号绑定、API Key 认证、获取同步任务和下载任务图片。
 - `https://clip2.md`：打开 Clip2MD 网页和 API 凭据管理页面。
-- `https://static.clip2md.cn`：检查插件更新并获取发布文件。
 
 同步时，插件使用 API Key 作为 `X-API-Key` 请求头向 Clip2MD 服务认证，并读取属于当前账号的剪藏任务内容，然后在本地 Vault 中创建或更新 Markdown 文件及图片。API Key 由 Obsidian 保存在插件设置文件 `data.json` 中；该文件仅用于本地运行，不应提交到 GitHub。
 
@@ -76,6 +92,8 @@
 3. Release 附件包含 `main.js`、`manifest.json` 和 `styles.css`。
 4. `README.md`、`LICENSE` 和 `manifest.json` 位于仓库根目录。
 5. 不提交 `data.json`、API Key 或其他运行时凭据。
+
+当前插件版本为 `1.0.4`，最低 Obsidian 版本为 `1.12.7`。本仓库尚无历史官方市场版本，因此当前不需要 `versions.json`；未来提高最低版本时，必须在发布前增加旧版本回退映射。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

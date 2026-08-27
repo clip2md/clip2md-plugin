@@ -1,2 +1,5 @@
 data.json
 .update-backup/
+node_modules/
+.DS_Store
+main.js
