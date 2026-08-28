@@ -2,7 +2,7 @@
   "id": "clipmd",
   "name": "Clip2MD",
   "version": "1.0.5",
-  "minAppVersion": "1.12.7",
+  "minAppVersion": "1.13.7",
   "description": "一键剪藏全网内容为纯净 Markdown，自动同步至你的知识库，让每一次浏览都沉淀为可检索的私人知识资产. Capture web content as clean Markdown and sync it to your knowledge base.",
   "author": "clip2md",
   "isDesktopOnly": false

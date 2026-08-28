@@ -44,8 +44,8 @@ if (manifest.id !== 'clipmd'
 if (packageJson.name !== manifest.id) {
   fail(`package.json name 必须与 manifest.id 一致（${packageJson.name} / ${manifest.id}）`);
 }
-if (manifest.minAppVersion !== '1.12.7') {
-  fail(`最低 Obsidian 版本必须为 1.12.7，实际为 ${manifest.minAppVersion}`);
+if (manifest.minAppVersion !== '1.13.7') {
+  fail(`最低 Obsidian 版本必须为 1.13.7，实际为 ${manifest.minAppVersion}`);
 }
 if (manifest.isDesktopOnly !== false) {
   fail('插件未声明为移动端兼容（isDesktopOnly 必须为 false）');
