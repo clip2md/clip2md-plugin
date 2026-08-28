@@ -1,6 +1,6 @@
 {
   "name": "clipmd",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "一键剪藏全网内容为纯净 Markdown，自动同步至你的知识库，让每一次浏览都沉淀为可检索的私人知识资产.",
   "main": "main.js",
   "scripts": {
