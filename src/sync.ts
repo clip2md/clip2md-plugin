@@ -57,6 +57,20 @@ export interface TemplatePreviewData {
     filename: string;
 }
 
+export class SyncRequestError extends Error {
+    constructor(
+        message: string,
+        readonly status: number,
+    ) {
+        super(message);
+        this.name = 'SyncRequestError';
+    }
+}
+
+export function isInvalidApiKeyError(error: unknown): boolean {
+    return error instanceof SyncRequestError && error.status === 401;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -869,7 +883,7 @@ export class SyncService {
                     : status === 503
                         ? '服务维护中，稍后会自动重试'
                         : `服务返回错误 (${status})`;
-        return new Error(msg);
+        return new SyncRequestError(msg, status);
     }
 
     private normalizeRequestError(error: unknown): Error {

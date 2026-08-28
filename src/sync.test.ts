@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile } from 'obsidian';
-import { SyncService, type SyncTask } from './sync';
+import { isInvalidApiKeyError, SyncRequestError, SyncService, type SyncTask } from './sync';
 import { DEFAULT_FRONTMATTER_TEMPLATE, type BijiSyncSettings } from './settings';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
@@ -113,6 +113,21 @@ describe('SyncService', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         requestUrlMock.mockReset();
+    });
+
+    it('identifies only an HTTP 401 response as an invalid API Key', async () => {
+        const service = new SyncService(makeSettings());
+        requestUrlMock.mockResolvedValue({
+            status: 401,
+            headers: {},
+            json: {},
+        });
+
+        const error = await service.probeConnection().catch(caught => caught);
+        expect(error).toBeInstanceOf(SyncRequestError);
+        expect(isInvalidApiKeyError(error)).toBe(true);
+        expect(isInvalidApiKeyError(new SyncRequestError('forbidden', 403))).toBe(false);
+        expect(isInvalidApiKeyError(new Error('network'))).toBe(false);
     });
 
     it('rejects path traversal and keeps preview fallback paths safe', () => {

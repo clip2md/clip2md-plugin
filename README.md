@@ -116,7 +116,7 @@ locally. The ribbon button and command palette provide the same sync action.
 4. `README.md`、`LICENSE` 和 `manifest.json` 位于仓库根目录。
 5. 不提交 `data.json`、API Key 或其他运行时凭据。
 
-当前插件版本为 `1.0.4`，最低 Obsidian 版本为 `1.12.7`。本仓库尚无历史官方市场版本，因此当前不需要 `versions.json`；未来提高最低版本时，必须在发布前增加旧版本回退映射。
+当前插件版本为 `1.0.5`，最低 Obsidian 版本为 `1.12.7`。`1.0.4` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

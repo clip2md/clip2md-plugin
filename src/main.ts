@@ -11,7 +11,7 @@ import {
     SyncRuntimeState,
     SyncTrigger,
 } from './settings';
-import { PendingTaskFetchResult, SyncResult, SyncService, SyncTask } from './sync';
+import { isInvalidApiKeyError, PendingTaskFetchResult, SyncResult, SyncService, SyncTask } from './sync';
 import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
@@ -72,7 +72,7 @@ function isNumberArray(value: unknown): value is number[] {
     return Array.isArray(value) && value.every(item => typeof item === 'number');
 }
 
-type ConnectionState = 'unconfigured' | 'configured' | 'connected' | 'error';
+type ConnectionState = 'unconfigured' | 'configured' | 'connected' | 'invalid' | 'error';
 
 interface StatusSnapshot {
     kind: ConnectionState | 'syncing';
@@ -303,7 +303,7 @@ export default class BijiSyncPlugin extends Plugin {
 
     handleConnectionError(error: unknown) {
         const message = this.getFriendlyErrorMessage(error);
-        this.updateConnectionState('error', message);
+        this.updateConnectionState(isInvalidApiKeyError(error) ? 'invalid' : 'error', message);
         new Notice(`Clip2MD: ${message}`, 8000);
         this.refreshSettingTab();
     }
@@ -346,6 +346,15 @@ export default class BijiSyncPlugin extends Plugin {
                 kind: 'connected',
                 label: '● 已连接',
                 description: summaryText,
+                runtimeState: this.runtimeState,
+            };
+        }
+
+        if (this.connectionState === 'invalid') {
+            return {
+                kind: 'invalid',
+                label: '● API Key 已失效',
+                description: '当前 API Key 已失效，请重新扫码绑定或填写新的 Key',
                 runtimeState: this.runtimeState,
             };
         }
@@ -583,7 +592,7 @@ export default class BijiSyncPlugin extends Plugin {
         } catch (error) {
             const message = this.getFriendlyErrorMessage(error);
             console.error('Clip2MD 同步出错:', error);
-            this.updateConnectionState('error', message);
+            this.updateConnectionState(isInvalidApiKeyError(error) ? 'invalid' : 'error', message);
             const summary = this.finishSyncRun({
                 startedAt,
                 finishedAt: new Date().toISOString(),
@@ -613,7 +622,7 @@ export default class BijiSyncPlugin extends Plugin {
                 failed: 0,
             };
             if (this.runtimeState === 'syncing') {
-                this.runtimeState = this.connectionState === 'error' ? 'error' : 'idle';
+                this.runtimeState = this.connectionState === 'error' || this.connectionState === 'invalid' ? 'error' : 'idle';
             }
             if (this.syncNotice) {
                 this.syncNotice.hide();

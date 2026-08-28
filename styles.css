@@ -59,8 +59,23 @@
 }
 
 .clip2md-status-indicator.is-unconfigured,
+.clip2md-status-indicator.is-invalid,
 .clip2md-status-indicator.is-error {
     color: var(--text-error);
+}
+
+.clip2md-api-key-invalid .setting-item-description {
+    color: var(--text-error);
+}
+
+.clip2md-api-key-invalid input {
+    border-color: var(--text-error);
+    box-shadow: 0 0 0 1px var(--text-error);
+}
+
+.clip2md-api-key-invalid input:focus {
+    border-color: var(--text-error);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-error) 35%, transparent);
 }
 
 .clip2md-status-summary {

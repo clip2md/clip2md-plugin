@@ -1,5 +1,4 @@
 import { App, Modal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
-import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
 
@@ -134,7 +133,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private bindingMessage = '';
     private bindingTimer: number | null = null;
     private bindingExpiresAt = 0;
-    private activeContainerEl: HTMLElement | null = null;
+    private showingInvalidOnboarding = false;
 
     constructor(app: App, plugin: BijiSyncPlugin) {
         super(app, plugin);
@@ -171,16 +170,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
     }
 
-    getSettingDefinitions(): SettingDefinitionItem[] {
-        return [{
-            name: '插件设置',
-            desc: '剪藏同步设置',
-            render: (setting) => {
-                this.renderInto(setting.settingEl);
-            },
-        }];
-    }
-
     display(): void {
         this.renderInto(this.containerEl);
     }
@@ -190,7 +179,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderInto(containerEl: HTMLElement): void {
-        this.activeContainerEl = containerEl;
         containerEl.empty();
 
         // 重置预览元素引用（DOM 已被清空）
@@ -203,22 +191,32 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             cls: 'setting-item-description',
         });
 
-        this.renderStatusBar(containerEl);
+        const status = this.plugin.getStatusSnapshot();
+        this.renderStatusBar(containerEl, status);
 
-        if (!this.plugin.settings.apiKey) {
-            this.renderOnboarding(containerEl);
+        const apiKeyInvalid = status.kind === 'invalid';
+        if (!this.plugin.settings.apiKey || apiKeyInvalid) {
+            if (apiKeyInvalid && !this.showingInvalidOnboarding) {
+                this.bindingMode = 'qr';
+                this.onboardingDraft = {
+                    apiKey: '',
+                    targetFolder: this.plugin.settings.targetFolder || 'Clip2MD',
+                };
+            }
+            this.showingInvalidOnboarding = apiKeyInvalid;
+            this.renderOnboarding(containerEl, apiKeyInvalid);
             return;
         }
 
+        this.showingInvalidOnboarding = false;
         this.renderBasicSettings(containerEl);
         this.renderAdvancedSettings(containerEl);
     }
 
     private refreshDisplay(): void {
-        this.renderInto(this.activeContainerEl ?? this.containerEl);
+        this.renderInto(this.containerEl);
     }
-    private renderStatusBar(containerEl: HTMLElement) {
-        const status = this.plugin.getStatusSnapshot();
+    private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
         wrap.createDiv({
             cls: `clip2md-status-indicator is-${status.kind}`,
@@ -254,7 +252,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         });
     }
 
-    private renderOnboarding(containerEl: HTMLElement) {
+    private renderOnboarding(containerEl: HTMLElement, apiKeyInvalid = false) {
         new Setting(containerEl)
             .setName('开始设置')
             .setHeading();
@@ -270,6 +268,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         qrTab.addEventListener('click', () => {
             this.bindingMode = 'qr';
             this.refreshDisplay();
+            if (this.bindingSession) {
+                this.scheduleBindingPoll(this.bindingSession.interval);
+            }
         });
         manualTab.addEventListener('click', () => {
             this.bindingMode = 'manual';
@@ -279,7 +280,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         if (this.bindingMode === 'qr') {
             this.renderQrOnboarding(containerEl);
         } else {
-            this.renderManualOnboarding(containerEl);
+            this.renderManualOnboarding(containerEl, apiKeyInvalid);
         }
         const advanced = containerEl.createEl('details');
         advanced.createEl('summary', { text: '使用高级设置' });
@@ -319,14 +320,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
     }
 
-    private renderManualOnboarding(containerEl: HTMLElement): void {
+    private renderManualOnboarding(containerEl: HTMLElement, apiKeyInvalid = false): void {
         if (!this.onboardingDraft) {
             this.onboardingDraft = { apiKey: '', targetFolder: 'Clip2MD' };
         }
         const card = containerEl.createDiv({ cls: 'clip2md-guide-card' });
-        new Setting(card)
+        const apiKeySetting = new Setting(card)
             .setName('API Key')
-            .setDesc('从 Clip2MD API凭证管理页复制完整 Key')
+            .setDesc(apiKeyInvalid
+                ? '原 API Key 已失效，请填写新的 Key。'
+                : '从 Clip2MD API凭证管理页复制完整 Key')
             .addText(text => {
                 text.setPlaceholder('clip2md_...')
                     .setValue(this.onboardingDraft?.apiKey ?? '')
@@ -336,6 +339,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 text.inputEl.type = 'password';
             })
             .addExtraButton(btn => btn.setIcon('external-link').setTooltip('管理 API凭证').onClick(() => this.plugin.openCredentialPage()));
+        apiKeySetting.settingEl.toggleClass('clip2md-api-key-invalid', apiKeyInvalid);
         new Setting(card)
             .setName('目标文件夹')
             .setDesc('默认在 Vault 根目录创建 Clip2MD')
