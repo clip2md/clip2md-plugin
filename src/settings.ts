@@ -207,10 +207,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }];
     }
 
-    display(): void {
-        this.renderInto(this.containerEl);
-    }
-
     refresh(): void {
         this.refreshDisplay();
     }

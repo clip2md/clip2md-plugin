@@ -74,6 +74,10 @@ if (!/getSettingDefinitions\s*\(\)\s*:\s*SettingDefinitionItem\[\]/.test(setting
     || !/type:\s*['"]page['"]/.test(settingsSource)) {
   fail('设置页必须使用 Obsidian 1.13+ 声明式设置入口，并通过 SettingPage 承载动态内容');
 }
+const settingTabSource = settingsSource.slice(settingsSource.indexOf('export class BijiSyncSettingTab'));
+if (/\n\s+display\s*\(\)\s*:\s*void\s*\{/.test(settingTabSource)) {
+  fail('PluginSettingTab 在 Obsidian 1.13+ 不得保留已弃用的 display() 回退');
+}
 if (!/sanitizeConfigForBackup\(data\)/.test(mainSource)
     || /JSON\.stringify\(data\s*,/.test(mainSource)
     || !/apiKey:\s*_apiKey/.test(backupSource)) {
