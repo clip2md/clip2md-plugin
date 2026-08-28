@@ -67,7 +67,13 @@ if (fs.existsSync(path.join(root, 'src/updater.ts'))) {
   fail('市场源码仍包含 src/updater.ts');
 }
 const mainSource = read('src/main.ts');
+const settingsSource = read('src/settings.ts');
 const backupSource = read('src/config-backup.ts');
+if (!/getSettingDefinitions\s*\(\)\s*:\s*SettingDefinitionItem\[\]/.test(settingsSource)
+    || !/extends\s+SettingPage/.test(settingsSource)
+    || !/type:\s*['"]page['"]/.test(settingsSource)) {
+  fail('设置页必须使用 Obsidian 1.13+ 声明式设置入口，并通过 SettingPage 承载动态内容');
+}
 if (!/sanitizeConfigForBackup\(data\)/.test(mainSource)
     || /JSON\.stringify\(data\s*,/.test(mainSource)
     || !/apiKey:\s*_apiKey/.test(backupSource)) {

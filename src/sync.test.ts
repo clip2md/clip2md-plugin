@@ -15,6 +15,7 @@ vi.mock('obsidian', () => {
         Notice: Stub,
         PluginSettingTab: Stub,
         Setting: Stub,
+        SettingPage: Stub,
         TAbstractFile: Stub,
         TFile: Stub,
         TFolder: Stub,

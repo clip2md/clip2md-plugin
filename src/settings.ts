@@ -1,4 +1,5 @@
-import { App, Modal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import { App, Modal, Notice, PluginSettingTab, Setting, SettingPage, TFolder } from 'obsidian';
+import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
 
@@ -119,6 +120,25 @@ function normalizeSyncContentMode(value: string): SyncContentMode {
     return value === 'note' || value === 'source' ? value : 'full';
 }
 
+class Clip2MDSettingsPage extends SettingPage {
+    constructor(
+        private readonly renderContent: (containerEl: HTMLElement) => void,
+        private readonly cleanup: () => void,
+    ) {
+        super();
+        this.title = 'Clip2MD 设置';
+    }
+
+    display(): void {
+        this.renderContent(this.containerEl);
+    }
+
+    hide(): void {
+        this.cleanup();
+        super.hide();
+    }
+}
+
 export class BijiSyncSettingTab extends PluginSettingTab {
     plugin: BijiSyncPlugin;
     private onboardingDraft: OnboardingDraft | null = null;
@@ -134,6 +154,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private bindingTimer: number | null = null;
     private bindingExpiresAt = 0;
     private showingInvalidOnboarding = false;
+    private activeContainerEl: HTMLElement | null = null;
 
     constructor(app: App, plugin: BijiSyncPlugin) {
         super(app, plugin);
@@ -170,6 +191,22 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
     }
 
+    getSettingDefinitions(): SettingDefinitionItem[] {
+        return [{
+            type: 'page',
+            name: 'Clip2MD 设置',
+            desc: '扫码绑定、API Key、同步目录、文件模板和自动同步选项',
+            status: () => {
+                const kind = this.plugin.getStatusSnapshot().kind;
+                return kind === 'invalid' || kind === 'error' ? 'warning' : null;
+            },
+            page: () => new Clip2MDSettingsPage(
+                containerEl => this.renderInto(containerEl),
+                () => this.releaseActivePage(),
+            ),
+        }];
+    }
+
     display(): void {
         this.renderInto(this.containerEl);
     }
@@ -179,6 +216,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderInto(containerEl: HTMLElement): void {
+        this.activeContainerEl = containerEl;
         containerEl.empty();
 
         // 重置预览元素引用（DOM 已被清空）
@@ -214,7 +252,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private refreshDisplay(): void {
-        this.renderInto(this.containerEl);
+        this.renderInto(this.activeContainerEl ?? this.containerEl);
+    }
+
+    private releaseActivePage(): void {
+        this.stopBindingPolling();
+        this.activeContainerEl = null;
     }
     private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
@@ -457,7 +500,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     hide(): void {
-        this.stopBindingPolling();
+        this.releaseActivePage();
     }
 
     private renderBasicSettings(containerEl: HTMLElement) {

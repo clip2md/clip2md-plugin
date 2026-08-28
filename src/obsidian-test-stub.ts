@@ -10,6 +10,7 @@ export class Modal {}
 export class Notice {}
 export class PluginSettingTab {}
 export class Setting {}
+export class SettingPage {}
 export class TAbstractFile {}
 export class TFile {}
 export class TFolder {}
