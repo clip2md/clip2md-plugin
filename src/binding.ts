@@ -9,6 +9,10 @@ export interface DeviceBindingSession {
     interval: number;
 }
 
+export interface DeviceLaunchLinkResponse {
+    launch_url: string;
+}
+
 export type DeviceCredentialStatus =
     | { status: 'pending_approval'; retry_after: number }
     | { status: 'approving'; retry_after: number }
@@ -78,6 +82,24 @@ export class DeviceBindingClient {
             throw errorFromResponse(response.status, response.json);
         }
         return `data:image/png;base64,${encodeBase64(response.arrayBuffer)}`;
+    }
+
+    async launchLink(deviceCode: string): Promise<string> {
+        const response = await requestUrl({
+            url: `${CLIP2MD_API_BASE_URL}/auth/wechat/device/launch-link`,
+            method: 'POST',
+            contentType: 'application/json',
+            body: JSON.stringify({ device_code: deviceCode }),
+            throw: false,
+        });
+        if (response.status < 200 || response.status >= 300) {
+            throw errorFromResponse(response.status, response.json);
+        }
+        const payload = response.json as DeviceLaunchLinkResponse;
+        if (!payload?.launch_url) {
+            throw new DeviceBindingError('绑定入口不可用', response.status, 'wechat_url_link_unavailable');
+        }
+        return payload.launch_url;
     }
 
     async credential(deviceCode: string): Promise<DeviceCredentialStatus> {

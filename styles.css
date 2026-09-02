@@ -140,6 +140,39 @@
     background: #fff;
 }
 
+.clip2md-platform-mobile {
+    padding-block-end: max(1rem, env(safe-area-inset-bottom));
+}
+
+.clip2md-platform-mobile .clip2md-binding-qrcode,
+.clip2md-platform-mobile .clip2md-binding-placeholder {
+    inline-size: min(13.75rem, 60vw);
+    block-size: auto;
+    aspect-ratio: 1;
+    max-inline-size: 100%;
+}
+
+.clip2md-binding-code-actions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin: 2px 0 8px;
+}
+
+.clip2md-launch-button {
+    display: block;
+    width: 100%;
+    min-block-size: 48px;
+    margin: 12px 0 4px;
+}
+
+.clip2md-inline-button:focus-visible,
+.clip2md-binding-tabs button:focus-visible,
+.clip2md-launch-button:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
 .clip2md-binding-qrcode {
     object-fit: contain;
 }
@@ -211,6 +244,32 @@
     }
     to {
         transform: rotate(360deg);
+    }
+}
+
+@media (max-width: 480px) {
+    .clip2md-platform-mobile .clip2md-status-actions {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    .clip2md-platform-mobile .clip2md-status-actions button,
+    .clip2md-platform-mobile .clip2md-binding-tabs button {
+        width: 100%;
+        min-block-size: 48px;
+    }
+
+    .clip2md-platform-mobile .clip2md-binding-tabs {
+        padding: 2px;
+    }
+}
+
+@media (pointer: coarse) {
+    .clip2md-platform-mobile button,
+    .clip2md-platform-mobile input,
+    .clip2md-platform-mobile select,
+    .clip2md-platform-mobile textarea {
+        min-block-size: 48px;
     }
 }
 

@@ -15,6 +15,7 @@ import { isInvalidApiKeyError, PendingTaskFetchResult, SyncResult, SyncService, 
 import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
+import { TimerRegistry } from './timers';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -112,6 +113,7 @@ export default class BijiSyncPlugin extends Plugin {
     syncService: SyncService;
     syncIntervalId: number | null = null;
     settingTab: BijiSyncSettingTab | null = null;
+    readonly timers = new TimerRegistry();
 
     private ribbonEl: HTMLElement | null = null;
     private viewActions = new Map<object, { element: HTMLElement; progress: HTMLElement; label: HTMLElement }>();
@@ -131,6 +133,7 @@ export default class BijiSyncPlugin extends Plugin {
     private connectionState: ConnectionState = 'unconfigured';
     private connectionMessage = '请填写 API Key 开始使用';
     private startupSyncTriggered = false;
+    private appVisible = true;
 
     async onload() {
         let saved: unknown = await this.loadStoredData();
@@ -203,6 +206,13 @@ export default class BijiSyncPlugin extends Plugin {
 
         this.settingTab = new BijiSyncSettingTab(this.app, this);
         this.addSettingTab(this.settingTab);
+        this.appVisible = typeof document === 'undefined' || !document.hidden;
+        if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+            this.registerDomEvent(document, 'visibilitychange', () => this.handleAppVisibility(!document.hidden));
+            this.registerDomEvent(window, 'focus', () => this.handleAppVisibility(true));
+            this.registerDomEvent(window, 'pageshow', () => this.handleAppVisibility(true));
+        }
+        this.settingTab.onAppVisibilityChange(this.appVisible);
 
         this.ribbonEl = this.addRibbonIcon(CLIP2MD_ICON_ID, 'Clip2MD 同步', () => {
             if (!this.settings.apiKey) {
@@ -238,9 +248,10 @@ export default class BijiSyncPlugin extends Plugin {
 
     onunload() {
         this.settingTab?.hide();
-        if (this.syncIntervalId) {
-            window.clearInterval(this.syncIntervalId);
-        }
+        this.timers.clearAll();
+        this.syncIntervalId = null;
+        this.syncNotice?.hide();
+        this.syncNotice = null;
         this.viewActions.forEach(({ element }) => element.remove());
         this.viewActions.clear();
     }
@@ -442,20 +453,18 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     startSyncInterval() {
-        if (this.syncIntervalId) {
-            window.clearInterval(this.syncIntervalId);
-            this.syncIntervalId = null;
-        }
+        this.timers.clearInterval(this.syncIntervalId);
+        this.syncIntervalId = null;
 
-        if (!this.settings.apiKey || this.settings.syncInterval === 0) {
+        if (!this.appVisible || !this.settings.apiKey || this.settings.syncInterval === 0) {
             return;
         }
 
         const intervalMinutes = Math.max(5, this.settings.syncInterval);
         const intervalMs = intervalMinutes * 60 * 1000;
-        this.syncIntervalId = window.setInterval(() => {
+        this.syncIntervalId = this.timers.setInterval(() => {
             void this.syncNow('scheduled');
-        }, intervalMs);
+        }, intervalMs, 'network');
     }
 
     scheduleStartupSync() {
@@ -467,13 +476,34 @@ export default class BijiSyncPlugin extends Plugin {
                 return;
             }
             this.startupSyncTriggered = true;
-            window.setTimeout(() => {
+            this.timers.setTimeout(() => {
+                if (!this.appVisible) {
+                    this.startupSyncTriggered = false;
+                    return;
+                }
                 if (!this.settings.apiKey) {
                     return;
                 }
                 void this.syncNow('startup');
-            }, 3000);
+            }, 3000, 'network');
         });
+    }
+
+    private handleAppVisibility(visible: boolean): void {
+        if (this.appVisible === visible) {
+            if (visible) this.settingTab?.onAppVisibilityChange(true);
+            return;
+        }
+        this.appVisible = visible;
+        if (visible) {
+            this.startSyncInterval();
+            if (!this.startupSyncTriggered) this.scheduleStartupSync();
+            this.settingTab?.onAppVisibilityChange(true);
+        } else {
+            this.timers.clearGroup('network');
+            this.syncIntervalId = null;
+            this.settingTab?.onAppVisibilityChange(false);
+        }
     }
 
     async syncNow(trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary | undefined> {
@@ -889,7 +919,7 @@ export default class BijiSyncPlugin extends Plugin {
         }
         this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章`);
         const notice = this.syncNotice;
-        window.setTimeout(() => notice.hide(), 3000);
+        this.timers.setTimeout(() => notice.hide(), 3000, 'notice');
         this.syncNotice = null;
     }
 
@@ -899,7 +929,7 @@ export default class BijiSyncPlugin extends Plugin {
         }
         this.syncNotice.setMessage(`${'□ '.repeat(5).trim()}  ${message}`);
         const notice = this.syncNotice;
-        window.setTimeout(() => notice.hide(), 5000);
+        this.timers.setTimeout(() => notice.hide(), 5000, 'notice');
         this.syncNotice = null;
     }
 

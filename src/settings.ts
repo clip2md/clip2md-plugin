@@ -1,4 +1,4 @@
-import { App, Modal, Notice, PluginSettingTab, Setting, SettingPage, TFolder } from 'obsidian';
+import { App, Modal, Notice, Platform, PluginSettingTab, Setting, SettingPage, TFolder } from 'obsidian';
 import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
@@ -153,6 +153,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private bindingMessage = '';
     private bindingTimer: number | null = null;
     private bindingExpiresAt = 0;
+    private pollInFlight = false;
+    private lastPollAt = 0;
+    private nextPollAt = 0;
+    private appVisible = true;
+    private launchUrl = '';
+    private launchState: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
+    private launchMessage = '';
     private showingInvalidOnboarding = false;
     private activeContainerEl: HTMLElement | null = null;
 
@@ -213,6 +220,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderInto(containerEl: HTMLElement): void {
         this.activeContainerEl = containerEl;
+        containerEl.toggleClass('clip2md-platform-mobile', Platform.isMobileApp);
         containerEl.empty();
 
         // 重置预览元素引用（DOM 已被清空）
@@ -253,7 +261,19 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private releaseActivePage(): void {
         this.stopBindingPolling();
+        this.plugin.timers.clearGroup('settings-ui');
         this.activeContainerEl = null;
+    }
+
+    onAppVisibilityChange(visible: boolean): void {
+        this.appVisible = visible;
+        if (!visible) {
+            // Keep nextPollAt so a resume/focus event cannot bypass the
+            // server-provided retry_after interval.
+            this.stopBindingPolling(true);
+            return;
+        }
+        this.pollBindingIfDue();
     }
     private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
@@ -308,7 +328,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             this.bindingMode = 'qr';
             this.refreshDisplay();
             if (this.bindingSession) {
-                this.scheduleBindingPoll(this.bindingSession.interval);
+                this.pollBindingIfDue();
             }
         });
         manualTab.addEventListener('click', () => {
@@ -342,6 +362,23 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
         if (this.bindingSession) {
             card.createEl('code', { text: this.bindingSession.user_code, cls: 'clip2md-binding-code' });
+            const codeActions = card.createDiv({ cls: 'clip2md-binding-code-actions' });
+            const copyButton = codeActions.createEl('button', { text: '复制绑定码', cls: 'clip2md-inline-button' });
+            copyButton.addEventListener('click', () => void this.copyBindingCode(copyButton));
+            if (Platform.isMobileApp) {
+                const launchButton = card.createEl('button', {
+                    text: this.launchState === 'loading' ? '正在准备小程序…' : '打开 Clip2MD 小程序',
+                    cls: 'mod-cta clip2md-launch-button',
+                });
+                launchButton.disabled = this.launchState === 'loading';
+                launchButton.addEventListener('click', () => void this.openMiniapp(launchButton));
+                if (this.launchMessage) {
+                    card.createEl('p', {
+                        text: this.launchMessage,
+                        cls: this.launchState === 'unavailable' ? 'clip2md-error-text' : 'setting-item-description',
+                    });
+                }
+            }
         }
         card.createEl('p', {
             text: this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。',
@@ -356,6 +393,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
         if (!this.bindingSession && this.bindingState !== 'starting') {
             void this.startBinding();
+        } else if (this.bindingSession) {
+            this.pollBindingIfDue();
         }
     }
 
@@ -416,6 +455,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             const session = await this.bindingClient.start(this.plugin.getBindingClientName());
             this.bindingSession = session;
             this.bindingExpiresAt = Date.now() + session.expires_in * 1000;
+            this.lastPollAt = 0;
+            this.nextPollAt = 0;
+            this.launchUrl = '';
+            this.launchState = 'idle';
+            this.launchMessage = '';
             this.bindingState = 'waiting';
             this.bindingMessage = '请使用微信扫码，并在小程序中确认绑定。';
             this.refreshDisplay();
@@ -438,17 +482,23 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private scheduleBindingPoll(seconds: number): void {
         this.stopBindingPolling();
-        if (!this.bindingSession || this.bindingMode !== 'qr') return;
-        this.bindingTimer = window.setTimeout(() => void this.pollBinding(), Math.max(1, seconds) * 1000);
+        if (!this.bindingSession || this.bindingMode !== 'qr' || !this.appVisible) return;
+        const delay = Math.max(1, seconds) * 1000;
+        this.nextPollAt = Date.now() + delay;
+        this.bindingTimer = this.plugin.timers.setTimeout(() => this.pollBindingIfDue(), delay, 'binding');
     }
 
     private async pollBinding(): Promise<void> {
         const session = this.bindingSession;
-        if (!session || this.bindingMode !== 'qr') return;
+        if (!session || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
+        this.pollInFlight = true;
+        this.lastPollAt = Date.now();
+        this.bindingTimer = null;
         if (Date.now() >= this.bindingExpiresAt) {
             this.bindingState = 'expired';
             this.bindingMessage = '小程序码已过期，请重新生成。';
             this.refreshDisplay();
+            this.pollInFlight = false;
             return;
         }
         try {
@@ -476,14 +526,27 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             this.bindingMessage = '网络暂时不可用，正在重试…';
             this.refreshDisplay();
             this.scheduleBindingPoll(retryAfter);
+        } finally {
+            this.pollInFlight = false;
         }
     }
 
-    private stopBindingPolling(): void {
-        if (this.bindingTimer !== null) {
-            window.clearTimeout(this.bindingTimer);
-            this.bindingTimer = null;
+    private pollBindingIfDue(): void {
+        if (!this.bindingSession || !this.activeContainerEl || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
+        const now = Date.now();
+        if (now >= this.bindingExpiresAt) {
+            void this.pollBinding();
+            return;
         }
+        if (this.nextPollAt && now < this.nextPollAt) return;
+        if (!this.nextPollAt && this.lastPollAt && now - this.lastPollAt < 30_000) return;
+        void this.pollBinding();
+    }
+
+    private stopBindingPolling(preserveSchedule = false): void {
+        this.plugin.timers.clearTimeout(this.bindingTimer);
+        this.bindingTimer = null;
+        if (!preserveSchedule) this.nextPollAt = 0;
     }
 
     private resetBindingSession(): void {
@@ -493,6 +556,65 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         this.bindingState = 'idle';
         this.bindingMessage = '';
         this.bindingExpiresAt = 0;
+        this.pollInFlight = false;
+        this.lastPollAt = 0;
+        this.nextPollAt = 0;
+        this.launchUrl = '';
+        this.launchState = 'idle';
+        this.launchMessage = '';
+    }
+
+    private async copyBindingCode(button: HTMLButtonElement): Promise<void> {
+        const code = this.bindingSession?.user_code;
+        if (!code) return;
+        try {
+            if (!navigator.clipboard) throw new Error('clipboard_unavailable');
+            await navigator.clipboard.writeText(code);
+            new Notice('Clip2MD: 绑定码已复制。', 3000);
+            button.setText('已复制');
+            this.plugin.timers.setTimeout(() => button.setText('复制绑定码'), 2000, 'settings-ui');
+        } catch {
+            new Notice(`Clip2MD 绑定码：${code}`, 6000);
+        }
+    }
+
+    private async openMiniapp(button: HTMLButtonElement): Promise<void> {
+        if (!this.bindingSession || this.launchState === 'loading') return;
+        if (this.launchUrl) {
+            try {
+                window.location.assign(this.launchUrl);
+            } catch {
+                new Notice('Clip2MD: 请再次点击按钮打开小程序。', 4000);
+            }
+            return;
+        }
+        this.launchState = 'loading';
+        this.launchMessage = '';
+        button.disabled = true;
+        button.setText('正在准备小程序…');
+        try {
+            this.launchUrl = await this.bindingClient.launchLink(this.bindingSession.device_code);
+            this.launchState = 'ready';
+        } catch (error) {
+            this.launchState = 'unavailable';
+            this.launchMessage = error instanceof DeviceBindingError && error.code === 'url_link_quota_exhausted'
+                ? '今日快捷入口暂不可用，请使用二维码或绑定码。'
+                : '快捷入口暂不可用，请使用二维码或绑定码。';
+            button.disabled = false;
+            button.setText('打开 Clip2MD 小程序');
+            this.refreshDisplay();
+            return;
+        }
+        button.disabled = false;
+        button.setText('打开 Clip2MD 小程序');
+        // Navigate immediately while retaining launchUrl for a second,
+        // synchronous click if a WebView blocks this first navigation.
+        try {
+            window.location.assign(this.launchUrl);
+        } catch {
+            this.launchMessage = '请再次点击按钮打开小程序。';
+            this.refreshDisplay();
+        }
     }
 
     hide(): void {
@@ -665,9 +787,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                         if (folderWasEmpty) {
                             this.folderSettingEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             this.insertFolderReminder();
-                            window.setTimeout(() => {
+                            this.plugin.timers.setTimeout(() => {
                                 this.flashFolderInput(containerEl);
-                            }, 500);
+                            }, 500, 'settings-ui');
                         }
                     });
                 });
@@ -835,13 +957,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private templateDebounceTimer: number | null = null;
 
     private debouncedUpdateFmPreview(_containerEl: HTMLElement) {
-        if (this.fmDebounceTimer !== null) window.clearTimeout(this.fmDebounceTimer);
-        this.fmDebounceTimer = window.setTimeout(() => this.updateFmPreview(), 400);
+        this.plugin.timers.clearTimeout(this.fmDebounceTimer);
+        this.fmDebounceTimer = this.plugin.timers.setTimeout(() => this.updateFmPreview(), 400, 'settings-ui');
     }
 
     private debouncedUpdateTemplatePreview(containerEl: HTMLElement) {
-        if (this.templateDebounceTimer !== null) window.clearTimeout(this.templateDebounceTimer);
-        this.templateDebounceTimer = window.setTimeout(() => this.updateTemplatePreviewOnly(containerEl), 400);
+        this.plugin.timers.clearTimeout(this.templateDebounceTimer);
+        this.templateDebounceTimer = this.plugin.timers.setTimeout(() => this.updateTemplatePreviewOnly(containerEl), 400, 'settings-ui');
     }
 
     private updateFmPreview() {

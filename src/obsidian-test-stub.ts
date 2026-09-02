@@ -15,6 +15,7 @@ export class TAbstractFile {}
 export class TFile {}
 export class TFolder {}
 export class Vault {}
+export const Platform = { isMobileApp: false, isMobile: false, isIosApp: false, isAndroidApp: false };
 export const addIcon = () => undefined;
 export const requestUrl = () => {
     throw new Error('requestUrl must be mocked by the test');
