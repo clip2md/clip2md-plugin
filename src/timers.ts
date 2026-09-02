@@ -1,4 +1,4 @@
-export type TimerGroup = 'binding' | 'network' | 'settings-ui' | 'notice' | string;
+export type TimerGroup = 'binding' | 'network' | 'settings-ui' | 'notice';
 
 /** Small, group-aware registry for timers that need deterministic teardown. */
 export class TimerRegistry {
@@ -6,7 +6,7 @@ export class TimerRegistry {
     private readonly intervals = new Map<number, TimerGroup>();
 
     private get timerHost(): Window {
-        return (typeof window !== 'undefined' ? window : globalThis) as unknown as Window;
+        return window;
     }
 
     setTimeout(callback: () => void, delayMs: number, group: TimerGroup): number {
