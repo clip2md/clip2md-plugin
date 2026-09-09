@@ -108,6 +108,10 @@ class FakeVault {
     content(path: string) {
         return this.files.get(path);
     }
+
+    paths() {
+        return [...this.files.keys()];
+    }
 }
 
 describe('SyncService', () => {
@@ -228,5 +232,86 @@ describe('SyncService', () => {
         expect(filepath).toBeTruthy();
         const content = String(vault.content(filepath));
         expect(content).toContain('tags: ["示例", "含\\"引号"]');
+    });
+
+    it('downloads production CDN image URLs in local image mode', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'local' }));
+        const vault = new FakeVault();
+        const cdnUrl = 'https://media.clip2md.cn/assets/task-101/cover.png?sign=old';
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+            arrayBuffer: new ArrayBuffer(4),
+        });
+
+        await service.renderToVault(
+            vault as never,
+            makeTask({
+                note_markdown_content: `before\n\n![cover](${cdnUrl})\n\nafter`,
+                source_markdown_content: null,
+            }),
+            'Clippings',
+            '{{content}}',
+        );
+
+        const content = String(vault.content(service.getTaskFileMap()[101]));
+        expect(content).toContain('![cover](./_assets/task-101/');
+        expect(content).not.toContain('media.clip2md.cn');
+        expect(requestUrlMock).toHaveBeenCalledWith({
+            url: cdnUrl,
+            method: 'GET',
+            headers: {},
+            throw: false,
+        });
+        expect(vault.content('Clippings/_assets/task-101')).toBe('');
+    });
+
+    it('uses a stable local filename when a CDN signature changes', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'local' }));
+        const vault = new FakeVault();
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+            arrayBuffer: new ArrayBuffer(4),
+        });
+
+        const firstTask = makeTask({
+            note_markdown_content: '![cover](https://media.clip2md.cn/assets/task-101/cover.png?sign=old)',
+            source_markdown_content: null,
+        });
+        const secondTask = {
+            ...firstTask,
+            note_markdown_content: '![cover](https://media.clip2md.cn/assets/task-101/cover.png?sign=new)',
+        };
+
+        await service.renderToVault(vault as never, firstTask, 'Clippings', '{{content}}');
+        const firstAssetPath = vault.paths()
+            .find(path => path.startsWith('Clippings/_assets/task-101/'));
+        await service.renderToVault(vault as never, secondTask, 'Clippings', '{{content}}');
+        const assetPaths = vault.paths()
+            .filter(path => path.startsWith('Clippings/_assets/task-101/'));
+
+        expect(firstAssetPath).toBeTruthy();
+        expect(assetPaths).toEqual([firstAssetPath]);
+    });
+
+    it('removes Markdown and HTML images without downloading in disabled image mode', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const task = makeTask({
+            note_markdown_content: 'before\n\n![cover](https://media.clip2md.cn/assets/task-101/cover.png?sign=fresh)\n\n<img src="https://media.clip2md.cn/assets/task-101/inline.png">\n\nafter',
+            source_markdown_content: 'source',
+        });
+
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+
+        const content = String(vault.content(service.getTaskFileMap()[101]));
+        expect(content).toContain('before');
+        expect(content).toContain('after');
+        expect(content).toContain('source');
+        expect(content).not.toContain('media.clip2md.cn');
+        expect(content).not.toContain('![cover]');
+        expect(content).not.toContain('<img');
+        expect(requestUrlMock).not.toHaveBeenCalled();
     });
 });

@@ -1,6 +1,6 @@
 import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
 import { BijiSyncSettings, SyncContentMode } from './settings';
-import { CLIP2MD_API_BASE_URL } from './config';
+import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
 
 export interface SyncTask {
     id: number;
@@ -150,6 +150,31 @@ function parseMarkdownImage(whole: string): MarkdownImageParts | null {
         remoteUrl: whole.slice(targetStart, urlEnd),
         suffix: whole.slice(urlEnd, targetEnd),
     };
+}
+
+function isManagedImageUrl(remoteUrl: string): boolean {
+    if (remoteUrl.startsWith('/api/v1/assets/')) {
+        return true;
+    }
+
+    try {
+        const parsed = new URL(remoteUrl);
+        const mediaCdn = new URL(CLIP2MD_MEDIA_CDN_BASE_URL);
+        return parsed.protocol === mediaCdn.protocol
+            && parsed.host === mediaCdn.host
+            && parsed.pathname.startsWith('/assets/');
+    } catch {
+        return false;
+    }
+}
+
+function stableImageIdentity(remoteUrl: string): string {
+    try {
+        const parsed = new URL(remoteUrl, CLIP2MD_API_BASE_URL);
+        return `${parsed.origin}${parsed.pathname}`;
+    } catch {
+        return remoteUrl.replace(/[?#].*$/, '');
+    }
 }
 
 export class SyncService {
@@ -549,7 +574,7 @@ export class SyncService {
                 return whole;
             });
             for (const { remoteUrl } of imageMatches) {
-                if (!remoteUrl.startsWith('/api/v1/assets/')) {
+                if (!isManagedImageUrl(remoteUrl)) {
                     continue;
                 }
                 if (replacements.has(remoteUrl)) {
@@ -557,10 +582,11 @@ export class SyncService {
                 }
 
                 try {
+                    const isApiAsset = remoteUrl.startsWith('/api/v1/assets/');
                     const response = await requestUrl({
                         url: new URL(remoteUrl, CLIP2MD_API_BASE_URL).toString(),
                         method: 'GET',
-                        headers: { 'X-API-Key': this.settings.apiKey },
+                        headers: isApiAsset ? { 'X-API-Key': this.settings.apiKey } : {},
                         throw: false,
                     });
                     if (response.status < 200 || response.status >= 300) {
@@ -588,7 +614,7 @@ export class SyncService {
                         : responseType.includes('gif') ? 'gif'
                         : responseType.includes('avif') ? 'avif'
                         : 'jpg';
-                    const safeName = `${this.hash(remoteUrl)}.${extension}`;
+                    const safeName = `${this.hash(stableImageIdentity(remoteUrl))}.${extension}`;
                     const path = `${imageFolder}/${safeName}`;
                     if (!imageFolderReady) {
                         await this.ensureFolder(vault, imageFolder);
@@ -635,7 +661,9 @@ export class SyncService {
         if (!markdown) {
             return markdown;
         }
-        return markdown.replace(/!\[[^\]]*\]\(([^)]+)\)/g, '');
+        return markdown
+            .replace(/!\[[^\]]*\]\(([^)]+)\)/g, '')
+            .replace(/<img\b[^>]*>/gi, '');
     }
 
     private async ensureFolder(vault: Vault, path: string): Promise<void> {

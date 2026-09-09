@@ -1,0 +1,85 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: obsidian-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify and build market bundle
+        run: npm run verify
+
+      - name: Prepare release assets
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="$(node -p "require('./manifest.json').version")"
+          test "$version" = "$RELEASE_TAG"
+          rm -rf release
+          mkdir -p release
+          cp main.js manifest.json styles.css release/
+          test "$(find release -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
+
+      - name: Attest main.js
+        uses: actions/attest@v4
+        with:
+          subject-path: release/main.js
+
+      - name: Attest manifest.json
+        uses: actions/attest@v4
+        with:
+          subject-path: release/manifest.json
+
+      - name: Attest styles.css
+        uses: actions/attest@v4
+        with:
+          subject-path: release/styles.css
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="releases/${RELEASE_TAG}.md"
+          test -f "$notes"
+          title="Clip2MD Obsidian ${RELEASE_TAG}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$title" --notes-file "$notes"
+            gh release upload "$RELEASE_TAG" release/main.js release/manifest.json release/styles.css --clobber
+          else
+            gh release create "$RELEASE_TAG" release/main.js release/manifest.json release/styles.css \
+              --verify-tag \
+              --title "$title" \
+              --notes-file "$notes"
+          fi
