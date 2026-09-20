@@ -347,9 +347,9 @@ export class SyncService {
         folderTemplate: string,
         template: string
     ): Promise<SyncResult> {
-        const localized = await this.localizeTaskImages(vault, task, folderTemplate);
+        const folder = this.resolveFolderPath(task, folderTemplate);
+        const localized = await this.localizeTaskImages(vault, task, folder);
         const localizedTask = localized.task;
-        const folder = this.resolveFolderPath(localizedTask, folderTemplate);
         let content = this.renderTemplate(template, localizedTask);
         if (localized.pendingAssets) {
             content = `${content}\n\n> 图片仍在处理中（任务 #${task.id}），稍后会自动重试。`;
@@ -539,7 +539,7 @@ export class SyncService {
     private async localizeTaskImages(
         vault: Vault,
         task: SyncTask,
-        folderTemplate: string,
+        folder: string,
     ): Promise<LocalizeResult> {
         if (this.settings.imageMode === 'disabled') {
             return {
@@ -553,8 +553,13 @@ export class SyncService {
             };
         }
 
-        const folder = this.resolveFolderPath(task, folderTemplate);
-        const imageFolder = `${folder}/_assets/task-${task.id}`;
+        const configuredImageFolder = this.settings.imageFolder?.trim() || '';
+        const imageBaseFolder = configuredImageFolder
+            ? configuredImageFolder === '/' ? '' : this.normalizePathTemplate(configuredImageFolder)
+            : `${folder}/_assets`;
+        const imageFolder = imageBaseFolder
+            ? `${imageBaseFolder}/task-${task.id}`
+            : `task-${task.id}`;
         let imageFolderReady = false;
         let pendingAssets = false;
         let failedAssets = false;
@@ -623,7 +628,7 @@ export class SyncService {
                     if (!vault.getAbstractFileByPath(path)) {
                         await vault.createBinary(path, bytes);
                     }
-                    replacements.set(remoteUrl, `./_assets/task-${task.id}/${safeName}`);
+                    replacements.set(remoteUrl, this.relativeImageUrl(folder, path));
                 } catch (error) {
                     pendingAssets = true;
                     replacements.set(remoteUrl, null);
@@ -892,6 +897,21 @@ export class SyncService {
             .map(segment => this.sanitizeFilenameSegment(segment))
             .filter(segment => segment && segment !== '.' && segment !== '..');
         return segments.join('/');
+    }
+
+    private relativeImageUrl(noteFolder: string, imagePath: string): string {
+        const noteParts = noteFolder.split('/').filter(Boolean);
+        const imageParts = imagePath.split('/').filter(Boolean);
+        while (noteParts.length && imageParts.length && noteParts[0] === imageParts[0]) {
+            noteParts.shift();
+            imageParts.shift();
+        }
+        const relativeParts = [
+            ...noteParts.map(() => '..'),
+            ...imageParts.map(part => encodeURIComponent(part).replace(/[()]/g, char => char === '(' ? '%28' : '%29')),
+        ];
+        const relativePath = relativeParts.join('/');
+        return relativeParts[0] === '..' ? relativePath : `./${relativePath}`;
     }
 
     private hasTaskMarker(content: string, taskId: number): boolean {

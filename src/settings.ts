@@ -2,6 +2,7 @@ import { App, Modal, Notice, Platform, PluginSettingTab, Setting, SettingPage, T
 import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
+import { installButtonClickGuard } from './button-guard';
 
 export type SyncContentMode = 'full' | 'note' | 'source';
 export type SyncTrigger = 'manual' | 'scheduled' | 'startup' | 'onboarding';
@@ -38,6 +39,7 @@ export interface BijiSyncSettings {
     frontmatterTemplate: string;
     syncContentMode: SyncContentMode;
     imageMode: ImageMode;
+    imageFolder: string;
     mergeMode: MergeMode;
     lastSyncSummary?: SyncRunSummary;
 }
@@ -157,6 +159,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private lastPollAt = 0;
     private nextPollAt = 0;
     private appVisible = true;
+    private testingConnection = false;
     private launchUrl = '';
     private launchState: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
     private launchMessage = '';
@@ -173,19 +176,20 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     async testConnection(btnEl: HTMLElement): Promise<void> {
+        if (this.testingConnection) return;
+        this.testingConnection = true;
         const origText = btnEl.textContent;
         btnEl.textContent = '测试中...';
         btnEl.toggleClass('is-loading', true);
-
-        const { apiKey } = this.plugin.settings;
-        if (!apiKey) {
-            new Notice('Clip2MD: 请先填写 API Key');
-            btnEl.textContent = origText;
-            btnEl.toggleClass('is-loading', false);
-            return;
-        }
+        btnEl.setAttribute('aria-busy', 'true');
+        if (btnEl instanceof HTMLButtonElement) btnEl.disabled = true;
 
         try {
+            const { apiKey } = this.plugin.settings;
+            if (!apiKey) {
+                new Notice('Clip2MD: 请先填写 API Key');
+                return;
+            }
             await this.plugin.verifyConnection();
             new Notice('Clip2MD: 连接成功，可以开始同步。', 5000);
             this.refreshDisplay();
@@ -193,8 +197,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             this.plugin.handleConnectionError(err);
             this.refreshDisplay();
         } finally {
+            this.testingConnection = false;
             btnEl.textContent = origText;
             btnEl.toggleClass('is-loading', false);
+            btnEl.removeAttribute('aria-busy');
+            if (btnEl instanceof HTMLButtonElement) btnEl.disabled = false;
         }
     }
 
@@ -220,6 +227,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderInto(containerEl: HTMLElement): void {
         this.activeContainerEl = containerEl;
+        installButtonClickGuard(containerEl);
         containerEl.toggleClass('clip2md-platform-mobile', Platform.isMobileApp);
         containerEl.empty();
 
@@ -693,6 +701,18 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         modal.open();
     }
 
+    private openImageFolderPicker(containerEl: HTMLElement): void {
+        const current = this.plugin.settings.imageFolder;
+        const modal = new FolderPickerModal(this.app, current === '/' ? '' : current, (folder) => {
+            const input = containerEl.querySelector<HTMLInputElement>('input[placeholder="默认：目标文件夹/_assets"]');
+            if (input) {
+                input.value = folder || '/';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }, '选择图片存放目录');
+        modal.open();
+    }
+
     private renderAdvancedSettings(containerEl: HTMLElement, hideHeader = false) {
         // 使用 <details> 实现可折叠的高级设置
         if (hideHeader) {
@@ -848,6 +868,23 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     });
                 }));
+
+        new Setting(containerEl)
+            .setName('图片存放目录')
+            .setDesc('留空时保持默认：每篇笔记所在目录的 _assets/task-任务ID；可填写或选择 Vault 内目录。选择根目录会显示为 /。')
+            .addText(text => text
+                .setPlaceholder('默认：目标文件夹/_assets')
+                .setValue(this.plugin.settings.imageFolder)
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        this.plugin.settings.imageFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+                }))
+            .addExtraButton(btn => btn
+                .setIcon('folder')
+                .setTooltip('浏览图片存放目录')
+                .onClick(() => this.openImageFolderPicker(containerEl)));
 
         new Setting(containerEl)
             .setName('消息按日合并')
@@ -1111,7 +1148,7 @@ class FolderPickerModal extends Modal {
     private onSelect: (path: string) => void;
     private root: TFolder;
 
-    constructor(app: App, initialPath: string, onSelect: (path: string) => void) {
+    constructor(app: App, initialPath: string, onSelect: (path: string) => void, private readonly title = '选择目标文件夹') {
         super(app);
         this.selectedPath = initialPath || '';
         this.onSelect = onSelect;
@@ -1135,8 +1172,9 @@ class FolderPickerModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        installButtonClickGuard(contentEl);
 
-        this.titleEl.setText('选择目标文件夹');
+        this.titleEl.setText(this.title);
 
         // 显示当前选择
         const currentEl = contentEl.createDiv({
@@ -1173,9 +1211,11 @@ class FolderPickerModal extends Modal {
         const isSelected = this.selectedPath === folder.path;
 
         // 渲染当前文件夹
-        const itemEl = containerEl.createDiv({
+        const itemEl = containerEl.createEl('button', {
             cls: `clip2md-tree-item ${isSelected ? 'selected' : ''}`,
         });
+        itemEl.type = 'button';
+        itemEl.dataset.path = folder.path;
         itemEl.setCssProps({ '--clip2md-tree-item-padding-left': `${depth * 16 + 8}px` });
 
         // 展开/折叠图标
@@ -1194,6 +1234,7 @@ class FolderPickerModal extends Modal {
 
         // 点击事件
         itemEl.addEventListener('click', () => {
+            this.selectedPath = folder.path;
             if (hasSubfolders) {
                 // 切换展开/折叠
                 if (isExpanded) {
@@ -1201,11 +1242,10 @@ class FolderPickerModal extends Modal {
                 } else {
                     this.expandedFolders.add(folder.path);
                 }
-            } else {
-                // 没有子文件夹，直接选择
-                this.selectedPath = folder.path;
             }
             this.onOpen();
+            Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>('.clip2md-tree-item'))
+                .find(button => button.dataset.path === folder.path)?.focus();
         });
 
         // 递归渲染子文件夹

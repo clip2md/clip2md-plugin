@@ -33,6 +33,7 @@ const makeSettings = (overrides: Partial<BijiSyncSettings> = {}): BijiSyncSettin
     frontmatterTemplate: DEFAULT_FRONTMATTER_TEMPLATE,
     syncContentMode: 'full',
     imageMode: 'local',
+    imageFolder: '',
     mergeMode: 'none',
     ...overrides,
 });
@@ -264,6 +265,45 @@ describe('SyncService', () => {
             throw: false,
         });
         expect(vault.content('Clippings/_assets/task-101')).toBe('');
+    });
+
+    it('stores images in a selected Vault folder and links them from the note', async () => {
+        const service = new SyncService(makeSettings({ imageFolder: 'Attachments/My Images' }));
+        const vault = new FakeVault();
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+            arrayBuffer: new ArrayBuffer(4),
+        });
+
+        await service.renderToVault(vault as never, makeTask({
+            note_markdown_content: '![cover](https://media.clip2md.cn/assets/task-101/cover.png)',
+            source_markdown_content: null,
+        }), 'Clippings/2026', '{{content}}');
+
+        expect(vault.content('Attachments/My Images/task-101')).toBe('');
+        expect(vault.paths()).toContainEqual(expect.stringMatching(/^Attachments\/My Images\/task-101\/.+\.png$/));
+        expect(String(vault.content(service.getTaskFileMap()[101])))
+            .toMatch(/!\[cover\]\(\.\.\/\.\.\/Attachments\/My%20Images\/task-101\/.+\.png\)/);
+    });
+
+    it('allows the Vault root as a selected image directory', async () => {
+        const service = new SyncService(makeSettings({ imageFolder: '/' }));
+        const vault = new FakeVault();
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: { 'content-type': 'image/png' },
+            arrayBuffer: new ArrayBuffer(4),
+        });
+
+        await service.renderToVault(vault as never, makeTask({
+            note_markdown_content: '![cover](https://media.clip2md.cn/assets/task-101/cover.png)',
+            source_markdown_content: null,
+        }), 'Clippings', '{{content}}');
+
+        expect(vault.content('task-101')).toBe('');
+        expect(String(vault.content(service.getTaskFileMap()[101])))
+            .toMatch(/!\[cover\]\(\.\.\/task-101\/.+\.png\)/);
     });
 
     it('uses a stable local filename when a CDN signature changes', async () => {

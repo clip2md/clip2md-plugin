@@ -681,6 +681,7 @@ export default class BijiSyncPlugin extends Plugin {
 
         if (data.apiKey !== undefined && typeof data.apiKey !== 'string') return true;
         if (data.targetFolder !== undefined && typeof data.targetFolder !== 'string') return true;
+        if (data.imageFolder !== undefined && typeof data.imageFolder !== 'string') return true;
         if (data.syncInterval !== undefined && typeof data.syncInterval !== 'number') return true;
 
         return false;
@@ -1013,6 +1014,7 @@ export default class BijiSyncPlugin extends Plugin {
                 : frontmatterTemplate,
             syncContentMode: isSyncContentMode(settings.syncContentMode) ? settings.syncContentMode : 'full',
             imageMode: isImageMode(settings.imageMode) ? settings.imageMode : 'local',
+            imageFolder: typeof settings.imageFolder === 'string' ? settings.imageFolder : '',
             mergeMode: isMergeMode(settings.mergeMode) ? settings.mergeMode : 'none',
             lastSyncSummary: isSyncRunSummary(settings.lastSyncSummary)
                 ? settings.lastSyncSummary
