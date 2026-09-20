@@ -182,7 +182,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         btnEl.textContent = '测试中...';
         btnEl.toggleClass('is-loading', true);
         btnEl.setAttribute('aria-busy', 'true');
-        if (btnEl instanceof HTMLButtonElement) btnEl.disabled = true;
+        if (btnEl.instanceOf(HTMLButtonElement)) btnEl.disabled = true;
 
         try {
             const { apiKey } = this.plugin.settings;
@@ -201,7 +201,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             btnEl.textContent = origText;
             btnEl.toggleClass('is-loading', false);
             btnEl.removeAttribute('aria-busy');
-            if (btnEl instanceof HTMLButtonElement) btnEl.disabled = false;
+            if (btnEl.instanceOf(HTMLButtonElement)) btnEl.disabled = false;
         }
     }
 

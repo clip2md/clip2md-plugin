@@ -120,7 +120,7 @@ locally. The ribbon button and command palette provide the same sync action.
 6. `releases/<version>.md` 存在且包含面向用户的变更说明；Tag 推送后由 GitHub Actions 写入 Release 描述。
 7. GitHub Actions 为每个发布文件生成 artifact attestation，可用 `gh attestation verify <file> -R clip2md/clip2md-plugin` 校验。
 
-当前源码版本为 `1.0.9`，最低 Obsidian 版本为 `1.13.7`。`1.0.8` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+当前源码版本为 `1.0.10`，最低 Obsidian 版本为 `1.13.7`。`1.0.9` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

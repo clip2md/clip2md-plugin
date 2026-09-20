@@ -18,7 +18,7 @@ export function installButtonClickGuard(root: HTMLElement, wait = BUTTON_DEBOUNC
 
         const button = target.closest(INTERACTIVE_SELECTOR);
         if (!(button instanceof HTMLElement) || !root.contains(button)) return;
-        if (button instanceof HTMLButtonElement && button.disabled) return;
+        if (button.instanceOf(HTMLButtonElement) && button.disabled) return;
         if (button.getAttribute('aria-disabled') === 'true') return;
 
         const now = Date.now();
