@@ -24,8 +24,11 @@ vi.mock('obsidian', () => {
 
 const makeSettings = (overrides: Partial<BijiSyncSettings> = {}): BijiSyncSettings => ({
     apiKey: 'clip2md_test',
+    installationId: 'test',
+    settingsSchemaVersion: 3,
     syncInterval: 60,
     syncOnStart: true,
+    preventReimportAfterLocalRemoval: false,
     targetFolder: 'Clippings',
     filenameTemplate: '{{created_date}}-{{title}}',
     filenameDateFormat: 'yyyy-MM-dd',
@@ -112,6 +115,8 @@ class FakeVault {
         this.files.set(nextPath, value || '');
     }
 
+    remove(path: string) { this.files.delete(path); }
+
     content(path: string) {
         return this.files.get(path);
     }
@@ -125,6 +130,139 @@ describe('SyncService', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         requestUrlMock.mockReset();
+    });
+
+    it.each(['delete', 'rename', 'move'])('ignores a local %s before downloading images and keeps the decision after restart', async action => {
+        const settings = makeSettings({ preventReimportAfterLocalRemoval: true });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        if (action === 'delete') vault.remove(first.filepath!);
+        else await vault.rename(vault.getFileByPath(first.filepath!)!, `Personal/${action}.md`);
+        service.markPending(task.id);
+        const withImage = { ...task, note_markdown_content: '![image](https://media.clip2md.cn/assets/test.png)' };
+        const result = await service.renderToVault(vault as never, withImage, 'Clippings', '{{content}}');
+        expect(result.ignoredLocally).toBe(true);
+        expect(vault.getFileByPath(first.filepath!)).toBeNull();
+        expect(requestUrlMock).not.toHaveBeenCalled();
+        expect(service.getPendingTaskIds()).toEqual([]);
+        const restarted = new SyncService(settings);
+        restarted.loadTaskFileMap({ ...service.getTaskFileMap() });
+        restarted.loadIgnoredTaskIds(service.getIgnoredTaskIds());
+        expect((await restarted.renderToVault(vault as never, task, 'Clippings', '{{content}}')).ignoredLocally).toBe(true);
+        if (action !== 'delete') expect(vault.content(`Personal/${action}.md`)).toBeTruthy();
+    });
+
+    it('keeps normal updates and plugin-driven renames and accepts a new task with the same URL', async () => {
+        const service = new SyncService(makeSettings({ preventReimportAfterLocalRemoval: true }));
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const updated = await service.renderToVault(vault as never, { ...task, title: 'Updated', note_markdown_content: 'new content' }, 'Clippings', '{{content}}');
+        expect(updated.ignoredLocally).toBeUndefined();
+        expect(vault.content(updated.filepath!)).toContain('new content');
+        expect(vault.getFileByPath(first.filepath!)).toBeNull();
+        vault.remove(updated.filepath!);
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const fresh = await service.renderToVault(vault as never, { ...task, id: 102 }, 'Clippings', '{{content}}');
+        expect(fresh.filepath).toBeTruthy();
+        expect(service.getIgnoredTaskIds()).toEqual([101]);
+    });
+
+    it('restores ignored articles to a safe path when disabled and retries a failed write', async () => {
+        const settings = makeSettings({ preventReimportAfterLocalRemoval: true });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        vault.remove(first.filepath!);
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        settings.preventReimportAfterLocalRemoval = false;
+        await vault.create(first.filepath!, 'personal content');
+        vi.spyOn(vault, 'create').mockRejectedValueOnce(new Error('disk full'));
+        await expect(service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).rejects.toThrow('disk full');
+        expect(service.getIgnoredTaskIds()).toEqual([101]);
+        const restored = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(restored.filepath).toBe('Clippings/2026-08-08-Test Title 2.md');
+        expect(vault.content(first.filepath!)).toBe('personal content');
+        expect(service.getIgnoredTaskIds()).toEqual([]);
+    });
+
+    it('does not permanently ignore a temporary Vault read failure', async () => {
+        const service = new SyncService(makeSettings({ preventReimportAfterLocalRemoval: true }));
+        const vault = new FakeVault();
+        const task = makeTask();
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        vi.spyOn(vault, 'read').mockRejectedValueOnce(new Error('read failed'));
+        await expect(service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).rejects.toThrow('read failed');
+        expect(service.getIgnoredTaskIds()).toEqual([]);
+    });
+
+    it('does not reinsert removed daily blocks even when a new task recreates the shared file first', async () => {
+        const settings = makeSettings({ preventReimportAfterLocalRemoval: true, mergeMode: 'daily' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        vault.remove(first.filepath!);
+        await service.renderToVault(vault as never, { ...task, id: 102 }, 'Clippings', '{{content}}');
+        expect((await service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).ignoredLocally).toBe(true);
+        expect(vault.content(first.filepath!)).not.toContain('clip2md-task-start:101');
+        expect(vault.content(first.filepath!)).toContain('clip2md-task-start:102');
+        settings.preventReimportAfterLocalRemoval = false;
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(vault.content(first.filepath!)).toContain('clip2md-task-start:101');
+        expect(vault.content(first.filepath!)).toContain('clip2md-task-start:102');
+    });
+
+    it('detects deletion of one daily block while retaining other tasks', async () => {
+        const service = new SyncService(makeSettings({ preventReimportAfterLocalRemoval: true, mergeMode: 'daily' }));
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        await service.renderToVault(vault as never, { ...task, id: 102 }, 'Clippings', '{{content}}');
+        await vault.modify(vault.getFileByPath(first.filepath!)!, String(vault.content(first.filepath!))
+            .replace(/<!-- clip2md-task-start:101 -->[\s\S]*?<!-- clip2md-task-end:101 -->/, ''));
+        expect((await service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).ignoredLocally).toBe(true);
+        expect((await service.renderToVault(vault as never, { ...task, id: 102 }, 'Clippings', '{{content}}')).skipped).toBe(false);
+    });
+
+    it('keeps legacy rebuilding when the switch is off', async () => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        const task = makeTask();
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        vault.remove(first.filepath!);
+        expect((await service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).filepath).toBe(first.filepath);
+    });
+
+    it('restores a daily task beside an unrelated file without overwriting it', async () => {
+        const settings = makeSettings({ mergeMode: 'daily' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        service.markIgnored(101);
+        await vault.create('Clippings/2026-08-08-微信公众号.md', 'personal daily journal');
+        const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        expect(result.filepath).toBe('Clippings/2026-08-08-微信公众号 2.md');
+        expect(vault.content('Clippings/2026-08-08-微信公众号.md')).toBe('personal daily journal');
+    });
+
+    it('limits targeted restoration requests to five in flight', async () => {
+        const service = new SyncService(makeSettings());
+        service.loadIgnoredTaskIds(Array.from({ length: 12 }, (_, index) => index + 1));
+        let inflight = 0;
+        let peak = 0;
+        requestUrlMock.mockImplementation(async () => {
+            inflight += 1;
+            peak = Math.max(peak, inflight);
+            await Promise.resolve();
+            inflight -= 1;
+            return { status: 404 };
+        });
+        expect(await service.fetchIgnoredTasks()).toHaveLength(12);
+        expect(peak).toBe(5);
+        expect(requestUrlMock).toHaveBeenCalledTimes(12);
     });
 
     it('identifies only an HTTP 401 response as an invalid API Key', async () => {

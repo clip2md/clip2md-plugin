@@ -20,6 +20,7 @@ export interface SyncRunSummary {
     succeeded: number;
     pending: number;
     skipped: number;
+    ignored?: number;
     failed: number;
     ackBlockedCount?: number;
     ackBlockedReasons?: string[];
@@ -34,6 +35,7 @@ export interface BijiSyncSettings {
     settingsSchemaVersion: number;
     syncInterval: number;
     syncOnStart: boolean;
+    preventReimportAfterLocalRemoval: boolean;
     targetFolder: string;
     filenameTemplate: string;
     filenameDateFormat: string;
@@ -760,6 +762,17 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                         });
                     });
             });
+
+        new Setting(containerEl)
+            .setName('本地删除或改名后不再补回')
+            .setDesc('开启后，已同步任务的原文件被删除、改名或移动时不再创建第二份；关闭后下次同步尝试恢复。仅对当前 Vault 生效。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.preventReimportAfterLocalRemoval)
+                .onChange((value) => {
+                    this.runAsync(async () => {
+                        await this.plugin.setPreventReimportAfterLocalRemoval(value);
+                    });
+                }));
 
         new Setting(containerEl)
             .setName('同步内容预设')

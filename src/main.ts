@@ -16,7 +16,7 @@ import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
 import { TimerRegistry } from './timers';
-import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckQueue } from './sync-ack';
+import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckQueue, type PendingSyncAck } from './sync-ack';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -53,6 +53,7 @@ function isSyncRunSummary(value: unknown): value is SyncRunSummary {
         && typeof value.processed === 'number'
         && typeof value.succeeded === 'number'
         && typeof value.pending === 'number'
+        && (value.ignored === undefined || (Number.isSafeInteger(value.ignored) && Number(value.ignored) >= 0))
         && typeof value.skipped === 'number'
         && typeof value.failed === 'number'
         && (value.ackBlockedCount === undefined || (Number.isSafeInteger(value.ackBlockedCount) && Number(value.ackBlockedCount) >= 0))
@@ -92,6 +93,7 @@ interface SyncCounters {
     processed: number;
     succeeded: number;
     pending: number;
+    ignored: number;
     skipped: number;
     failed: number;
     ackBlockedCount: number;
@@ -104,6 +106,7 @@ interface SyncProgress {
     processed: number;
     succeeded: number;
     pending: number;
+    ignored: number;
     skipped: number;
     failed: number;
 }
@@ -135,6 +138,7 @@ export default class BijiSyncPlugin extends Plugin {
         processed: 0,
         succeeded: 0,
         pending: 0,
+        ignored: 0,
         skipped: 0,
         failed: 0,
     };
@@ -143,6 +147,8 @@ export default class BijiSyncPlugin extends Plugin {
     private startupSyncTriggered = false;
     private appVisible = true;
     private persistenceQueue: Promise<void> = Promise.resolve();
+    private restoreMissingMappedTasksOnNextSync = false;
+    private syncWriteInProgress = false;
 
     async onload() {
         let saved: unknown = await this.loadStoredData();
@@ -170,6 +176,7 @@ export default class BijiSyncPlugin extends Plugin {
             .some(key => key.toLowerCase().includes('update'));
 
         this.settings = this.normalizeSettings(savedData);
+        this.restoreMissingMappedTasksOnNextSync = savedData.restoreMissingMappedTasksOnNextSync === true;
         let settingsMigrated = false;
         if (!this.settings.installationId) {
             this.settings.installationId = this.createInstallationId();
@@ -205,9 +212,12 @@ export default class BijiSyncPlugin extends Plugin {
         if (isNumberArray(savedData.pendingTaskIds)) {
             this.syncService.loadPendingTaskIds(savedData.pendingTaskIds);
         }
+        if (isNumberArray(savedData.ignoredTaskIds)) {
+            this.syncService.loadIgnoredTaskIds(savedData.ignoredTaskIds);
+        }
         this.syncAckQueue = new SyncAckQueue(
             () => this.persistSyncState(),
-            ack => postSyncAck(ack, this.settings.apiKey),
+            ack => this.deliverSyncAck(ack),
         );
         this.syncAckQueue.load(savedData.pendingAcks);
         if (settingsMigrated) {
@@ -277,6 +287,7 @@ export default class BijiSyncPlugin extends Plugin {
         await this.persistenceQueue;
         const saved = await this.loadStoredData();
         this.settings = this.normalizeSettings(saved);
+        this.restoreMissingMappedTasksOnNextSync = saved.restoreMissingMappedTasksOnNextSync === true;
         if (saved.syncContentMode === undefined && typeof saved.apiKey === 'string' && saved.apiKey) {
             this.settings.syncContentMode = 'source';
         }
@@ -289,6 +300,9 @@ export default class BijiSyncPlugin extends Plugin {
         }
         if (isNumberArray(saved.pendingTaskIds) && this.syncService) {
             this.syncService.loadPendingTaskIds(saved.pendingTaskIds);
+        }
+        if (isNumberArray(saved.ignoredTaskIds) && this.syncService) {
+            this.syncService.loadIgnoredTaskIds(saved.ignoredTaskIds);
         }
         if (this.syncAckQueue) {
             this.syncAckQueue.load(saved.pendingAcks);
@@ -310,6 +324,14 @@ export default class BijiSyncPlugin extends Plugin {
         // 需要刷新时由调用方显式调用 refreshSettingTab()
     }
 
+    async setPreventReimportAfterLocalRemoval(value: boolean): Promise<void> {
+        if (this.settings.preventReimportAfterLocalRemoval && !value) {
+            this.restoreMissingMappedTasksOnNextSync = true;
+        }
+        this.settings.preventReimportAfterLocalRemoval = value;
+        await this.saveSettings();
+    }
+
     async persistSyncState() {
         await this.persistPluginState();
     }
@@ -321,6 +343,8 @@ export default class BijiSyncPlugin extends Plugin {
                 cursor: this.syncService?.getCursor() ?? null,
                 taskFileMap: { ...(this.syncService?.getTaskFileMap() ?? {}) },
                 pendingTaskIds: [...(this.syncService?.getPendingTaskIds() ?? [])],
+                ignoredTaskIds: [...(this.syncService?.getIgnoredTaskIds() ?? [])],
+                restoreMissingMappedTasksOnNextSync: this.restoreMissingMappedTasksOnNextSync,
                 pendingAcks: this.syncAckQueue?.snapshot() ?? [],
             };
             await this.saveData(data);
@@ -379,7 +403,7 @@ export default class BijiSyncPlugin extends Plugin {
 
         const summary = this.settings.lastSyncSummary;
         const summaryText = summary
-            ? `上次同步：${this.formatRelativeTime(summary.finishedAt)}，${summary.succeeded} 成功、${summary.pending} 待重试${this.describeBlockedAcks(summary)}`
+            ? `上次同步：${this.formatRelativeTime(summary.finishedAt)}，${summary.succeeded} 成功、${summary.pending} 待重试、${summary.ignored ?? 0} 主动忽略${this.describeBlockedAcks(summary)}`
             : '尚未执行同步';
 
         if (this.connectionState === 'connected') {
@@ -507,9 +531,27 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     private retryPendingAcks(): void {
-        if (this.appVisible && this.settings.apiKey && this.syncAckQueue.snapshot().length > 0) {
+        if (!this.syncing && this.appVisible && this.settings.apiKey && this.syncAckQueue.snapshot().length > 0) {
             void this.syncAckQueue.flush();
         }
+    }
+
+    private async deliverSyncAck(ack: PendingSyncAck): Promise<'accepted' | 'discard'> {
+        if (this.syncWriteInProgress) throw new Error('Vault 写入期间暂缓回执');
+        if (this.settings.preventReimportAfterLocalRemoval
+            && this.syncService.getIgnoredTaskIds().includes(ack.taskId)) {
+            return 'discard';
+        }
+        if (!await this.syncService.verifyTaskFile(this.app.vault, ack.taskId)) {
+            if (this.settings.preventReimportAfterLocalRemoval) {
+                this.syncService.markIgnored(ack.taskId);
+            } else {
+                this.syncService.markPending(ack.taskId);
+            }
+            await this.persistSyncState();
+            return 'discard';
+        }
+        return postSyncAck(ack, this.settings.apiKey);
     }
 
     scheduleStartupSync() {
@@ -592,6 +634,7 @@ export default class BijiSyncPlugin extends Plugin {
             processed: 0,
             succeeded: 0,
             pending: 0,
+            ignored: 0,
             skipped: 0,
             failed: 0,
         };
@@ -602,20 +645,37 @@ export default class BijiSyncPlugin extends Plugin {
 
         const startedAt = new Date().toISOString();
         const counters: SyncCounters = {
-            total: 0, pages: 0, processed: 0, succeeded: 0, pending: 0, skipped: 0, failed: 0,
+            total: 0, pages: 0, processed: 0, succeeded: 0, pending: 0, ignored: 0, skipped: 0, failed: 0,
             ackBlockedCount: 0, ackBlockedReasons: new Set(),
         };
         const processedTaskIds = new Set<number>();
 
         try {
             await this.syncAckQueue.flush();
-            const pendingTasks = await this.syncService.fetchPendingTasks();
+            if (!this.settings.preventReimportAfterLocalRemoval && this.restoreMissingMappedTasksOnNextSync) {
+                const missing = await this.syncService.findMissingMappedTaskIds(this.app.vault);
+                missing.forEach(id => this.syncService.markIgnored(id));
+                this.restoreMissingMappedTasksOnNextSync = false;
+                try {
+                    await this.persistSyncState();
+                } catch (error) {
+                    this.restoreMissingMappedTasksOnNextSync = true;
+                    throw error;
+                }
+            }
+            const restoreTasks = this.settings.preventReimportAfterLocalRemoval
+                ? [] : await this.syncService.fetchIgnoredTasks();
+            const restoreIds = new Set(restoreTasks.map(item => item.taskId));
+            const pendingTasks = (await this.syncService.fetchPendingTasks())
+                .filter(item => !restoreIds.has(item.taskId));
             let cursor = this.syncService.getCursor();
             let batch = await this.syncService.fetchNextPage(cursor);
-            counters.total = pendingTasks.reduce((count, item) => count + (item.task ? 1 : 0), 0) + batch.total;
+            counters.total = [...restoreTasks, ...pendingTasks]
+                .reduce((count, item) => count + (item.task ? 1 : 0), 0) + batch.total;
             this.updateSyncProgress(counters, 'syncing');
             this.refreshSettingTab();
 
+            await this.processPendingQueue(restoreTasks, processedTaskIds, counters, true);
             await this.processPendingQueue(pendingTasks, processedTaskIds, counters);
 
             let hasMore = true;
@@ -671,6 +731,7 @@ export default class BijiSyncPlugin extends Plugin {
                 processed: counters.processed,
                 succeeded: counters.succeeded,
                 pending: counters.pending,
+                ignored: counters.ignored,
                 skipped: counters.skipped,
                 failed: counters.failed,
                 ackBlockedCount: counters.ackBlockedCount,
@@ -693,6 +754,7 @@ export default class BijiSyncPlugin extends Plugin {
                 processed: counters.processed,
                 succeeded: counters.succeeded,
                 pending: counters.pending,
+                ignored: counters.ignored,
                 skipped: counters.skipped,
                 failed: counters.failed + 1,
                 ackBlockedCount: counters.ackBlockedCount,
@@ -711,6 +773,7 @@ export default class BijiSyncPlugin extends Plugin {
                 processed: 0,
                 succeeded: 0,
                 pending: 0,
+                ignored: 0,
                 skipped: 0,
                 failed: 0,
             };
@@ -815,10 +878,13 @@ export default class BijiSyncPlugin extends Plugin {
         pendingTasks: PendingTaskFetchResult[],
         processedTaskIds: Set<number>,
         counters: SyncCounters,
+        restoring = false,
     ) {
         for (const item of pendingTasks) {
-            if (item.missing) {
+            if (item.missing || (!item.task && restoring)) {
                 this.syncService.removePending(item.taskId);
+                this.syncService.removeIgnored(item.taskId);
+                delete this.syncService.getTaskFileMap()[item.taskId];
                 await this.persistSyncState();
                 continue;
             }
@@ -840,6 +906,7 @@ export default class BijiSyncPlugin extends Plugin {
 
             let result: SyncResult;
             try {
+                this.syncWriteInProgress = true;
                 result = await this.syncService.renderToVault(
                     this.app.vault,
                     task,
@@ -853,8 +920,18 @@ export default class BijiSyncPlugin extends Plugin {
                 console.error(`Clip2MD: 任务 ${task.id} 同步失败`, error);
                 this.updateSyncProgress(counters, 'syncing');
                 continue;
+            } finally {
+                this.syncWriteInProgress = false;
             }
 
+            if (result.ignoredLocally) {
+                this.syncService.markIgnored(task.id);
+                await this.syncAckQueue.remove(task.id);
+                await this.persistSyncState();
+                counters.ignored += 1;
+                this.updateSyncProgress(counters, 'syncing');
+                continue;
+            }
             this.recordBlockedAck(task, result, counters);
             if (result.skipped) {
                 this.syncService.markPending(task.id);
@@ -990,7 +1067,7 @@ export default class BijiSyncPlugin extends Plugin {
             ? 'Clip2MD 同步'
             : this.syncProgress.phase === 'discovering'
                 ? 'Clip2MD：正在获取待同步任务'
-                : `Clip2MD：已同步 ${this.syncProgress.succeeded}/${this.syncProgress.total}，已处理 ${this.syncProgress.processed} 项，${this.syncProgress.pending} 待重试，${this.syncProgress.skipped} 跳过，${this.syncProgress.failed} 失败`;
+                : `Clip2MD：已同步 ${this.syncProgress.succeeded}/${this.syncProgress.total}，已处理 ${this.syncProgress.processed} 项，${this.syncProgress.pending} 待重试，${this.syncProgress.ignored} 主动忽略，${this.syncProgress.skipped} 跳过，${this.syncProgress.failed} 失败`;
         action.setAttr('aria-label', tooltip);
         action.setAttr('title', tooltip);
     }
@@ -1009,7 +1086,7 @@ export default class BijiSyncPlugin extends Plugin {
         if (!this.syncNotice) {
             return;
         }
-        this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章${this.describeBlockedAcks(summary)}`);
+        this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章${summary.ignored ? `，${summary.ignored} 篇主动忽略` : ''}${this.describeBlockedAcks(summary)}`);
         const notice = this.syncNotice;
         this.timers.setTimeout(() => notice.hide(), summary.ackBlockedCount ? 8000 : 3000, 'notice');
         this.syncNotice = null;
@@ -1043,6 +1120,7 @@ export default class BijiSyncPlugin extends Plugin {
             total,
             this.syncProgress.succeeded
                 + this.syncProgress.pending
+                + this.syncProgress.ignored
                 + this.syncProgress.skipped
                 + this.syncProgress.failed,
         );
@@ -1057,6 +1135,7 @@ export default class BijiSyncPlugin extends Plugin {
             processed: counters.processed,
             succeeded: counters.succeeded,
             pending: counters.pending,
+            ignored: counters.ignored,
             skipped: counters.skipped,
             failed: counters.failed,
         };
@@ -1092,6 +1171,7 @@ export default class BijiSyncPlugin extends Plugin {
             settingsSchemaVersion: 4,
             syncInterval: normalizedInterval,
             syncOnStart: settings.syncOnStart !== false,
+            preventReimportAfterLocalRemoval: settings.preventReimportAfterLocalRemoval === true,
             targetFolder: typeof settings.targetFolder === 'string' ? settings.targetFolder : '',
             filenameTemplate: typeof settings.filenameTemplate === 'string' && settings.filenameTemplate
                 ? settings.filenameTemplate

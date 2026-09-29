@@ -37,6 +37,7 @@ export interface SyncResult {
     filepath: string | null;
     skipped: boolean;
     reason?: string;
+    ignoredLocally?: boolean;
     pendingAssets?: boolean;
     failedAssets?: boolean;
     localizedAssetCount?: number;
@@ -222,6 +223,7 @@ export class SyncService {
     private cursor: string | null = null;
     private taskFileMap: TaskFileMapping = {};
     private pendingTaskIds: number[] = [];
+    private ignoredTaskIds = new Set<number>();
 
     constructor(settings: BijiSyncSettings, fileManager?: FileManager) {
         this.settings = settings;
@@ -241,7 +243,8 @@ export class SyncService {
     }
 
     loadPendingTaskIds(ids: number[]) {
-        this.pendingTaskIds = Array.from(new Set(ids || []));
+        this.pendingTaskIds = Array.from(new Set(ids || []))
+            .filter(id => !this.settings.preventReimportAfterLocalRemoval || !this.ignoredTaskIds.has(id));
     }
 
     getPendingTaskIds(): number[] {
@@ -249,6 +252,9 @@ export class SyncService {
     }
 
     markPending(taskId: number) {
+        if (this.settings.preventReimportAfterLocalRemoval && this.ignoredTaskIds.has(taskId)) {
+            return;
+        }
         if (!this.pendingTaskIds.includes(taskId)) {
             this.pendingTaskIds.push(taskId);
         }
@@ -270,36 +276,87 @@ export class SyncService {
         return this.taskFileMap;
     }
 
+    loadIgnoredTaskIds(ids: number[]) {
+        this.ignoredTaskIds = new Set((ids || []).filter(id => Number.isSafeInteger(id) && id > 0));
+        this.pendingTaskIds = this.pendingTaskIds.filter(id => !this.ignoredTaskIds.has(id));
+    }
+
+    getIgnoredTaskIds(): number[] {
+        return [...this.ignoredTaskIds];
+    }
+
+    markIgnored(taskId: number) {
+        this.ignoredTaskIds.add(taskId);
+        this.removePending(taskId);
+    }
+
+    removeIgnored(taskId: number) {
+        this.ignoredTaskIds.delete(taskId);
+    }
+
+    async verifyTaskFile(vault: Vault, taskId: number): Promise<boolean> {
+        const mappedPath = this.taskFileMap[taskId];
+        if (!mappedPath) return false;
+        const file = vault.getFileByPath(mappedPath);
+        if (!file) return false;
+        const content = await vault.read(file);
+        return this.hasMappedTaskMarker(content, taskId);
+    }
+
+    async findMissingMappedTaskIds(vault: Vault): Promise<number[]> {
+        const missing: number[] = [];
+        for (const key of Object.keys(this.taskFileMap)) {
+            const taskId = Number(key);
+            if (Number.isSafeInteger(taskId) && taskId > 0 && !await this.verifyTaskFile(vault, taskId)) {
+                missing.push(taskId);
+            }
+        }
+        return missing;
+    }
+
     async probeConnection(): Promise<void> {
         await this.fetchTasksPage(null, 1);
     }
 
     async fetchPendingTasks(): Promise<PendingTaskFetchResult[]> {
-        const results = await Promise.all(this.pendingTaskIds.map(async (taskId) => {
-            try {
-                const response = await requestUrl({
-                    url: `${CLIP2MD_API_BASE_URL}/sync/tasks/${taskId}`,
-                    method: 'GET',
-                    headers: { 'X-API-Key': this.settings.apiKey },
-                    throw: false,
-                });
-                if (response.status === 404) {
-                    return { taskId, task: null, missing: true };
+        return this.fetchTasksByIds(this.pendingTaskIds);
+    }
+
+    async fetchIgnoredTasks(): Promise<PendingTaskFetchResult[]> {
+        return this.fetchTasksByIds(this.getIgnoredTaskIds());
+    }
+
+    async fetchTasksByIds(taskIds: number[]): Promise<PendingTaskFetchResult[]> {
+        const ids = [...new Set(taskIds)].filter(id => Number.isSafeInteger(id) && id > 0);
+        const results: PendingTaskFetchResult[] = [];
+        for (let offset = 0; offset < ids.length; offset += 5) {
+            const batch = await Promise.all(ids.slice(offset, offset + 5).map(async (taskId) => {
+                try {
+                    const response = await requestUrl({
+                        url: `${CLIP2MD_API_BASE_URL}/sync/tasks/${taskId}`,
+                        method: 'GET',
+                        headers: { 'X-API-Key': this.settings.apiKey },
+                        throw: false,
+                    });
+                    if (response.status === 404) {
+                        return { taskId, task: null, missing: true };
+                    }
+                    if (response.status < 200 || response.status >= 300) {
+                        throw this.buildRequestError(response.status);
+                    }
+                    return {
+                        taskId,
+                        task: parseSyncTask(response.json as unknown),
+                        missing: false,
+                    };
+                } catch (error) {
+                    const friendly = this.normalizeRequestError(error);
+                    friendly.message = `同步任务 ${taskId}: ${friendly.message}`;
+                    throw friendly;
                 }
-                if (response.status < 200 || response.status >= 300) {
-                    throw this.buildRequestError(response.status);
-                }
-                return {
-                    taskId,
-                    task: parseSyncTask(response.json as unknown),
-                    missing: false,
-                };
-            } catch (error) {
-                const friendly = this.normalizeRequestError(error);
-                friendly.message = `待重试任务 ${taskId}: ${friendly.message}`;
-                throw friendly;
-            }
-        }));
+            }));
+            results.push(...batch);
+        }
 
         return results
             .map(item => ({
@@ -384,8 +441,20 @@ export class SyncService {
         vault: Vault,
         task: SyncTask,
         folderTemplate: string,
-        template: string
+        template: string,
     ): Promise<SyncResult> {
+        const mappedPath = this.taskFileMap[task.id];
+        const wasIgnored = this.ignoredTaskIds.has(task.id);
+        const protectLocalRemoval = this.settings.preventReimportAfterLocalRemoval;
+        if (protectLocalRemoval && wasIgnored) {
+            return this.ignoredResult(task.id);
+        }
+        const mappedFilePresent = mappedPath ? await this.verifyTaskFile(vault, task.id) : false;
+        if (protectLocalRemoval && mappedPath && !mappedFilePresent) {
+            this.markIgnored(task.id);
+            return this.ignoredResult(task.id);
+        }
+        const restoring = Boolean(wasIgnored || (mappedPath && !mappedFilePresent));
         const folder = this.resolveFolderPath(task, folderTemplate);
         const localized = await this.localizeTaskImages(vault, task, folder);
         const localizedTask = localized.task;
@@ -407,8 +476,14 @@ export class SyncService {
             content = `${content}\n\n> 部分图片下载失败（任务 #${task.id}），请在 clip2md 网站同步页重试。`;
         }
 
+        // The note can be moved while an image request is in flight.
+        if (protectLocalRemoval && mappedPath && !await this.verifyTaskFile(vault, task.id)) {
+            this.markIgnored(task.id);
+            return this.ignoredResult(task.id);
+        }
+
         if (this.shouldMergeDaily(localizedTask)) {
-            return this.renderMergedTask(vault, localizedTask, folder, content, assetResult);
+            return this.renderMergedTask(vault, localizedTask, folder, content, assetResult, restoring);
         }
 
         const filename = this.generateFilename(localizedTask);
@@ -416,7 +491,6 @@ export class SyncService {
 
         await this.ensureFolder(vault, folder);
 
-        const mappedPath = this.taskFileMap[task.id];
         if (mappedPath) {
             const mappedFile = vault.getFileByPath(mappedPath);
             if (mappedFile) {
@@ -444,7 +518,7 @@ export class SyncService {
                                     console.warn(`Clip2MD: 清理旧文件失败 ${mappedPath}: ${String(error)}`);
                                 }
                                 this.taskFileMap[task.id] = filepath;
-                                return { filepath, skipped: false, ...assetResult };
+                                return this.completedResult(task.id, filepath, assetResult);
                             }
                             return {
                                 filepath: null,
@@ -460,7 +534,7 @@ export class SyncService {
                     }
                     await vault.modify(targetFile, content);
                     this.taskFileMap[task.id] = filepath;
-                    return { filepath, skipped: false, ...assetResult };
+                    return this.completedResult(task.id, filepath, assetResult);
                 }
             }
             delete this.taskFileMap[task.id];
@@ -472,28 +546,52 @@ export class SyncService {
             if (this.hasTaskMarker(fileContent, task.id)) {
                 await vault.modify(existingFile, content);
                 this.taskFileMap[task.id] = filepath;
-                return { filepath, skipped: false, ...assetResult };
+                return this.completedResult(task.id, filepath, assetResult);
             }
-            return {
-                filepath: null,
-                skipped: true,
-                reason: `文件 ${filename} 已存在且不含任务标记，已跳过`,
-            };
+            if (!restoring) {
+                return {
+                    filepath: null,
+                    skipped: true,
+                    reason: `文件 ${filename} 已存在且不含任务标记，已跳过`,
+                };
+            }
         }
 
-        let createPath = filepath;
-        let suffix = 2;
-        while (vault.getAbstractFileByPath(createPath)) {
-            const ext = '.md';
-            const base = filepath.slice(0, -ext.length);
-            createPath = `${base} ${suffix}${ext}`;
-            suffix += 1;
-            if (suffix > 99) break;
-        }
+        const createPath = this.nextAvailableMarkdownPath(vault, filepath);
 
         await vault.create(createPath, content);
         this.taskFileMap[task.id] = createPath;
-        return { filepath: createPath, skipped: false, ...assetResult };
+        return this.completedResult(task.id, createPath, assetResult);
+    }
+
+    private ignoredResult(taskId: number): SyncResult {
+        return {
+            filepath: null,
+            skipped: true,
+            ignoredLocally: true,
+            reason: `任务 ${taskId} 的原同步内容已在当前 Vault 删除或移走，已按设置忽略`,
+        };
+    }
+
+    private completedResult(
+        taskId: number,
+        filepath: string,
+        assetResult: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
+    ): SyncResult {
+        if (!assetResult.pendingAssets && !assetResult.failedAssets) {
+            this.removeIgnored(taskId);
+        }
+        return { filepath, skipped: false, ...assetResult };
+    }
+
+    private nextAvailableMarkdownPath(vault: Vault, filepath: string): string {
+        let candidate = filepath;
+        let suffix = 2;
+        while (vault.getAbstractFileByPath(candidate)) {
+            candidate = `${filepath.slice(0, -3)} ${suffix}.md`;
+            suffix += 1;
+        }
+        return candidate;
     }
 
     private async fetchTasksPage(cursor: string | null, limit: number): Promise<SyncBatch> {
@@ -534,25 +632,54 @@ export class SyncService {
         folder: string,
         content: string,
         assetResult: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
+        restoring: boolean,
     ): Promise<SyncResult> {
         await this.ensureFolder(vault, folder);
         const mergedFilename = `${this.formatDateForFilename(task.created_at)}-${this.getSourceLabel(task)}.md`;
-        const filepath = `${folder}/${this.sanitizeFilenameSegment(mergedFilename)}`;
+        const targetPath = `${folder}/${this.sanitizeFilenameSegment(mergedFilename)}`;
         const block = this.buildMergeBlock(task.id, task.title || this.extractTitle(content), content);
-        const existing = vault.getFileByPath(filepath);
+        const mappedPath = this.taskFileMap[task.id];
+        const mappedFile = mappedPath ? vault.getFileByPath(mappedPath) : null;
+        if (mappedFile) {
+            const mappedContent = await vault.read(mappedFile);
+            if (this.hasMergeBlock(mappedContent, task.id)) {
+                await vault.modify(mappedFile, this.upsertMergeBlock(mappedContent, task.id, block));
+                return this.completedResult(task.id, mappedPath, assetResult);
+            }
+        }
+        let filepath = targetPath;
+        let existing = vault.getFileByPath(filepath);
+
+        if (restoring && vault.getAbstractFileByPath(filepath)) {
+            const existingContent = existing ? await vault.read(existing) : '';
+            if (!this.isManagedDailyFile(existingContent)) {
+                filepath = this.nextAvailableMarkdownPath(vault, filepath);
+                existing = null;
+            }
+        }
 
         if (!existing) {
             const initial = `# ${this.getSourceLabel(task)} · ${this.formatDateForFilename(task.created_at)}\n\n${block}`;
             await vault.create(filepath, initial);
             this.taskFileMap[task.id] = filepath;
-            return { filepath, skipped: false, ...assetResult };
+            return this.completedResult(task.id, filepath, assetResult);
         }
 
         const existingContent = await vault.read(existing);
         const nextContent = this.upsertMergeBlock(existingContent, task.id, block);
         await vault.modify(existing, nextContent);
         this.taskFileMap[task.id] = filepath;
-        return { filepath, skipped: false, ...assetResult };
+        return this.completedResult(task.id, filepath, assetResult);
+    }
+
+    private isManagedDailyFile(content: string): boolean {
+        return /<!-- clip2md-task-start:\d+ -->/.test(content);
+    }
+
+    private hasMergeBlock(content: string, taskId: number): boolean {
+        return new RegExp(
+            `<!-- clip2md-task-start:${taskId} -->[\\s\\S]*?<!-- clip2md-task-end:${taskId} -->`,
+        ).test(content);
     }
 
     private buildMergeBlock(taskId: number, title: string, content: string): string {
@@ -985,6 +1112,15 @@ export class SyncService {
         const hasComment = new RegExp(`biji-task-id:${taskId}\\b`).test(content);
         const hasMerge = new RegExp(`clip2md-task-start:${taskId}\\b`).test(content);
         return hasFrontmatter || hasComment || hasMerge;
+    }
+
+    private hasMappedTaskMarker(content: string, taskId: number): boolean {
+        // A daily note contains markers for many tasks. Its own task block must
+        // still be intact, even if another task's marker remains in the file.
+        if (/<!-- clip2md-task-(?:start|end):\d+ -->/.test(content)) {
+            return this.hasMergeBlock(content, taskId);
+        }
+        return this.hasTaskMarker(content, taskId);
     }
 
     private buildRequestError(status: number): Error {

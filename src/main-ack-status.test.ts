@@ -9,7 +9,7 @@ function testPlugin(tasks: SyncTask[], renderToVault: ReturnType<typeof vi.fn>) 
     const enqueue = vi.fn(async () => undefined);
     plugin.settings = {
         apiKey: 'api-key', installationId: 'test', settingsSchemaVersion: 3,
-        syncInterval: 60, syncOnStart: false, targetFolder: 'Clippings',
+        syncInterval: 60, syncOnStart: false, preventReimportAfterLocalRemoval: false, targetFolder: 'Clippings',
         filenameTemplate: '{{title}}', filenameDateFormat: 'yyyy-MM-dd',
         template: '{{content}}', frontmatterTemplate: DEFAULT_FRONTMATTER_TEMPLATE,
         syncContentMode: 'full', imageMode: 'local', imageFolder: '',
@@ -17,9 +17,10 @@ function testPlugin(tasks: SyncTask[], renderToVault: ReturnType<typeof vi.fn>) 
     } as BijiSyncSettings;
     Object.assign(plugin, {
         app: { vault: {} }, syncing: false, connectionState: 'configured',
-        syncAckQueue: { snapshot: () => [], enqueue, flush: vi.fn(async () => undefined) },
+        syncAckQueue: { snapshot: () => [], enqueue, remove: vi.fn(async () => undefined), flush: vi.fn(async () => undefined) },
         syncService: {
-            fetchPendingTasks: async () => [], getCursor: () => null, setCursor: vi.fn(),
+            fetchPendingTasks: async () => [], fetchIgnoredTasks: async () => [], getCursor: () => null, setCursor: vi.fn(),
+            markIgnored: vi.fn(),
             fetchNextPage: async () => ({ tasks, total: tasks.length, nextCursor: 'done', hasMore: false }),
             renderToVault, markPending: vi.fn(), markComplete: vi.fn(),
         },
@@ -38,6 +39,19 @@ const task = {
 } as SyncTask;
 
 describe('local deletion receipt feedback', () => {
+    it('counts intentional local ignores as success without retries or receipts', async () => {
+        const { plugin, notice, enqueue } = testPlugin([task], vi.fn(async () => ({
+            filepath: null, skipped: true, ignoredLocally: true,
+        })));
+        plugin.settings.preventReimportAfterLocalRemoval = true;
+        const summary = await plugin.syncNow();
+        expect(summary).toMatchObject({ outcome: 'success', ignored: 1, skipped: 0, pending: 0, ackBlockedCount: 0 });
+        expect(plugin.syncService.markPending).not.toHaveBeenCalled();
+        expect(enqueue).not.toHaveBeenCalled();
+        expect(plugin.syncAckQueue.remove).toHaveBeenCalledWith(42);
+        expect(notice.setMessage).toHaveBeenCalledWith(expect.stringContaining('1 篇主动忽略'));
+    });
+
     it('summarizes all withheld receipts in one completion notice and persists the reasons', async () => {
         const render = vi.fn(async () => ({ filepath: 'Clippings/task.md', skipped: false, unlocalizedImages: true }));
         const { plugin, notice, enqueue } = testPlugin([task, { ...task, id: 43 }], render);

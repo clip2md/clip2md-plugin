@@ -17,6 +17,7 @@ notes, and organize files with customizable folder and filename templates.
 - 支持微信扫码绑定，也支持在设置中手动填写 API Key。
 - 支持自定义目标文件夹、文件名模板、Frontmatter 模板和合并模式。
 - 支持在正文、Frontmatter、文件名和目标文件夹模板中使用 `{{source_title}}` 引用原文标题；原文标题为空时输出空字符串，默认模板不变。
+- 可在高级设置中开启“本地删除或改名后不再补回”，避免被删除、改名或移动的笔记再次按原路径生成。
 - 可在 Clip2MD 网页按需开启“同步成功后删除”；插件仅在完整内容和图片均已写入后提交成功回执，不满足条件时保留原任务。
 
 ## 使用要求
@@ -56,6 +57,8 @@ notes, and organize files with customizable folder and filename templates.
 
 默认情况下，笔记会保存到 Vault 根目录下的 `Clip2MD` 文件夹，文件名格式为 `{{created_date}}-{{title}}`。
 
+“本地删除或改名后不再补回”默认关闭，仅对当前 Vault 生效。开启后，插件按任务 ID 记住原同步文件已删除、改名或移动的任务，后续同步会单独统计并忽略它们；原文件还在的任务继续更新，同一网址重新剪藏的新任务继续同步。关闭开关后的下一次同步会尝试恢复这些任务；网络或写入失败时保留恢复资格，原路径被其他文件占用时不会覆盖已有文件。此设置与网页上的“同步成功后删除原任务”相互独立。
+
 插件会在配置异常恢复前创建 `.obsidian/.clip2md-config-backup/` 配置备份。备份包含同步设置和状态，但会主动移除 API Key；如果从备份恢复，需重新填写 API Key。该目录属于运行数据，不应提交到 GitHub。
 
 点击“复制绑定码”时，插件只会把当前一次性绑定码写入系统剪贴板；插件不会读取剪贴板中原有的内容，也不会上传剪贴板内容。若系统剪贴板不可用，绑定码会改为显示在 Obsidian 提示中。
@@ -86,6 +89,8 @@ Open **Settings → Community plugins → Clip2MD**, connect your account with t
 QR code or API key, choose a target folder, and click **Sync now**. The plugin
 downloads completed clipping tasks as Markdown files and can also save images
 locally. The ribbon button and command palette provide the same sync action.
+The optional advanced setting to keep locally deleted, renamed, or moved notes
+from reappearing applies only to the current vault and is off by default.
 
 `npm run verify` 会执行类型检查、测试、压缩生产构建和市场合规扫描。主仓库的 `scripts/build-obsidian-local.sh` 负责从包含本地版本功能的源码生成市场变体，不复制到本仓库；主仓库的 `scripts/build-prod.sh` 负责整个 Clip2MD 产品发布，也不属于本仓库。
 
@@ -122,7 +127,7 @@ locally. The ribbon button and command palette provide the same sync action.
 6. `releases/<version>.md` 存在且包含面向用户的变更说明；Tag 推送后由 GitHub Actions 写入 Release 描述。
 7. GitHub Actions 为每个发布文件生成 artifact attestation，可用 `gh attestation verify <file> -R clip2md/clip2md-plugin` 校验。
 
-当前待发布源码版本为 `1.0.11`，最低 Obsidian 版本为 `1.13.7`。已发布的 `1.0.10` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+当前待发布源码版本为 `1.0.12`，最低 Obsidian 版本为 `1.13.7`。现有 `1.0.11` 版本使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

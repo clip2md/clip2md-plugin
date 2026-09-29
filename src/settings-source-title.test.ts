@@ -39,7 +39,16 @@ vi.mock('obsidian', async importOriginal => {
         addTextArea(callback: (component: unknown) => unknown) { return this.addInput('textarea', callback); }
 
         addToggle(callback: (component: unknown) => unknown) {
-            const component = { setValue: () => component, onChange: () => component };
+            const inputEl = document.createElement('input');
+            inputEl.type = 'checkbox';
+            this.controlEl.appendChild(inputEl);
+            const component = {
+                setValue(value: boolean) { inputEl.checked = value; return component; },
+                onChange(handler: (value: boolean) => void) {
+                    inputEl.addEventListener('change', () => handler(inputEl.checked));
+                    return component;
+                },
+            };
             callback(component);
             return this;
         }
@@ -82,7 +91,7 @@ beforeEach(() => { document.body.replaceChildren(); });
 function settingsPage() {
     const settings: BijiSyncSettings = {
         apiKey: 'api-key', installationId: 'test', settingsSchemaVersion: 3,
-        syncInterval: 60, syncOnStart: false, targetFolder: 'Clip2MD',
+        syncInterval: 60, syncOnStart: false, preventReimportAfterLocalRemoval: false, targetFolder: 'Clip2MD',
         filenameTemplate: '{{created_date}}-{{title}}', filenameDateFormat: 'yyyy-MM-dd',
         template: '{{content}}', frontmatterTemplate: DEFAULT_FRONTMATTER_TEMPLATE,
         syncContentMode: 'full', imageMode: 'local', imageFolder: '',
@@ -90,9 +99,14 @@ function settingsPage() {
     };
     const sync = new SyncService(settings);
     const pendingPreviews: Array<() => void> = [];
+    const saveSettings = vi.fn(async () => undefined);
     const plugin = {
         settings,
-        saveSettings: vi.fn(async () => undefined),
+        saveSettings,
+        setPreventReimportAfterLocalRemoval: vi.fn(async (value: boolean) => {
+            settings.preventReimportAfterLocalRemoval = value;
+            await saveSettings();
+        }),
         handleConnectionError: vi.fn(),
         timers: {
             clearTimeout: vi.fn(),
@@ -113,6 +127,23 @@ function sourceTitleButton(container: HTMLElement) {
 }
 
 describe('source title settings', () => {
+    it('saves the per-Vault local removal toggle from advanced settings', async () => {
+        const { tab, plugin, container } = settingsPage();
+        tab['renderAdvancedContent'](container);
+        const setting = Array.from(container.querySelectorAll('.setting-item'))
+            .find(element => element.querySelector('.setting-item-name')?.textContent === '本地删除或改名后不再补回');
+        const toggle = setting?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+
+        expect(toggle?.checked).toBe(false);
+        expect(setting?.textContent).toContain('仅对当前 Vault 生效');
+        toggle!.checked = true;
+        toggle!.dispatchEvent(new Event('change'));
+        await Promise.resolve();
+
+        expect(plugin.settings.preventReimportAfterLocalRemoval).toBe(true);
+        expect(plugin.saveSettings).toHaveBeenCalledOnce();
+    });
+
     it('inserts the frontmatter variable at the selection and previews distinct titles as text', async () => {
         const { tab, plugin, container, flushPreviews } = settingsPage();
         plugin.settings.frontmatterTemplate = '---\ntitle: "{{title}}"\nsource_title: "replace"\nprobe: "<img src=x>"\n---';

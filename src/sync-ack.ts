@@ -111,6 +111,12 @@ export class SyncAckQueue {
         return this.mutate(before => [...before.filter(item => item.taskId !== ack.taskId), { ...ack }]);
     }
 
+    remove(taskId: number): Promise<void> {
+        return this.mutate(before => before.some(item => item.taskId === taskId)
+            ? before.filter(item => item.taskId !== taskId)
+            : before);
+    }
+
     async flush(): Promise<void> {
         if (this.flushing) return this.flushing;
         this.flushing = this.drain().finally(() => { this.flushing = null; });
