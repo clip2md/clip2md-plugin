@@ -17,4 +17,15 @@ describe('sanitizeConfigForBackup', () => {
         expect(sanitizeConfigForBackup(null)).toEqual({});
         expect(sanitizeConfigForBackup([])).toEqual({});
     });
+
+    it('does not copy signed receipts to backups and keeps their tasks retryable', () => {
+        expect(sanitizeConfigForBackup({
+            apiKey: 'secret',
+            pendingTaskIds: [7],
+            pendingAcks: [
+                { taskId: 9, ackToken: 'signed-secret', imagesProcessed: 1, imagesFailed: 0 },
+                { taskId: 9, ackToken: 'signed-secret', imagesProcessed: 1, imagesFailed: 0 },
+            ],
+        })).toEqual({ pendingTaskIds: [7, 9] });
+    });
 });

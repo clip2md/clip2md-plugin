@@ -21,6 +21,8 @@ export interface SyncRunSummary {
     pending: number;
     skipped: number;
     failed: number;
+    ackBlockedCount?: number;
+    ackBlockedReasons?: string[];
     errorMessage?: string;
 }
 
@@ -95,6 +97,7 @@ const INSERTABLE_TEMPLATE_VARIABLES = [
     '{{note_content}}',
     '{{source_content}}',
     '{{title}}',
+    '{{source_title}}',
     '{{source}}',
     '{{date}}',
     '{{created_at}}',
@@ -108,6 +111,7 @@ const INSERTABLE_TEMPLATE_VARIABLES = [
 
 const FRONTMATTER_PREVIEW_VALUES: ReadonlyArray<readonly [string, string]> = [
     ['{{title}}', '示例标题'],
+    ['{{source_title}}', '示例原文'],
     ['{{source_date}}', '2026-08-08'],
     ['{{created_at}}', '2026-08-08T09:30:00Z'],
     ['{{source}}', '微信公众号'],
@@ -654,7 +658,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         // 目标文件夹 - 放在基本设置中，与高级设置联动
         const folderSetting = new Setting(containerEl)
             .setName('目标文件夹')
-            .setDesc('剪藏文件保存的 Obsidian 文件夹路径，可使用变量。留空则不进行同步。')
+            .setDesc('剪藏文件保存的 Obsidian 文件夹路径，可使用 {{title}}、{{source_title}} 等变量。{{source_title}} 是来源标题，其中的 / 等非法路径字符会被清理。留空则不进行同步。')
             .addText(text => text
                 .setPlaceholder('留空则不同步')
                 .setValue(this.plugin.settings.targetFolder)
@@ -817,7 +821,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('文件名模板')
-            .setDesc('默认 {{created_date}}-{{title}}')
+            .setDesc('默认 {{created_date}}-{{title}}；可使用 {{source_title}} 引用来源标题，非法文件名字符会被清理。')
             .addText(text => text
                 .setPlaceholder('{{created_date}}-{{title}}')
                 .setValue(this.plugin.settings.filenameTemplate)
@@ -904,14 +908,14 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderFrontmatterSection(containerEl: HTMLElement) {
         const FM_VARIABLES = [
-            '{{title}}', '{{source_date}}', '{{created_at}}',
+            '{{title}}', '{{source_title}}', '{{source_date}}', '{{created_at}}',
             '{{source}}', '{{duration}}', '{{content_type}}',
             '{{task_id}}', '{{tags}}', '{{url}}',
         ];
 
         const fmSetting = new Setting(containerEl)
             .setName('前置元数据模板')
-            .setDesc('每个同步文件的 frontmatter 头部，支持变量。')
+            .setDesc('每个同步文件的 frontmatter 头部，支持变量。来源标题可写为 source_title: "{{source_title}}"，来源标题中的引号、反斜杠和换行会自动转义。')
             .addTextArea(text => {
                 text.setPlaceholder('')
                     .setValue(this.plugin.settings.frontmatterTemplate)

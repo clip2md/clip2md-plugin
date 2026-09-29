@@ -1,4 +1,5 @@
 export class App {}
+export class Plugin {}
 export class ItemView {
     addAction() {
         throw new Error('addAction must be mocked by the test');

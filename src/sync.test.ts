@@ -65,6 +65,8 @@ const makeTask = (overrides: Partial<SyncTask> = {}): SyncTask => ({
     ...overrides,
 });
 
+const pngBytes = () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]).buffer;
+
 class FakeVault {
     private files = new Map<string, string | ArrayBuffer>();
 
@@ -90,6 +92,10 @@ class FakeVault {
 
     async createBinary(path: string, bytes: ArrayBuffer) {
         this.files.set(path, bytes);
+    }
+
+    async modifyBinary(file: TFile, bytes: ArrayBuffer) {
+        this.files.set(file.path, bytes);
     }
 
     async read(file: TFile) {
@@ -148,6 +154,162 @@ describe('SyncService', () => {
         expect(preview.filename).toBe('Clip2MD 使用示例.md');
     });
 
+    it('uses a distinct source title in the body, frontmatter, filename, and folder', async () => {
+        const service = new SyncService(makeSettings({
+            targetFolder: 'Clippings/{{source_title}}/{{created_date}}',
+            filenameTemplate: '{{source_title}}-{{title}}',
+            frontmatterTemplate: '---\ntitle: "{{title}}"\nsource_title: "{{source_title}}"\ntask_id: {{task_id}}\n---',
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+        const task = makeTask({ title: '智能笔记标题', source_title: '来源中文标题' });
+
+        const result = await service.renderToVault(
+            vault as never,
+            task,
+            'Clippings/{{source_title}}/{{created_date}}',
+            '任务标题：{{title}}\n来源标题：{{source_title}}\n\n{{content}}',
+        );
+
+        expect(result.filepath).toBe('Clippings/来源中文标题/2026-08-08/来源中文标题-智能笔记标题.md');
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('任务标题：智能笔记标题\n来源标题：来源中文标题');
+        expect(content).toContain('title: "智能笔记标题"\nsource_title: "来源中文标题"');
+        expect(content).not.toContain('{{source_title}}');
+    });
+
+    it('previews source-title variables separately from the task title', () => {
+        const service = new SyncService(makeSettings({
+            targetFolder: 'Clippings/{{source_title}}',
+            filenameTemplate: '{{source_title}}-{{title}}',
+        }));
+
+        expect(service.renderTemplatePreview('{{source_title}} | {{title}}'))
+            .toBe('<!-- biji-task-id:9527 -->\n\n示例原文 | Clip2MD 使用示例');
+        expect(service.getTemplatePreviewData()).toEqual({
+            folder: 'Clippings/示例原文',
+            filename: '示例原文-Clip2MD 使用示例.md',
+        });
+    });
+
+    it.each([null, ''])('renders an empty source title (%j) without falling back to the task title', async sourceTitle => {
+        const service = new SyncService(makeSettings({
+            targetFolder: '{{source_title}}',
+            filenameTemplate: '{{source_title}}',
+            frontmatterTemplate: '---\nsource_title: "{{source_title}}"\ntask_id: {{task_id}}\n---',
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+
+        const result = await service.renderToVault(
+            vault as never,
+            makeTask({ source_title: sourceTitle }),
+            '{{source_title}}',
+            'title=[{{title}}]; source=[{{source_title}}]\n\n{{content}}',
+        );
+
+        expect(result.filepath).toBe('Clip2MD/untitled-101.md');
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('title=[Test Title]; source=[]');
+        expect(content).toContain('source_title: ""');
+        expect(content).not.toContain('{{source_title}}');
+    });
+
+    it('preserves replacement syntax and token-like text and escapes source titles in frontmatter', async () => {
+        const sourceTitle = '来源 $& $$ {{title}} {{source_title}} {{content}} "引号" \\路径\n第二行\t末尾';
+        const title = '任务 $& $$ {{source_title}}';
+        const noteContent = '## Note\n\n笔记 $& $$ {{source_title}} {{task_id}}';
+        const sourceContent = '# Source\n\n原文 $& $$ {{title}}';
+        const service = new SyncService(makeSettings({
+            frontmatterTemplate: '---\ntitle: "{{title}}"\nsource_title: "{{source_title}}"\ntask_id: {{task_id}}\n---',
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+
+        const result = await service.renderToVault(
+            vault as never,
+            makeTask({ title, source_title: sourceTitle, note_markdown_content: noteContent, source_markdown_content: sourceContent }),
+            'Clippings',
+            'title=[{{title}}]\nsource=[{{source_title}}]\nunknown={{unknown}}\n\n{{content}}',
+        );
+
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain(`title=[${title}]\nsource=[${sourceTitle}]\nunknown={{unknown}}`);
+        expect(content).toContain(noteContent);
+        expect(content).toContain(sourceContent);
+        const sourceTitleValue = content.match(/^source_title: (.+)$/m)?.[1];
+        expect(sourceTitleValue).toBeDefined();
+        expect(JSON.parse(sourceTitleValue!)).toBe(sourceTitle);
+        expect(content.match(/^source_title: /gm)).toHaveLength(1);
+        expect(content).toContain('\\n第二行\\t末尾');
+    });
+
+    it('keeps forbidden source-title characters inside one safe path segment', async () => {
+        const service = new SyncService(makeSettings({
+            filenameTemplate: '{{source_title}}',
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+        const sourceTitle = '原/文\\标题:<>"|?*\n尾';
+        const safeTitle = '原_文_标题________尾';
+
+        const result = await service.renderToVault(
+            vault as never,
+            makeTask({ source_title: sourceTitle }),
+            'Clippings/{{source_title}}/Notes',
+            '{{source_title}}\n\n{{content}}',
+        );
+
+        expect(result.filepath).toBe(`Clippings/${safeTitle}/Notes/${safeTitle}.md`);
+        expect(vault.paths()).toEqual([
+            'Clippings',
+            `Clippings/${safeTitle}`,
+            `Clippings/${safeTitle}/Notes`,
+            `Clippings/${safeTitle}/Notes/${safeTitle}.md`,
+        ]);
+        expect(String(vault.content(result.filepath!))).toContain(sourceTitle);
+    });
+
+    it('keeps long source titles within the existing filename and folder segment limit', async () => {
+        const service = new SyncService(makeSettings({
+            filenameTemplate: '{{source_title}}',
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+        const sourceTitle = '长'.repeat(130);
+        const safeTitle = '长'.repeat(120);
+
+        const result = await service.renderToVault(
+            vault as never,
+            makeTask({ source_title: sourceTitle }),
+            'Clippings/{{source_title}}',
+            '{{source_title}}\n\n{{content}}',
+        );
+
+        expect(result.filepath).toBe(`Clippings/${safeTitle}/${safeTitle}.md`);
+        expect(String(vault.content(result.filepath!))).toContain(sourceTitle);
+    });
+
+    it('keeps default file naming and content unchanged when the source title changes', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const task = makeTask({ source_title: null });
+        const expectedContent = '---\ntitle: "Test Title"\ndate: "2026-08-07T10:00:00Z"\nsource: "微信公众号"\ntags: []\ntask_id: 101\n---\n\n## Note\n\nhello\n\n# 原文\n\n# Source\n\nworld';
+
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(first.filepath).toBe('Clippings/2026-08-08-Test Title.md');
+        expect(vault.content(first.filepath!)).toBe(expectedContent);
+
+        const second = await service.renderToVault(
+            vault as never,
+            { ...task, source_title: '新的来源标题' },
+            'Clippings',
+            '{{content}}',
+        );
+        expect(second.filepath).toBe(first.filepath);
+        expect(vault.content(second.filepath!)).toBe(expectedContent);
+    });
+
     it('marks missing pending tasks so caller can remove them', async () => {
         const service = new SyncService(makeSettings());
         service.loadPendingTaskIds([7]);
@@ -201,16 +363,27 @@ describe('SyncService', () => {
             imageMode: 'disabled',
         }));
         const vault = new FakeVault();
-        const task = makeTask({ id: 88, title: 'Morning Note' });
+        const task = makeTask({
+            id: 88,
+            title: 'Morning Note',
+            source_title: '原文 $& $$ {{title}} {{task_id}}',
+            note_markdown_content: '## Note\n\n笔记 $& $$ {{source_title}}',
+        });
+        const template = '{{source_title}}\n\n{{content}}';
 
-        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        await service.renderToVault(vault as never, task, 'Clippings', template);
         const mergedPath = 'Clippings/2026-08-08-微信公众号.md';
-        await vault.modify(Object.assign(new TFile(), { path: mergedPath }), `${String(vault.content(mergedPath))}\n\n用户手写内容\n`);
-        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const contentWithManualText = `${String(vault.content(mergedPath))}\n\n用户手写内容\n`;
+        await vault.modify(Object.assign(new TFile(), { path: mergedPath }), contentWithManualText);
+        await service.renderToVault(vault as never, task, 'Clippings', template);
+        await service.renderToVault(vault as never, task, 'Clippings', template);
 
         const content = String(vault.content(mergedPath));
+        expect(content).toBe(contentWithManualText);
         expect(content.match(/clip2md-task-start:88/g)?.length).toBe(1);
         expect(content).toContain('用户手写内容');
+        expect(content).toContain(task.source_title);
+        expect(content).toContain(task.note_markdown_content);
     });
 
     it('includes tags in the default frontmatter template as a YAML list', async () => {
@@ -242,19 +415,25 @@ describe('SyncService', () => {
         requestUrlMock.mockResolvedValue({
             status: 200,
             headers: { 'content-type': 'image/png' },
-            arrayBuffer: new ArrayBuffer(4),
+            arrayBuffer: pngBytes(),
         });
 
-        await service.renderToVault(
+        const result = await service.renderToVault(
             vault as never,
             makeTask({
                 note_markdown_content: `before\n\n![cover](${cdnUrl})\n\nafter`,
                 source_markdown_content: null,
+                asset_count: 1,
+                asset_ready_count: 1,
             }),
             'Clippings',
             '{{content}}',
         );
 
+        expect(result).toMatchObject({
+            skipped: false, pendingAssets: false, failedAssets: false,
+            localizedAssetCount: 1, unlocalizedImages: false,
+        });
         const content = String(vault.content(service.getTaskFileMap()[101]));
         expect(content).toContain('![cover](./_assets/task-101/');
         expect(content).not.toContain('media.clip2md.cn');
@@ -267,13 +446,60 @@ describe('SyncService', () => {
         expect(vault.content('Clippings/_assets/task-101')).toBe('');
     });
 
+    it('does not classify unresolved hosted HTML images as localized assets', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'local' }));
+        const vault = new FakeVault();
+        const result = await service.renderToVault(vault as never, makeTask({
+            note_markdown_content: '<img src="https://media.clip2md.cn/assets/task-101/cover.png">',
+            source_markdown_content: null,
+            asset_count: 1,
+            asset_ready_count: 1,
+        }), 'Clippings', '{{content}}');
+
+        expect(result.localizedAssetCount).toBe(0);
+        expect(result.unlocalizedImages).toBe(true);
+        expect(requestUrlMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the source task when reference or external images remain remote', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'local' }));
+        const vault = new FakeVault();
+        const result = await service.renderToVault(vault as never, makeTask({
+            note_markdown_content: '![cover][ref]\n\n[ref]: https://elsewhere.example/cover.png',
+            source_markdown_content: null,
+        }), 'Clippings', '{{content}}');
+
+        expect(result.unlocalizedImages).toBe(true);
+        expect(result.pendingAssets).toBe(false);
+    });
+
+    it('does not count a non-image response as a completed local image', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'local' }));
+        const vault = new FakeVault();
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: { 'content-type': 'image/png', 'x-asset-status': 'READY' },
+            arrayBuffer: new TextEncoder().encode('<html>not an image</html>').buffer,
+        });
+
+        const result = await service.renderToVault(vault as never, makeTask({
+            note_markdown_content: '![cover](https://media.clip2md.cn/assets/task-101/cover.png)',
+            source_markdown_content: null,
+            asset_count: 1,
+            asset_ready_count: 1,
+        }), 'Clippings', '{{content}}');
+
+        expect(result).toMatchObject({ pendingAssets: true, localizedAssetCount: 0 });
+        expect(vault.paths()).not.toContainEqual(expect.stringMatching(/\/task-101\/.*\.png$/));
+    });
+
     it('stores images in a selected Vault folder and links them from the note', async () => {
         const service = new SyncService(makeSettings({ imageFolder: 'Attachments/My Images' }));
         const vault = new FakeVault();
         requestUrlMock.mockResolvedValue({
             status: 200,
             headers: { 'content-type': 'image/png' },
-            arrayBuffer: new ArrayBuffer(4),
+            arrayBuffer: pngBytes(),
         });
 
         await service.renderToVault(vault as never, makeTask({
@@ -293,7 +519,7 @@ describe('SyncService', () => {
         requestUrlMock.mockResolvedValue({
             status: 200,
             headers: { 'content-type': 'image/png' },
-            arrayBuffer: new ArrayBuffer(4),
+            arrayBuffer: pngBytes(),
         });
 
         await service.renderToVault(vault as never, makeTask({
@@ -312,7 +538,7 @@ describe('SyncService', () => {
         requestUrlMock.mockResolvedValue({
             status: 200,
             headers: { 'content-type': 'image/png' },
-            arrayBuffer: new ArrayBuffer(4),
+            arrayBuffer: pngBytes(),
         });
 
         const firstTask = makeTask({
@@ -343,7 +569,7 @@ describe('SyncService', () => {
             source_markdown_content: 'source',
         });
 
-        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const result = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
 
         const content = String(vault.content(service.getTaskFileMap()[101]));
         expect(content).toContain('before');
@@ -352,6 +578,7 @@ describe('SyncService', () => {
         expect(content).not.toContain('media.clip2md.cn');
         expect(content).not.toContain('![cover]');
         expect(content).not.toContain('<img');
+        expect(result.unlocalizedImages).toBe(true);
         expect(requestUrlMock).not.toHaveBeenCalled();
     });
 });

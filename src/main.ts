@@ -16,6 +16,7 @@ import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
 import { TimerRegistry } from './timers';
+import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckQueue } from './sync-ack';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -54,6 +55,9 @@ function isSyncRunSummary(value: unknown): value is SyncRunSummary {
         && typeof value.pending === 'number'
         && typeof value.skipped === 'number'
         && typeof value.failed === 'number'
+        && (value.ackBlockedCount === undefined || (Number.isSafeInteger(value.ackBlockedCount) && Number(value.ackBlockedCount) >= 0))
+        && (value.ackBlockedReasons === undefined || (Array.isArray(value.ackBlockedReasons)
+            && value.ackBlockedReasons.every(reason => typeof reason === 'string')))
         && (value.errorMessage === undefined || typeof value.errorMessage === 'string');
 }
 
@@ -90,6 +94,8 @@ interface SyncCounters {
     pending: number;
     skipped: number;
     failed: number;
+    ackBlockedCount: number;
+    ackBlockedReasons: Set<string>;
 }
 
 interface SyncProgress {
@@ -111,7 +117,9 @@ const CLIP2MD_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 export default class BijiSyncPlugin extends Plugin {
     settings: BijiSyncSettings;
     syncService: SyncService;
+    syncAckQueue: SyncAckQueue;
     syncIntervalId: number | null = null;
+    ackRetryIntervalId: number | null = null;
     settingTab: BijiSyncSettingTab | null = null;
     readonly timers = new TimerRegistry();
 
@@ -134,6 +142,7 @@ export default class BijiSyncPlugin extends Plugin {
     private connectionMessage = '请填写 API Key 开始使用';
     private startupSyncTriggered = false;
     private appVisible = true;
+    private persistenceQueue: Promise<void> = Promise.resolve();
 
     async onload() {
         let saved: unknown = await this.loadStoredData();
@@ -177,9 +186,6 @@ export default class BijiSyncPlugin extends Plugin {
             this.settings.settingsSchemaVersion = 4;
             settingsMigrated = true;
         }
-        if (settingsMigrated) {
-            await this.saveData(this.settings);
-        }
         if (legacyApiUrl && legacyApiUrl !== CLIP2MD_API_BASE_URL) {
             new Notice('Clip2MD: 服务地址已统一为官方地址，旧自定义地址不再生效。', 8000);
         }
@@ -198,6 +204,14 @@ export default class BijiSyncPlugin extends Plugin {
         }
         if (isNumberArray(savedData.pendingTaskIds)) {
             this.syncService.loadPendingTaskIds(savedData.pendingTaskIds);
+        }
+        this.syncAckQueue = new SyncAckQueue(
+            () => this.persistSyncState(),
+            ack => postSyncAck(ack, this.settings.apiKey),
+        );
+        this.syncAckQueue.load(savedData.pendingAcks);
+        if (settingsMigrated) {
+            await this.persistSyncState();
         }
 
         this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
@@ -243,6 +257,8 @@ export default class BijiSyncPlugin extends Plugin {
 
 
         this.startSyncInterval();
+        this.startAckRetryInterval();
+        this.timers.setTimeout(() => this.retryPendingAcks(), 3000, 'network');
         this.scheduleStartupSync();
     }
 
@@ -250,6 +266,7 @@ export default class BijiSyncPlugin extends Plugin {
         this.settingTab?.hide();
         this.timers.clearAll();
         this.syncIntervalId = null;
+        this.ackRetryIntervalId = null;
         this.syncNotice?.hide();
         this.syncNotice = null;
         this.viewActions.forEach(({ element }) => element.remove());
@@ -257,6 +274,7 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     async loadSettings() {
+        await this.persistenceQueue;
         const saved = await this.loadStoredData();
         this.settings = this.normalizeSettings(saved);
         if (saved.syncContentMode === undefined && typeof saved.apiKey === 'string' && saved.apiKey) {
@@ -272,6 +290,9 @@ export default class BijiSyncPlugin extends Plugin {
         if (isNumberArray(saved.pendingTaskIds) && this.syncService) {
             this.syncService.loadPendingTaskIds(saved.pendingTaskIds);
         }
+        if (this.syncAckQueue) {
+            this.syncAckQueue.load(saved.pendingAcks);
+        }
         this.syncService.updateSettings(this.settings);
         this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
         this.updateRibbonState();
@@ -279,26 +300,35 @@ export default class BijiSyncPlugin extends Plugin {
 
     async saveSettings() {
         this.settings = this.normalizeSettings(this.settings);
-        await this.saveData(this.settings);
-        await this.backupConfig();
         if (this.syncService) {
             this.syncService.updateSettings(this.settings);
         }
+        await this.persistPluginState();
         this.startSyncInterval();
+        this.startAckRetryInterval();
         // 不在这里刷新设置页面，避免每次保存都重建 UI
         // 需要刷新时由调用方显式调用 refreshSettingTab()
     }
 
     async persistSyncState() {
-        const data = await this.loadStoredData();
-        if (this.syncService) {
-            data.cursor = this.syncService.getCursor();
-            data.taskFileMap = this.syncService.getTaskFileMap();
-            data.pendingTaskIds = this.syncService.getPendingTaskIds();
-        }
-        data.lastSyncSummary = this.settings.lastSyncSummary;
-        await this.saveData(data);
-        await this.backupConfig();
+        await this.persistPluginState();
+    }
+
+    private persistPluginState(): Promise<void> {
+        const write = async () => {
+            const data: StoredPluginData = {
+                ...this.settings,
+                cursor: this.syncService?.getCursor() ?? null,
+                taskFileMap: { ...(this.syncService?.getTaskFileMap() ?? {}) },
+                pendingTaskIds: [...(this.syncService?.getPendingTaskIds() ?? [])],
+                pendingAcks: this.syncAckQueue?.snapshot() ?? [],
+            };
+            await this.saveData(data);
+            await this.backupConfig();
+        };
+        const next = this.persistenceQueue.catch(() => undefined).then(write);
+        this.persistenceQueue = next;
+        return next;
     }
 
     async verifyConnection(): Promise<void> {
@@ -349,7 +379,7 @@ export default class BijiSyncPlugin extends Plugin {
 
         const summary = this.settings.lastSyncSummary;
         const summaryText = summary
-            ? `上次同步：${this.formatRelativeTime(summary.finishedAt)}，${summary.succeeded} 成功、${summary.pending} 待重试`
+            ? `上次同步：${this.formatRelativeTime(summary.finishedAt)}，${summary.succeeded} 成功、${summary.pending} 待重试${this.describeBlockedAcks(summary)}`
             : '尚未执行同步';
 
         if (this.connectionState === 'connected') {
@@ -382,7 +412,7 @@ export default class BijiSyncPlugin extends Plugin {
         return {
             kind: 'configured',
             label: '● 已配置',
-            description: '本次 Obsidian 会话尚未验证',
+            description: summary ? `本次 Obsidian 会话尚未验证；${summaryText}` : '本次 Obsidian 会话尚未验证',
             runtimeState: this.runtimeState,
         };
     }
@@ -467,6 +497,21 @@ export default class BijiSyncPlugin extends Plugin {
         }, intervalMs, 'network');
     }
 
+    private startAckRetryInterval(): void {
+        this.timers.clearInterval(this.ackRetryIntervalId);
+        this.ackRetryIntervalId = null;
+        if (!this.appVisible || !this.settings.apiKey) return;
+        this.ackRetryIntervalId = this.timers.setInterval(
+            () => this.retryPendingAcks(), 5 * 60 * 1000, 'network',
+        );
+    }
+
+    private retryPendingAcks(): void {
+        if (this.appVisible && this.settings.apiKey && this.syncAckQueue.snapshot().length > 0) {
+            void this.syncAckQueue.flush();
+        }
+    }
+
     scheduleStartupSync() {
         if (!this.settings.syncOnStart || !this.settings.apiKey) {
             return;
@@ -491,17 +536,23 @@ export default class BijiSyncPlugin extends Plugin {
 
     private handleAppVisibility(visible: boolean): void {
         if (this.appVisible === visible) {
-            if (visible) this.settingTab?.onAppVisibilityChange(true);
+            if (visible) {
+                this.retryPendingAcks();
+                this.settingTab?.onAppVisibilityChange(true);
+            }
             return;
         }
         this.appVisible = visible;
         if (visible) {
             this.startSyncInterval();
+            this.startAckRetryInterval();
+            this.retryPendingAcks();
             if (!this.startupSyncTriggered) this.scheduleStartupSync();
             this.settingTab?.onAppVisibilityChange(true);
         } else {
             this.timers.clearGroup('network');
             this.syncIntervalId = null;
+            this.ackRetryIntervalId = null;
             this.settingTab?.onAppVisibilityChange(false);
         }
     }
@@ -515,6 +566,9 @@ export default class BijiSyncPlugin extends Plugin {
         }
 
         if (!this.settings.targetFolder) {
+            // A completed Vault write may already have a durable receipt even
+            // when the folder setting is later cleared.
+            await this.syncAckQueue.flush();
             if (trigger === 'manual') {
                 new Notice('Clip2MD: 请先在设置中配置目标文件夹', 5000);
                 this.openSettingsTab();
@@ -547,10 +601,14 @@ export default class BijiSyncPlugin extends Plugin {
         this.startSyncProgressNotice();
 
         const startedAt = new Date().toISOString();
-        const counters: SyncCounters = { total: 0, pages: 0, processed: 0, succeeded: 0, pending: 0, skipped: 0, failed: 0 };
+        const counters: SyncCounters = {
+            total: 0, pages: 0, processed: 0, succeeded: 0, pending: 0, skipped: 0, failed: 0,
+            ackBlockedCount: 0, ackBlockedReasons: new Set(),
+        };
         const processedTaskIds = new Set<number>();
 
         try {
+            await this.syncAckQueue.flush();
             const pendingTasks = await this.syncService.fetchPendingTasks();
             let cursor = this.syncService.getCursor();
             let batch = await this.syncService.fetchNextPage(cursor);
@@ -600,9 +658,10 @@ export default class BijiSyncPlugin extends Plugin {
                 }
             }
 
+            counters.pending += this.syncAckQueue.snapshot().length;
             const outcome = counters.failed > 0
                 ? 'failed'
-                : (counters.pending > 0 || counters.skipped > 0 ? 'partial' : 'success');
+                : (counters.pending > 0 || counters.skipped > 0 || counters.ackBlockedCount > 0 ? 'partial' : 'success');
             const summary = this.finishSyncRun({
                 startedAt,
                 finishedAt: new Date().toISOString(),
@@ -614,6 +673,8 @@ export default class BijiSyncPlugin extends Plugin {
                 pending: counters.pending,
                 skipped: counters.skipped,
                 failed: counters.failed,
+                ackBlockedCount: counters.ackBlockedCount,
+                ackBlockedReasons: [...counters.ackBlockedReasons],
             });
 
             this.updateConnectionState('connected', '已验证连接');
@@ -634,6 +695,8 @@ export default class BijiSyncPlugin extends Plugin {
                 pending: counters.pending,
                 skipped: counters.skipped,
                 failed: counters.failed + 1,
+                ackBlockedCount: counters.ackBlockedCount,
+                ackBlockedReasons: [...counters.ackBlockedReasons],
                 errorMessage: message,
             });
 
@@ -786,24 +849,52 @@ export default class BijiSyncPlugin extends Plugin {
             } catch (error) {
                 this.syncService.markPending(task.id);
                 counters.pending += 1;
+                this.recordBlockedAck(task, { filepath: null, skipped: false }, counters);
                 console.error(`Clip2MD: 任务 ${task.id} 同步失败`, error);
                 this.updateSyncProgress(counters, 'syncing');
                 continue;
             }
 
+            this.recordBlockedAck(task, result, counters);
             if (result.skipped) {
                 this.syncService.markPending(task.id);
                 counters.skipped += 1;
                 console.warn(`Clip2MD: 任务 ${task.id} 已跳过: ${result.reason}`);
-            } else if (result.pendingAssets) {
+            } else if (result.pendingAssets || result.failedAssets) {
                 this.syncService.markPending(task.id);
                 counters.pending += 1;
             } else {
                 this.syncService.markComplete(task.id);
+                const ack = buildSyncAck(task, result, this.settings);
+                if (ack) {
+                    // The same saved record contains the Vault path and receipt.
+                    // Never contact the server before the receipt is durable.
+                    try {
+                        await this.syncAckQueue.enqueue(ack);
+                    } catch (error) {
+                        this.syncService.markPending(task.id);
+                        throw error;
+                    }
+                    await this.syncAckQueue.flush();
+                }
                 counters.succeeded += 1;
             }
             this.updateSyncProgress(counters, 'syncing');
         }
+    }
+
+    private recordBlockedAck(task: SyncTask, result: SyncResult, counters: SyncCounters) {
+        const reason = getSyncAckBlockedReason(task, result, this.settings);
+        if (reason) {
+            counters.ackBlockedCount += 1;
+            counters.ackBlockedReasons.add(reason);
+        }
+    }
+
+    private describeBlockedAcks(summary: SyncRunSummary): string {
+        if (!summary.ackBlockedCount) return '';
+        const reasons = summary.ackBlockedReasons?.join('；');
+        return `，${summary.ackBlockedCount} 篇未发送删除回执${reasons ? `：${reasons}` : ''}`;
     }
 
     private finishSyncRun(summary: SyncRunSummary): SyncRunSummary {
@@ -918,9 +1009,9 @@ export default class BijiSyncPlugin extends Plugin {
         if (!this.syncNotice) {
             return;
         }
-        this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章`);
+        this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章${this.describeBlockedAcks(summary)}`);
         const notice = this.syncNotice;
-        this.timers.setTimeout(() => notice.hide(), 3000, 'notice');
+        this.timers.setTimeout(() => notice.hide(), summary.ackBlockedCount ? 8000 : 3000, 'notice');
         this.syncNotice = null;
     }
 

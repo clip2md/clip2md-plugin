@@ -16,6 +16,8 @@ notes, and organize files with customizable folder and filename templates.
 - 支持手动同步、启动后同步和定时同步。
 - 支持微信扫码绑定，也支持在设置中手动填写 API Key。
 - 支持自定义目标文件夹、文件名模板、Frontmatter 模板和合并模式。
+- 支持在正文、Frontmatter、文件名和目标文件夹模板中使用 `{{source_title}}` 引用原文标题；原文标题为空时输出空字符串，默认模板不变。
+- 可在 Clip2MD 网页按需开启“同步成功后删除”；插件仅在完整内容和图片均已写入后提交成功回执，不满足条件时保留原任务。
 
 ## 使用要求
 
@@ -120,7 +122,7 @@ locally. The ribbon button and command palette provide the same sync action.
 6. `releases/<version>.md` 存在且包含面向用户的变更说明；Tag 推送后由 GitHub Actions 写入 Release 描述。
 7. GitHub Actions 为每个发布文件生成 artifact attestation，可用 `gh attestation verify <file> -R clip2md/clip2md-plugin` 校验。
 
-当前源码版本为 `1.0.10`，最低 Obsidian 版本为 `1.13.7`。`1.0.9` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+当前待发布源码版本为 `1.0.11`，最低 Obsidian 版本为 `1.13.7`。已发布的 `1.0.10` 使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

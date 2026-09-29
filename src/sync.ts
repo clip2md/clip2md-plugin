@@ -4,6 +4,7 @@ import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
 
 export interface SyncTask {
     id: number;
+    ack_token?: string | null;
     url: string;
     status: string;
     title: string | null;
@@ -37,6 +38,9 @@ export interface SyncResult {
     skipped: boolean;
     reason?: string;
     pendingAssets?: boolean;
+    failedAssets?: boolean;
+    localizedAssetCount?: number;
+    unlocalizedImages?: boolean;
 }
 
 export interface SyncBatch {
@@ -96,6 +100,7 @@ function isSyncTask(value: unknown): value is SyncTask {
         && stringFields.every(field => typeof value[field] === 'string')
         && nullableStringFields.every(field => isNullableString(value[field]))
         && (value.duration_seconds === null || typeof value.duration_seconds === 'number')
+        && (value.ack_token === undefined || isNullableString(value.ack_token))
         && (value.tags === undefined || (
             Array.isArray(value.tags)
             && value.tags.every(tag => isRecord(tag)
@@ -117,6 +122,7 @@ interface LocalizeResult {
     task: SyncTask;
     pendingAssets: boolean;
     failedAssets: boolean;
+    localizedAssetCount: number;
 }
 
 interface MarkdownImageParts {
@@ -175,6 +181,39 @@ function stableImageIdentity(remoteUrl: string): string {
     } catch {
         return remoteUrl.replace(/[?#].*$/, '');
     }
+}
+
+function hasUnlocalizedImages(markdown: string | null): boolean {
+    if (!markdown) return false;
+    // These syntaxes are not handled by localizeTaskImages. A false positive
+    // only keeps the source task; a false negative could delete its images.
+    return /<img\b/i.test(markdown)
+        || /!\[[^\]]*\]\[[^\]]*\]/.test(markdown)
+        || /!\[[^\]]*\]\(\s*<?(?:https?:\/\/|\/\/|\/api\/v1\/assets\/)/i.test(markdown)
+        || markdown.includes('/api/v1/assets/')
+        || markdown.includes(`${CLIP2MD_MEDIA_CDN_BASE_URL}/assets/`);
+}
+
+function imageExtension(bytes: ArrayBuffer): 'png' | 'jpg' | 'gif' | 'webp' | 'avif' | null {
+    const data = new Uint8Array(bytes);
+    const ascii = (start: number, end: number) => String.fromCharCode(...data.slice(start, end));
+    if (data.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => data[index] === byte)) {
+        return 'png';
+    }
+    if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
+        return 'jpg';
+    }
+    if (data.length >= 6 && (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a')) {
+        return 'gif';
+    }
+    if (data.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') {
+        return 'webp';
+    }
+    if (data.length >= 16 && ascii(4, 8) === 'ftyp'
+        && (ascii(8, 12) === 'avif' || ascii(8, 12) === 'avis')) {
+        return 'avif';
+    }
+    return null;
 }
 
 export class SyncService {
@@ -350,6 +389,16 @@ export class SyncService {
         const folder = this.resolveFolderPath(task, folderTemplate);
         const localized = await this.localizeTaskImages(vault, task, folder);
         const localizedTask = localized.task;
+        const assetResult = {
+            pendingAssets: localized.pendingAssets,
+            failedAssets: localized.failedAssets,
+            localizedAssetCount: localized.localizedAssetCount,
+            unlocalizedImages: [localizedTask.note_markdown_content, localizedTask.source_markdown_content]
+                .some(hasUnlocalizedImages)
+                || (this.settings.imageMode === 'disabled'
+                    && [task.note_markdown_content, task.source_markdown_content]
+                        .some(markdown => Boolean(markdown && (markdown.includes('![') || /<img\b/i.test(markdown))))),
+        };
         let content = this.renderTemplate(template, localizedTask);
         if (localized.pendingAssets) {
             content = `${content}\n\n> 图片仍在处理中（任务 #${task.id}），稍后会自动重试。`;
@@ -359,7 +408,7 @@ export class SyncService {
         }
 
         if (this.shouldMergeDaily(localizedTask)) {
-            return this.renderMergedTask(vault, localizedTask, folder, content, localized.pendingAssets);
+            return this.renderMergedTask(vault, localizedTask, folder, content, assetResult);
         }
 
         const filename = this.generateFilename(localizedTask);
@@ -395,7 +444,7 @@ export class SyncService {
                                     console.warn(`Clip2MD: 清理旧文件失败 ${mappedPath}: ${String(error)}`);
                                 }
                                 this.taskFileMap[task.id] = filepath;
-                                return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
+                                return { filepath, skipped: false, ...assetResult };
                             }
                             return {
                                 filepath: null,
@@ -411,7 +460,7 @@ export class SyncService {
                     }
                     await vault.modify(targetFile, content);
                     this.taskFileMap[task.id] = filepath;
-                    return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
+                    return { filepath, skipped: false, ...assetResult };
                 }
             }
             delete this.taskFileMap[task.id];
@@ -423,7 +472,7 @@ export class SyncService {
             if (this.hasTaskMarker(fileContent, task.id)) {
                 await vault.modify(existingFile, content);
                 this.taskFileMap[task.id] = filepath;
-                return { filepath, skipped: false, pendingAssets: localized.pendingAssets };
+                return { filepath, skipped: false, ...assetResult };
             }
             return {
                 filepath: null,
@@ -444,7 +493,7 @@ export class SyncService {
 
         await vault.create(createPath, content);
         this.taskFileMap[task.id] = createPath;
-        return { filepath: createPath, skipped: false, pendingAssets: localized.pendingAssets };
+        return { filepath: createPath, skipped: false, ...assetResult };
     }
 
     private async fetchTasksPage(cursor: string | null, limit: number): Promise<SyncBatch> {
@@ -484,7 +533,7 @@ export class SyncService {
         task: SyncTask,
         folder: string,
         content: string,
-        pendingAssets: boolean,
+        assetResult: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
     ): Promise<SyncResult> {
         await this.ensureFolder(vault, folder);
         const mergedFilename = `${this.formatDateForFilename(task.created_at)}-${this.getSourceLabel(task)}.md`;
@@ -496,14 +545,14 @@ export class SyncService {
             const initial = `# ${this.getSourceLabel(task)} · ${this.formatDateForFilename(task.created_at)}\n\n${block}`;
             await vault.create(filepath, initial);
             this.taskFileMap[task.id] = filepath;
-            return { filepath, skipped: false, pendingAssets };
+            return { filepath, skipped: false, ...assetResult };
         }
 
         const existingContent = await vault.read(existing);
         const nextContent = this.upsertMergeBlock(existingContent, task.id, block);
         await vault.modify(existing, nextContent);
         this.taskFileMap[task.id] = filepath;
-        return { filepath, skipped: false, pendingAssets };
+        return { filepath, skipped: false, ...assetResult };
     }
 
     private buildMergeBlock(taskId: number, title: string, content: string): string {
@@ -522,7 +571,7 @@ export class SyncService {
             'm',
         );
         if (pattern.test(existing)) {
-            return existing.replace(pattern, block);
+            return existing.replace(pattern, () => block);
         }
         const trimmed = existing.replace(/\s+$/, '');
         return `${trimmed}\n\n${block}\n`;
@@ -550,6 +599,7 @@ export class SyncService {
                 },
                 pendingAssets: false,
                 failedAssets: false,
+                localizedAssetCount: 0,
             };
         }
 
@@ -563,6 +613,7 @@ export class SyncService {
         let imageFolderReady = false;
         let pendingAssets = false;
         let failedAssets = false;
+        const localizedAssets = new Set<string>();
 
         const localize = async (markdown: string | null): Promise<string | null> => {
             if (!markdown) {
@@ -614,20 +665,28 @@ export class SyncService {
                     }
 
                     const bytes = response.arrayBuffer;
-                    const extension = responseType.includes('png') ? 'png'
-                        : responseType.includes('webp') ? 'webp'
-                        : responseType.includes('gif') ? 'gif'
-                        : responseType.includes('avif') ? 'avif'
-                        : 'jpg';
+                    const extension = imageExtension(bytes);
+                    if (!extension) {
+                        pendingAssets = true;
+                        replacements.set(remoteUrl, null);
+                        continue;
+                    }
                     const safeName = `${this.hash(stableImageIdentity(remoteUrl))}.${extension}`;
                     const path = `${imageFolder}/${safeName}`;
                     if (!imageFolderReady) {
                         await this.ensureFolder(vault, imageFolder);
                         imageFolderReady = true;
                     }
-                    if (!vault.getAbstractFileByPath(path)) {
-                        await vault.createBinary(path, bytes);
+                    const existingImage = vault.getAbstractFileByPath(path);
+                    if (existingImage && !(existingImage instanceof TFile)) {
+                        throw new Error(`图片路径 ${path} 已被文件夹占用`);
                     }
+                    if (!existingImage) {
+                        await vault.createBinary(path, bytes);
+                    } else {
+                        await vault.modifyBinary(existingImage, bytes);
+                    }
+                    localizedAssets.add(stableImageIdentity(remoteUrl));
                     replacements.set(remoteUrl, this.relativeImageUrl(folder, path));
                 } catch (error) {
                     pendingAssets = true;
@@ -659,6 +718,7 @@ export class SyncService {
             },
             pendingAssets,
             failedAssets,
+            localizedAssetCount: localizedAssets.size,
         };
     }
 
@@ -721,17 +781,18 @@ export class SyncService {
             : '[]';
 
         if (template && template.trim()) {
-            // 使用自定义模板，替换变量
-            return template
-                .replace(/\{\{title\}\}/g, title.replace(/"/g, '\\"'))
-                .replace(/\{\{source_date\}\}/g, task.source_date || '')
-                .replace(/\{\{created_at\}\}/g, task.created_at)
-                .replace(/\{\{source\}\}/g, this.getSourceLabel(task).replace(/"/g, '\\"'))
-                .replace(/\{\{duration\}\}/g, task.duration_seconds ? this.formatDuration(task.duration_seconds) : '')
-                .replace(/\{\{content_type\}\}/g, task.content_type || '')
-                .replace(/\{\{task_id\}\}/g, String(task.id))
-                .replace(/\{\{tags\}\}/g, tagsValue)
-                .replace(/\{\{url\}\}/g, task.url || '');
+            return this.replaceTemplateVariables(template, {
+                '{{title}}': title.replace(/"/g, '\\"'),
+                '{{source_title}}': JSON.stringify(task.source_title || '').slice(1, -1),
+                '{{source_date}}': task.source_date || '',
+                '{{created_at}}': task.created_at,
+                '{{source}}': this.getSourceLabel(task).replace(/"/g, '\\"'),
+                '{{duration}}': task.duration_seconds ? this.formatDuration(task.duration_seconds) : '',
+                '{{content_type}}': task.content_type || '',
+                '{{task_id}}': String(task.id),
+                '{{tags}}': tagsValue,
+                '{{url}}': task.url || '',
+            });
         }
 
         // 默认格式
@@ -776,20 +837,22 @@ export class SyncService {
         const marker = `<!-- biji-task-id:${task.id} -->`;
         const tagsStr = task.tags && task.tags.length > 0 ? task.tags.map(t => t.name).join(', ') : '';
 
-        let result = template
-            .replace(/\{\{title\}\}/g, title)
-            .replace(/\{\{content\}\}/g, content)
-            .replace(/\{\{note_content\}\}/g, noteContent)
-            .replace(/\{\{source_content\}\}/g, sourceContent)
-            .replace(/\{\{url\}\}/g, task.url)
-            .replace(/\{\{date\}\}/g, task.source_date || '')
-            .replace(/\{\{created_at\}\}/g, task.created_at)
-            .replace(/\{\{created_date\}\}/g, this.formatDateForFilename(task.created_at))
-            .replace(/\{\{source\}\}/g, this.getSourceLabel(task))
-            .replace(/\{\{duration\}\}/g, task.duration_seconds ? this.formatDuration(task.duration_seconds) : '')
-            .replace(/\{\{content_type\}\}/g, task.content_type || '')
-            .replace(/\{\{task_id\}\}/g, String(task.id))
-            .replace(/\{\{tags\}\}/g, tagsStr);
+        let result = this.replaceTemplateVariables(template, {
+            '{{title}}': title,
+            '{{source_title}}': task.source_title || '',
+            '{{content}}': content,
+            '{{note_content}}': noteContent,
+            '{{source_content}}': sourceContent,
+            '{{url}}': task.url,
+            '{{date}}': task.source_date || '',
+            '{{created_at}}': task.created_at,
+            '{{created_date}}': this.formatDateForFilename(task.created_at),
+            '{{source}}': this.getSourceLabel(task),
+            '{{duration}}': task.duration_seconds ? this.formatDuration(task.duration_seconds) : '',
+            '{{content_type}}': task.content_type || '',
+            '{{task_id}}': String(task.id),
+            '{{tags}}': tagsStr,
+        });
 
         if (!this.hasTaskMarker(result, task.id)) {
             result = `${marker}\n\n${result}`;
@@ -824,6 +887,7 @@ export class SyncService {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '') || `untitled-${task.id}`;
         const replacements: Record<string, string> = {
             '{{title}}': title || `untitled-${task.id}`,
+            '{{source_title}}': this.sanitizeFilenameSegment(task.source_title || ''),
             '{{date}}': task.source_date || '',
             '{{created_at}}': task.created_at,
             '{{created_date}}': this.formatDateForFilename(task.created_at),
@@ -834,12 +898,14 @@ export class SyncService {
             '{{url}}': task.url,
         };
 
-        let result = template;
-        for (const key of Object.keys(replacements)) {
-            const value = replacements[key];
-            result = result.replace(new RegExp(this.escapeRegExp(key), 'g'), value);
-        }
-        return result;
+        return this.replaceTemplateVariables(template, replacements);
+    }
+
+    private replaceTemplateVariables(template: string, replacements: Record<string, string>): string {
+        // Replace only the original template's tokens, keeping values literal.
+        return template.replace(/\{\{[a-z_]+\}\}/g, token => (
+            Object.prototype.hasOwnProperty.call(replacements, token) ? replacements[token] : token
+        ));
     }
 
     private formatDateForFilename(dateInput: string): string {
@@ -955,9 +1021,5 @@ export class SyncService {
             }
         }
         return '';
-    }
-
-    private escapeRegExp(value: string): string {
-        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }
