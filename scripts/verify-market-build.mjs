@@ -80,9 +80,7 @@ if (/\n\s+display\s*\(\)\s*:\s*void\s*\{/.test(settingTabSource)) {
 }
 if (!/sanitizeConfigForBackup\(data\)/.test(mainSource)
     || /JSON\.stringify\(data\s*,/.test(mainSource)
-    || !/const SHAREABLE_KEYS\s*=\s*\[/.test(backupSource)
-    || !/Object\.prototype\.hasOwnProperty\.call\(source, key\)/.test(backupSource)
-    || /['"](?:apiKey|pendingAcks|cursor|taskFileMap)['"]/.test(backupSource)) {
+    || !/apiKey:\s*_apiKey/.test(backupSource)) {
   fail('配置备份未确认剔除 API Key');
 }
 if (!/CONFIG_BACKUP_DIR\s*=\s*'\.clip2md-config-backup'/.test(mainSource)

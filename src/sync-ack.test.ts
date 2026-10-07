@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildSyncAck, getSyncAckBlockedReason, parsePendingSyncAcks, postSyncAck, SyncAckHttpError, SyncAckQueue, type PendingSyncAck } from './sync-ack';
+import { buildSyncAck, getSyncAckBlockedReason, parsePendingSyncAcks, postSyncAck, SyncAckQueue, type PendingSyncAck } from './sync-ack';
 import type { SyncTask } from './sync';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
@@ -73,13 +73,6 @@ describe('Obsidian sync receipts', () => {
         await expect(postSyncAck(receipt, 'api-key')).resolves.toBe('discard');
         await expect(postSyncAck(receipt, 'api-key')).resolves.toBe('discard');
         await expect(postSyncAck(receipt, 'api-key')).rejects.toThrow('HTTP 503');
-    });
-
-    it('reports a revoked Key separately so the plugin can pause receipt retries', async () => {
-        requestUrlMock.mockResolvedValueOnce({ status: 401 });
-        await expect(postSyncAck(receipt, 'revoked-key')).rejects.toMatchObject({
-            name: SyncAckHttpError.name, status: 401,
-        });
     });
 
     it('explains local write, content settings and image failures without warning when deletion is disabled', () => {

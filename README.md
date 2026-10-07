@@ -127,7 +127,9 @@ from reappearing applies only to the current vault and is off by default.
 6. `releases/<version>.md` 存在且包含面向用户的变更说明；Tag 推送后由 GitHub Actions 写入 Release 描述。
 7. GitHub Actions 为每个发布文件生成 artifact attestation，可用 `gh attestation verify <file> -R clip2md/clip2md-plugin` 校验。
 
-当前待发布源码版本为 `1.0.12`，最低 Obsidian 版本为 `1.13.7`。现有 `1.0.11` 版本使用相同最低版本，因此当前不需要兼容性回退映射；未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
+
+当前市场可安装版本为 `1.0.12`，最低 Obsidian 版本为 `1.13.7`。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

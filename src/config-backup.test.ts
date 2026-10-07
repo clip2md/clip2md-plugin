@@ -18,17 +18,14 @@ describe('sanitizeConfigForBackup', () => {
         expect(sanitizeConfigForBackup([])).toEqual({});
     });
 
-    it('does not copy device state or signed receipts to shared backups', () => {
+    it('does not copy signed receipts to backups and keeps their tasks retryable', () => {
         expect(sanitizeConfigForBackup({
             apiKey: 'secret',
-            installationId: 'another-device',
-            cursor: 'another-device-cursor',
-            taskFileMap: { 9: 'note.md' },
             pendingTaskIds: [7],
             pendingAcks: [
                 { taskId: 9, ackToken: 'signed-secret', imagesProcessed: 1, imagesFailed: 0 },
+                { taskId: 9, ackToken: 'signed-secret', imagesProcessed: 1, imagesFailed: 0 },
             ],
-            targetFolder: 'Clip2MD',
-        })).toEqual({ targetFolder: 'Clip2MD' });
+        })).toEqual({ pendingTaskIds: [7, 9] });
     });
 });

@@ -16,8 +16,6 @@ export interface DeviceLaunchLinkResponse {
 export type DeviceCredentialStatus =
     | { status: 'pending_approval'; retry_after: number }
     | { status: 'approving'; retry_after: number }
-    | { status: 'prepared'; api_key: string; credential_name: string }
-    | { status: 'completed'; credential_id: number }
     | {
         status: 'approved';
         credential_id: number;
@@ -63,7 +61,7 @@ export class DeviceBindingClient {
             url: `${CLIP2MD_API_BASE_URL}/auth/wechat/device/start`,
             method: 'POST',
             contentType: 'application/json',
-            body: JSON.stringify({ client_type: 'OBSIDIAN', client_name: clientName, protocol_version: 2 }),
+            body: JSON.stringify({ client_type: 'OBSIDIAN', client_name: clientName }),
             throw: false,
         });
         if (response.status < 200 || response.status >= 300) {
@@ -116,19 +114,5 @@ export class DeviceBindingClient {
             throw errorFromResponse(response.status, response.json);
         }
         return response.json as DeviceCredentialStatus;
-    }
-
-    async complete(deviceCode: string, apiKey: string): Promise<{ status: 'completed'; credential_id: number; credential_name: string }> {
-        const response = await requestUrl({
-            url: `${CLIP2MD_API_BASE_URL}/auth/wechat/device/credential/complete`,
-            method: 'POST',
-            contentType: 'application/json',
-            body: JSON.stringify({ device_code: deviceCode, api_key: apiKey }),
-            throw: false,
-        });
-        if (response.status < 200 || response.status >= 300) {
-            throw errorFromResponse(response.status, response.json);
-        }
-        return response.json as { status: 'completed'; credential_id: number; credential_name: string };
     }
 }

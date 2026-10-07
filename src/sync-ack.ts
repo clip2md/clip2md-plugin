@@ -12,13 +12,6 @@ export interface PendingSyncAck {
 
 type AckDisposition = 'accepted' | 'discard';
 
-export class SyncAckHttpError extends Error {
-    constructor(readonly status: number) {
-        super(`Clip2MD 回执提交失败 (HTTP ${status})`);
-        this.name = 'SyncAckHttpError';
-    }
-}
-
 function isPendingSyncAck(value: unknown): value is PendingSyncAck {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const item = value as Record<string, unknown>;
@@ -92,7 +85,7 @@ export async function postSyncAck(ack: PendingSyncAck, apiKey: string): Promise<
     // an old account's receipt must not block receipts from a newly bound key.
     if (response.status === 400 || response.status === 404
         || response.status === 409 || response.status === 422) return 'discard';
-    throw new SyncAckHttpError(response.status);
+    throw new Error(`Clip2MD 回执提交失败 (HTTP ${response.status})`);
 }
 
 /** The receipt is saved before the first network request and removed only after a final server response. */
