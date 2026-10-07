@@ -154,17 +154,15 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private fmPreviewEl: HTMLElement | null = null;
     private folderSettingEl: HTMLElement | null = null;
     private bindingMode: 'qr' | 'manual' = 'qr';
+    private showBindingForExistingKey = false;
+    private confirmLegacyCleanup = false;
     private bindingClient = new DeviceBindingClient();
     private bindingSession: DeviceBindingSession | null = null;
     private bindingQrDataUrl = '';
+    private qrLoadInFlight = false;
+    private qrUnavailableForCode = '';
     private bindingState: 'idle' | 'starting' | 'waiting' | 'approving' | 'error' | 'expired' = 'idle';
     private bindingMessage = '';
-    private bindingTimer: number | null = null;
-    private bindingExpiresAt = 0;
-    private pollInFlight = false;
-    private lastPollAt = 0;
-    private nextPollAt = 0;
-    private appVisible = true;
     private testingConnection = false;
     private launchUrl = '';
     private launchState: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
@@ -264,6 +262,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             return;
         }
 
+        if (this.showBindingForExistingKey) {
+            new Setting(containerEl).setName('重新绑定此设备').setHeading();
+            new Setting(containerEl).setName('返回设置').addButton(btn => btn.setButtonText('返回').onClick(() => {
+                this.showBindingForExistingKey = false;
+                this.refreshDisplay();
+            }));
+            this.renderQrOnboarding(containerEl);
+            return;
+        }
+
         this.showingInvalidOnboarding = false;
         this.renderBasicSettings(containerEl);
         this.renderAdvancedSettings(containerEl);
@@ -274,20 +282,17 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private releaseActivePage(): void {
-        this.stopBindingPolling();
         this.plugin.timers.clearGroup('settings-ui');
         this.activeContainerEl = null;
     }
 
     onAppVisibilityChange(visible: boolean): void {
-        this.appVisible = visible;
-        if (!visible) {
-            // Keep nextPollAt so a resume/focus event cannot bypass the
-            // server-provided retry_after interval.
-            this.stopBindingPolling(true);
-            return;
-        }
-        this.pollBindingIfDue();
+        if (visible && this.activeContainerEl) this.refreshDisplay();
+    }
+
+    onDeviceBindingFinished(): void {
+        this.showBindingForExistingKey = false;
+        this.resetBindingSession();
     }
     private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
@@ -341,13 +346,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         qrTab.addEventListener('click', () => {
             this.bindingMode = 'qr';
             this.refreshDisplay();
-            if (this.bindingSession) {
-                this.pollBindingIfDue();
-            }
         });
         manualTab.addEventListener('click', () => {
             this.bindingMode = 'manual';
-            this.stopBindingPolling();
             this.refreshDisplay();
         });
         if (this.bindingMode === 'qr') {
@@ -361,6 +362,22 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderQrOnboarding(containerEl: HTMLElement): void {
+        const resumed = this.plugin.getDeviceBindingSession();
+        if (resumed && !this.bindingSession) this.bindingSession = resumed;
+        if (!resumed && this.bindingSession) {
+            this.bindingState = 'expired';
+        }
+        if (resumed && !this.bindingQrDataUrl && !this.qrLoadInFlight
+            && this.qrUnavailableForCode !== resumed.device_code) {
+            this.qrLoadInFlight = true;
+            void this.bindingClient.qrcode(resumed.device_code).then(data => {
+                this.bindingQrDataUrl = data;
+                this.refreshDisplay();
+            }).catch(() => {
+                this.qrUnavailableForCode = resumed.device_code;
+                this.refreshDisplay();
+            }).finally(() => { this.qrLoadInFlight = false; });
+        }
         const card = containerEl.createDiv({ cls: 'clip2md-guide-card clip2md-binding-card' });
         card.createDiv({ text: '打开微信扫一扫，确认后自动完成绑定', cls: 'clip2md-binding-title' });
         if (this.bindingQrDataUrl) {
@@ -370,7 +387,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             });
         } else {
             card.createDiv({
-                text: this.bindingState === 'error' ? '小程序码加载失败' : '正在生成小程序码…',
+                text: this.qrUnavailableForCode === resumed?.device_code
+                    ? '小程序码不可用，请查看绑定码或等待插件完成'
+                    : this.bindingState === 'error' ? '小程序码加载失败' : '正在生成小程序码…',
                 cls: 'clip2md-binding-placeholder',
             });
         }
@@ -395,7 +414,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             }
         }
         card.createEl('p', {
-            text: this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。',
+            text: this.bindingSession ? this.plugin.getDeviceBindingMessage() : (this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。'),
             cls: this.bindingState === 'error' ? 'clip2md-error-text' : 'setting-item-description',
         });
         if (this.bindingState === 'error' || this.bindingState === 'expired') {
@@ -407,8 +426,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
         if (!this.bindingSession && this.bindingState !== 'starting') {
             void this.startBinding();
-        } else if (this.bindingSession) {
-            this.pollBindingIfDue();
         }
     }
 
@@ -468,14 +485,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         try {
             const session = await this.bindingClient.start(this.plugin.getBindingClientName());
             this.bindingSession = session;
-            this.bindingExpiresAt = Date.now() + session.expires_in * 1000;
-            this.lastPollAt = 0;
-            this.nextPollAt = 0;
+            await this.plugin.beginDeviceBinding(session);
             this.launchUrl = '';
             this.launchState = 'idle';
             this.launchMessage = '';
             this.bindingState = 'waiting';
             this.bindingMessage = '请使用微信扫码，并在小程序中确认绑定。';
+            this.qrLoadInFlight = true;
             this.refreshDisplay();
             try {
                 this.bindingQrDataUrl = await this.bindingClient.qrcode(session.device_code);
@@ -484,9 +500,10 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 this.bindingMessage = error instanceof Error ? error.message : '小程序码加载失败，请重试。';
                 this.refreshDisplay();
                 return;
+            } finally {
+                this.qrLoadInFlight = false;
             }
             this.refreshDisplay();
-            this.scheduleBindingPoll(session.interval);
         } catch (error) {
             this.bindingState = 'error';
             this.bindingMessage = error instanceof Error ? error.message : '无法创建绑定请求。';
@@ -494,85 +511,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
     }
 
-    private scheduleBindingPoll(seconds: number): void {
-        this.stopBindingPolling();
-        if (!this.bindingSession || this.bindingMode !== 'qr' || !this.appVisible) return;
-        const delay = Math.max(1, seconds) * 1000;
-        this.nextPollAt = Date.now() + delay;
-        this.bindingTimer = this.plugin.timers.setTimeout(() => this.pollBindingIfDue(), delay, 'binding');
-    }
-
-    private async pollBinding(): Promise<void> {
-        const session = this.bindingSession;
-        if (!session || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
-        this.pollInFlight = true;
-        this.lastPollAt = Date.now();
-        this.bindingTimer = null;
-        if (Date.now() >= this.bindingExpiresAt) {
-            this.bindingState = 'expired';
-            this.bindingMessage = '小程序码已过期，请重新生成。';
-            this.refreshDisplay();
-            this.pollInFlight = false;
-            return;
-        }
-        try {
-            const result = await this.bindingClient.credential(session.device_code);
-            if (result.status === 'approved') {
-                this.stopBindingPolling();
-                await this.plugin.applyDeviceCredential(result);
-                this.resetBindingSession();
-                this.refreshDisplay();
-                return;
-            }
-            this.bindingState = result.status === 'approving' ? 'approving' : 'waiting';
-            this.bindingMessage = result.status === 'approving' ? '手机端已确认，正在安全下发 API Key…' : '等待手机端确认…';
-            this.refreshDisplay();
-            this.scheduleBindingPoll(result.retry_after || session.interval);
-        } catch (error) {
-            if (error instanceof DeviceBindingError && ['access_denied', 'expired_token'].includes(error.code)) {
-                this.bindingState = 'expired';
-                this.bindingMessage = error.code === 'access_denied' ? '本次绑定已被拒绝。' : '绑定请求已过期。';
-                this.refreshDisplay();
-                return;
-            }
-            const retryAfter = error instanceof DeviceBindingError && error.code === 'slow_down'
-                ? Math.min(60, session.interval + 5) : 10;
-            this.bindingMessage = '网络暂时不可用，正在重试…';
-            this.refreshDisplay();
-            this.scheduleBindingPoll(retryAfter);
-        } finally {
-            this.pollInFlight = false;
-        }
-    }
-
-    private pollBindingIfDue(): void {
-        if (!this.bindingSession || !this.activeContainerEl || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
-        const now = Date.now();
-        if (now >= this.bindingExpiresAt) {
-            void this.pollBinding();
-            return;
-        }
-        if (this.nextPollAt && now < this.nextPollAt) return;
-        if (!this.nextPollAt && this.lastPollAt && now - this.lastPollAt < 30_000) return;
-        void this.pollBinding();
-    }
-
-    private stopBindingPolling(preserveSchedule = false): void {
-        this.plugin.timers.clearTimeout(this.bindingTimer);
-        this.bindingTimer = null;
-        if (!preserveSchedule) this.nextPollAt = 0;
-    }
-
     private resetBindingSession(): void {
-        this.stopBindingPolling();
         this.bindingSession = null;
         this.bindingQrDataUrl = '';
+        this.qrUnavailableForCode = '';
         this.bindingState = 'idle';
         this.bindingMessage = '';
-        this.bindingExpiresAt = 0;
-        this.pollInFlight = false;
-        this.lastPollAt = 0;
-        this.nextPollAt = 0;
         this.launchUrl = '';
         this.launchState = 'idle';
         this.launchMessage = '';
@@ -641,17 +585,56 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .setHeading();
 
         new Setting(containerEl)
+            .setName('重新扫码绑定此设备')
+            .setDesc('每台设备应分别绑定自己的 Key；旧 Key 会保留至新绑定完成。')
+            .addButton(btn => btn.setButtonText('生成绑定码').onClick(() => {
+                this.showBindingForExistingKey = true;
+                this.refreshDisplay();
+            }));
+
+        for (const taskId of this.plugin.getMigrationUnresolvedTasks()) {
+            new Setting(containerEl)
+                .setName(`迁移待确认任务 #${taskId}`)
+                .setDesc('旧配置指向的笔记在本机不存在。请选择保留忽略或重新导入，选择前不提交该任务的删除回执。')
+                .addButton(btn => btn.setButtonText('保留忽略').onClick(() => {
+                    this.runAsync(() => this.plugin.resolveMigrationTask(taskId, 'ignore'));
+                }))
+                .addButton(btn => btn.setButtonText('重新导入').onClick(() => {
+                    this.runAsync(() => this.plugin.resolveMigrationTask(taskId, 'reimport'));
+                }));
+        }
+
+        if (this.plugin.hasLegacySharedState()) {
+            new Setting(containerEl)
+                .setName('清理旧共享状态')
+                .setDesc('确认所有设备均已升级并分别绑定后，清除 Vault 配置中的旧 Key 和进度。旧版插件将无法再从共享配置恢复。')
+                .addButton(btn => btn
+                    .setButtonText(this.confirmLegacyCleanup ? '再次点击，确认清理' : '清理旧状态')
+                    .onClick(() => {
+                        if (!this.confirmLegacyCleanup) {
+                            this.confirmLegacyCleanup = true;
+                            this.refreshDisplay();
+                            return;
+                        }
+                        this.confirmLegacyCleanup = false;
+                        this.runAsync(() => this.plugin.clearLegacySharedState());
+                    }));
+        }
+
+        new Setting(containerEl)
             .setName('API Key')
             .setDesc('从 clip2md 网站获取的 API Key')
-            .addText(text => text
-                .setPlaceholder('clip2md_...')
-                .setValue(this.plugin.settings.apiKey)
-                .onChange((value) => {
-                    this.runAsync(async () => {
-                        this.plugin.settings.apiKey = value.trim();
-                        await this.plugin.saveSettings();
+            .addText(text => {
+                text.setPlaceholder('clip2md_...')
+                    .setValue(this.plugin.settings.apiKey)
+                    .onChange((value) => {
+                        this.runAsync(async () => {
+                            this.plugin.settings.apiKey = value.trim();
+                            await this.plugin.saveSettings();
+                        });
                     });
-                }))
+                text.inputEl.type = 'password';
+            })
             .addExtraButton(btn => btn
                 .setIcon('external-link')
                 .setTooltip('获取 API Key')

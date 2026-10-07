@@ -1,4 +1,4 @@
-import { App, MarkdownView, Notice, Plugin, PluginSettingTab, WorkspaceLeaf, addIcon } from 'obsidian';
+import { App, MarkdownView, Notice, Plugin, PluginSettingTab, WorkspaceLeaf, addIcon, requestUrl } from 'obsidian';
 import {
     BijiSyncSettings,
     BijiSyncSettingTab,
@@ -12,11 +12,12 @@ import {
     SyncTrigger,
 } from './settings';
 import { isInvalidApiKeyError, PendingTaskFetchResult, SyncResult, SyncService, SyncTask } from './sync';
-import { CLIP2MD_APP_URL, DeviceCredentialStatus } from './binding';
+import { CLIP2MD_APP_URL, DeviceBindingClient, DeviceBindingError, DeviceBindingSession, DeviceCredentialStatus } from './binding';
 import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
 import { TimerRegistry } from './timers';
-import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckQueue, type PendingSyncAck } from './sync-ack';
+import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckHttpError, SyncAckQueue, type PendingSyncAck } from './sync-ack';
+import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState } from './local-state';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -149,6 +150,13 @@ export default class BijiSyncPlugin extends Plugin {
     private persistenceQueue: Promise<void> = Promise.resolve();
     private restoreMissingMappedTasksOnNextSync = false;
     private syncWriteInProgress = false;
+    private localState: LocalDeviceState;
+    private legacySharedData: StoredPluginData = {};
+    private readonly bindingClient = new DeviceBindingClient();
+    private bindingTimer: number | null = null;
+    private bindingPollInFlight = false;
+    private bindingMessage = '';
+    private justMigratedLegacyKey = false;
 
     async onload() {
         let saved: unknown = await this.loadStoredData();
@@ -176,12 +184,12 @@ export default class BijiSyncPlugin extends Plugin {
             .some(key => key.toLowerCase().includes('update'));
 
         this.settings = this.normalizeSettings(savedData);
-        this.restoreMissingMappedTasksOnNextSync = savedData.restoreMissingMappedTasksOnNextSync === true;
-        let settingsMigrated = false;
-        if (!this.settings.installationId) {
-            this.settings.installationId = this.createInstallationId();
-            settingsMigrated = true;
+        for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId', 'cursor', 'taskFileMap',
+            'pendingTaskIds', 'ignoredTaskIds', 'pendingAcks', 'restoreMissingMappedTasksOnNextSync',
+            'lastSyncSummary']) {
+            if (Object.prototype.hasOwnProperty.call(savedData, key)) this.legacySharedData[key] = savedData[key];
         }
+        let settingsMigrated = false;
         if (typeof savedData.frontmatterTemplate === 'string'
             && savedData.frontmatterTemplate.trim() === LEGACY_DEFAULT_FRONTMATTER_TEMPLATE.trim()) {
             this.settings.frontmatterTemplate = DEFAULT_FRONTMATTER_TEMPLATE;
@@ -201,30 +209,32 @@ export default class BijiSyncPlugin extends Plugin {
             this.settings.syncContentMode = 'source';
         }
 
+        this.localState = await this.loadOrMigrateLocalState(savedData);
+        this.settings.installationId = this.localState.installationId;
+        this.settings.credentialId = this.localState.credentialId;
+        this.settings.credentialName = this.localState.credentialName;
+        this.settings.apiKey = this.app.secretStorage.getSecret(API_SECRET_ID) || '';
+        this.settings.lastSyncSummary = this.localState.lastSyncSummary;
+        this.restoreMissingMappedTasksOnNextSync = this.localState.restoreMissingMappedTasksOnNextSync;
         this.syncService = new SyncService(this.settings, this.app.fileManager);
-
-        if (typeof savedData.cursor === 'string') {
-            this.syncService.setCursor(savedData.cursor);
-        }
-        if (isTaskFileMapping(savedData.taskFileMap)) {
-            this.syncService.loadTaskFileMap(savedData.taskFileMap);
-        }
-        if (isNumberArray(savedData.pendingTaskIds)) {
-            this.syncService.loadPendingTaskIds(savedData.pendingTaskIds);
-        }
-        if (isNumberArray(savedData.ignoredTaskIds)) {
-            this.syncService.loadIgnoredTaskIds(savedData.ignoredTaskIds);
-        }
+        this.syncService.setCursor(this.localState.cursor);
+        this.syncService.loadTaskFileMap(this.localState.taskFileMap);
+        this.syncService.loadIgnoredTaskIds(this.localState.ignoredTaskIds);
+        this.syncService.loadPendingTaskIds(this.localState.pendingTaskIds);
         this.syncAckQueue = new SyncAckQueue(
             () => this.persistSyncState(),
             ack => this.deliverSyncAck(ack),
         );
-        this.syncAckQueue.load(savedData.pendingAcks);
+        this.syncAckQueue.load(this.localState.pendingAcks);
         if (settingsMigrated) {
-            await this.persistSyncState();
+            await this.saveSettings();
+        }
+        if (this.justMigratedLegacyKey) {
+            new Notice('Clip2MD: 旧 Key 已暂时沿用；请在每台设备分别扫码绑定。', 10000);
         }
 
-        this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
+        this.updateConnectionState(this.settings.apiKey
+            ? (this.localState.credentialInvalid ? 'invalid' : 'configured') : 'unconfigured');
 
         addIcon(CLIP2MD_ICON_ID, CLIP2MD_ICON_SVG);
 
@@ -237,6 +247,7 @@ export default class BijiSyncPlugin extends Plugin {
             this.registerDomEvent(window, 'pageshow', () => this.handleAppVisibility(true));
         }
         this.settingTab.onAppVisibilityChange(this.appVisible);
+        this.scheduleDeviceBindingPoll(0);
 
         this.ribbonEl = this.addRibbonIcon(CLIP2MD_ICON_ID, 'Clip2MD 同步', () => {
             if (!this.settings.apiKey) {
@@ -275,6 +286,7 @@ export default class BijiSyncPlugin extends Plugin {
     onunload() {
         this.settingTab?.hide();
         this.timers.clearAll();
+        this.bindingTimer = null;
         this.syncIntervalId = null;
         this.ackRetryIntervalId = null;
         this.syncNotice?.hide();
@@ -286,30 +298,29 @@ export default class BijiSyncPlugin extends Plugin {
     async loadSettings() {
         await this.persistenceQueue;
         const saved = await this.loadStoredData();
-        this.settings = this.normalizeSettings(saved);
-        this.restoreMissingMappedTasksOnNextSync = saved.restoreMissingMappedTasksOnNextSync === true;
-        if (saved.syncContentMode === undefined && typeof saved.apiKey === 'string' && saved.apiKey) {
-            this.settings.syncContentMode = 'source';
+        this.legacySharedData = {};
+        for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId', 'cursor', 'taskFileMap',
+            'pendingTaskIds', 'ignoredTaskIds', 'pendingAcks', 'restoreMissingMappedTasksOnNextSync',
+            'lastSyncSummary']) {
+            if (Object.prototype.hasOwnProperty.call(saved, key)) this.legacySharedData[key] = saved[key];
         }
-
-        if (typeof saved.cursor === 'string' && this.syncService) {
-            this.syncService.setCursor(saved.cursor);
-        }
-        if (isTaskFileMapping(saved.taskFileMap) && this.syncService) {
-            this.syncService.loadTaskFileMap(saved.taskFileMap);
-        }
-        if (isNumberArray(saved.pendingTaskIds) && this.syncService) {
-            this.syncService.loadPendingTaskIds(saved.pendingTaskIds);
-        }
-        if (isNumberArray(saved.ignoredTaskIds) && this.syncService) {
-            this.syncService.loadIgnoredTaskIds(saved.ignoredTaskIds);
-        }
-        if (this.syncAckQueue) {
-            this.syncAckQueue.load(saved.pendingAcks);
-        }
+        const local = {
+            apiKey: this.settings.apiKey,
+            credentialId: this.settings.credentialId,
+            credentialName: this.settings.credentialName,
+            installationId: this.settings.installationId,
+            lastSyncSummary: this.settings.lastSyncSummary,
+        };
+        this.settings = { ...this.normalizeSettings(saved), ...local };
         this.syncService.updateSettings(this.settings);
-        this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
+        this.updateConnectionState(this.settings.apiKey
+            ? (this.localState.credentialInvalid ? 'invalid' : 'configured') : 'unconfigured');
         this.updateRibbonState();
+    }
+
+    async onExternalSettingsChange(): Promise<void> {
+        await this.loadSettings();
+        this.refreshSettingTab();
     }
 
     async saveSettings() {
@@ -317,7 +328,11 @@ export default class BijiSyncPlugin extends Plugin {
         if (this.syncService) {
             this.syncService.updateSettings(this.settings);
         }
-        await this.persistPluginState();
+        if (this.app.secretStorage.getSecret(API_SECRET_ID) !== this.settings.apiKey) {
+            this.localState.credentialInvalid = false;
+            this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
+        }
+        await this.persistPluginState(true);
         this.startSyncInterval();
         this.startAckRetryInterval();
         // 不在这里刷新设置页面，避免每次保存都重建 UI
@@ -332,33 +347,303 @@ export default class BijiSyncPlugin extends Plugin {
         await this.saveSettings();
     }
 
-    async persistSyncState() {
-        await this.persistPluginState();
+    getMigrationUnresolvedTasks(): number[] {
+        return [...this.localState.unresolvedTaskIds];
     }
 
-    private persistPluginState(): Promise<void> {
+    hasLegacySharedState(): boolean {
+        return Object.keys(this.legacySharedData).length > 0;
+    }
+
+    async resolveMigrationTask(taskId: number, action: 'ignore' | 'reimport'): Promise<void> {
+        if (!this.localState.unresolvedTaskIds.includes(taskId)) return;
+        this.localState.unresolvedTaskIds = this.localState.unresolvedTaskIds.filter(id => id !== taskId);
+        if (action === 'ignore') {
+            this.syncService.markIgnored(taskId);
+            this.syncService.removePending(taskId);
+        } else {
+            this.syncService.removeIgnored(taskId);
+            this.syncService.markPending(taskId);
+        }
+        await this.persistSyncState();
+        this.refreshSettingTab();
+    }
+
+    async clearLegacySharedState(): Promise<void> {
         const write = async () => {
-            const data: StoredPluginData = {
-                ...this.settings,
+            const shared: StoredPluginData = { ...this.settings };
+            for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId',
+                'lastSyncSummary']) delete shared[key];
+            await this.saveData(shared);
+            this.legacySharedData = {};
+            await this.backupConfig();
+            this.refreshSettingTab();
+        };
+        const next = this.persistenceQueue.catch(() => undefined).then(write);
+        this.persistenceQueue = next;
+        await next;
+    }
+
+    getDeviceBindingSession(): DeviceBindingSession | null {
+        const pending = this.localState.pendingBinding;
+        if (!pending) return null;
+        return {
+            device_code: pending.deviceCode, user_code: pending.userCode,
+            expires_in: Math.max(0, Math.ceil((pending.expiresAt - Date.now()) / 1000)),
+            interval: pending.interval,
+        };
+    }
+
+    getDeviceBindingMessage(): string {
+        return this.bindingMessage || (this.localState.pendingBinding?.phase === 'prepared'
+            ? '正在完成本机绑定…' : '等待手机端授权…');
+    }
+
+    async cancelDeviceBinding(): Promise<void> {
+        if (this.localState.pendingBinding?.phase === 'prepared') {
+            throw new Error('正在完成 Key 替换，请等待结果或绑定码到期');
+        }
+        this.localState.pendingBinding = undefined;
+        await this.persistSyncState();
+        this.timers.clearTimeout(this.bindingTimer);
+        this.bindingTimer = null;
+    }
+
+    async beginDeviceBinding(session: DeviceBindingSession): Promise<void> {
+        if (this.localState.pendingBinding?.phase === 'prepared') {
+            throw new Error('上次绑定正在完成，请等待结果后重试');
+        }
+        this.localState.pendingBinding = {
+            deviceCode: session.device_code,
+            userCode: session.user_code,
+            expiresAt: Date.now() + session.expires_in * 1000,
+            interval: session.interval,
+            phase: 'polling',
+        };
+        this.bindingMessage = '等待手机端授权…';
+        await this.persistSyncState();
+        this.scheduleDeviceBindingPoll(session.interval);
+    }
+
+    private scheduleDeviceBindingPoll(seconds: number): void {
+        this.timers.clearTimeout(this.bindingTimer);
+        this.bindingTimer = null;
+        if (!this.appVisible || !this.localState?.pendingBinding) return;
+        this.bindingTimer = this.timers.setTimeout(() => void this.pollDeviceBinding(), Math.max(0, seconds) * 1000, 'binding');
+    }
+
+    private async probeCandidateKey(apiKey: string): Promise<boolean | null> {
+        const response = await requestUrl({
+            url: `${CLIP2MD_API_BASE_URL}/sync/tasks?limit=1`,
+            headers: { 'X-API-Key': apiKey },
+            throw: false,
+        });
+        if (response.status === 401) return false;
+        if (response.status >= 200 && response.status < 300) return true;
+        return null;
+    }
+
+    private async promotePendingCredential(credentialId?: number, credentialName?: string): Promise<void> {
+        const pendingKey = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+        if (!pendingKey) throw new Error('待领取 Key 的本机草稿丢失，请重新扫码');
+        setLocalSecret(this.app, API_SECRET_ID, pendingKey);
+        this.settings.apiKey = pendingKey;
+        this.settings.credentialId = credentialId;
+        this.settings.credentialName = credentialName || this.localState.pendingBinding?.credentialName;
+        this.localState.legacyKeyMigrated = false;
+        this.localState.credentialInvalid = false;
+        this.localState.pendingBinding = undefined;
+        await this.persistSyncState();
+        setLocalSecret(this.app, PENDING_SECRET_ID, '');
+        this.updateConnectionState('connected', '已验证连接');
+        this.startSyncInterval();
+        this.startAckRetryInterval();
+        this.bindingMessage = '绑定成功';
+        this.settingTab?.onDeviceBindingFinished();
+        new Notice('Clip2MD: 本机绑定成功，可以开始同步。', 6000);
+        this.refreshSettingTab();
+    }
+
+    private async pollDeviceBinding(): Promise<void> {
+        const pending = this.localState?.pendingBinding;
+        if (!pending || !this.appVisible || this.bindingPollInFlight) return;
+        this.bindingPollInFlight = true;
+        try {
+            const candidate = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+            if (pending.phase === 'prepared' && candidate) {
+                const active = await this.probeCandidateKey(candidate);
+                if (active === true) {
+                    await this.promotePendingCredential(undefined, pending.credentialName);
+                    return;
+                }
+                if (Date.now() >= pending.expiresAt) {
+                    this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
+                    this.localState.pendingBinding = undefined;
+                    await this.persistSyncState();
+                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                    this.refreshSettingTab();
+                    return;
+                }
+                const completed = await this.bindingClient.complete(pending.deviceCode, candidate);
+                await this.promotePendingCredential(completed.credential_id, completed.credential_name);
+                return;
+            }
+            if (Date.now() >= pending.expiresAt) {
+                this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
+                this.localState.pendingBinding = undefined;
+                await this.persistSyncState();
+                setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                this.refreshSettingTab();
+                return;
+            }
+            const result = await this.bindingClient.credential(pending.deviceCode);
+            if (result.status === 'prepared') {
+                setLocalSecret(this.app, PENDING_SECRET_ID, result.api_key);
+                const before = this.localState.pendingBinding;
+                this.localState.pendingBinding = { ...pending, phase: 'prepared', credentialName: result.credential_name };
+                try {
+                    await this.persistSyncState();
+                } catch (error) {
+                    this.localState.pendingBinding = before;
+                    throw error;
+                }
+                this.bindingMessage = '手机已授权，正在完成本机绑定…';
+                this.scheduleDeviceBindingPoll(0);
+            } else if (result.status === 'completed') {
+                const draft = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+                if (draft && await this.probeCandidateKey(draft)) {
+                    await this.promotePendingCredential(result.credential_id);
+                } else {
+                    this.bindingMessage = '绑定结果无法恢复，请重新扫码。';
+                }
+            } else if (result.status === 'pending_approval' || result.status === 'approving') {
+                this.bindingMessage = result.status === 'approving' ? '手机已授权，正在准备 Key…' : '等待手机端授权…';
+                this.scheduleDeviceBindingPoll(result.retry_after);
+            } else {
+                throw new Error('绑定协议版本不匹配，请重新扫码');
+            }
+            this.refreshSettingTab();
+        } catch (error) {
+            if (error instanceof DeviceBindingError && [
+                'access_denied', 'expired_token', 'replacement_credential_unavailable',
+                'credential_limit_reached_v2', 'candidate_mismatch', 'credential_revoked',
+            ].includes(error.code)) {
+                this.bindingMessage = ['replacement_credential_unavailable', 'credential_limit_reached_v2'].includes(error.code)
+                    ? '所选旧 Key 已被其他操作替换或 Key 数量已满；请重新扫码并选择当前有效 Key。'
+                    : '绑定已拒绝、过期或草稿不匹配，旧 Key 保持原样；请重新扫码。';
+                this.localState.pendingBinding = undefined;
+                await this.persistSyncState();
+                setLocalSecret(this.app, PENDING_SECRET_ID, '');
+            } else {
+                this.bindingMessage = '绑定暂未完成，网络恢复后将重试。';
+                this.scheduleDeviceBindingPoll(10);
+            }
+            this.refreshSettingTab();
+        } finally {
+            this.bindingPollInFlight = false;
+        }
+    }
+
+    async persistSyncState() {
+        await this.persistPluginState(false);
+    }
+
+    private persistPluginState(includeShared: boolean): Promise<void> {
+        const write = async () => {
+            setLocalSecret(this.app, API_SECRET_ID, this.settings.apiKey);
+            const nextState: LocalDeviceState = {
+                ...this.localState,
+                version: 1,
+                installationId: this.settings.installationId,
+                credentialId: this.settings.credentialId,
+                credentialName: this.settings.credentialName,
                 cursor: this.syncService?.getCursor() ?? null,
                 taskFileMap: { ...(this.syncService?.getTaskFileMap() ?? {}) },
                 pendingTaskIds: [...(this.syncService?.getPendingTaskIds() ?? [])],
                 ignoredTaskIds: [...(this.syncService?.getIgnoredTaskIds() ?? [])],
                 restoreMissingMappedTasksOnNextSync: this.restoreMissingMappedTasksOnNextSync,
                 pendingAcks: this.syncAckQueue?.snapshot() ?? [],
+                lastSyncSummary: this.settings.lastSyncSummary,
             };
-            await this.saveData(data);
-            await this.backupConfig();
+            saveLocalDeviceState(this.app, nextState);
+            this.localState = nextState;
+            if (includeShared) {
+                const shared: StoredPluginData = { ...this.settings };
+                for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId',
+                    'lastSyncSummary']) delete shared[key];
+                await this.saveData({ ...shared, ...this.legacySharedData });
+                await this.backupConfig();
+            }
         };
         const next = this.persistenceQueue.catch(() => undefined).then(write);
         this.persistenceQueue = next;
         return next;
     }
 
+    private async loadOrMigrateLocalState(saved: StoredPluginData): Promise<LocalDeviceState> {
+        const existing = readLocalDeviceState(this.app);
+        if (existing) return existing;
+        const legacyMap = isTaskFileMapping(saved.taskFileMap) ? saved.taskFileMap : {};
+        const verifiedMap: Record<number, string> = {};
+        const unresolved: number[] = [];
+        const probe = new SyncService(this.settings, this.app.fileManager);
+        probe.loadTaskFileMap(legacyMap);
+        for (const key of Object.keys(legacyMap)) {
+            const id = Number(key);
+            if (!Number.isSafeInteger(id) || id <= 0) continue;
+            if (await probe.verifyTaskFile(this.app.vault, id)) verifiedMap[id] = legacyMap[id];
+        }
+        // Rebuild mappings from this Vault's actual task markers. A copied
+        // data.json may describe another device, and notes may have moved.
+        for (const file of this.app.vault.getMarkdownFiles()) {
+            const content = await this.app.vault.read(file);
+            const markers = /(?:^|\n)task_id:\s*(\d+)\b|biji-task-id:(\d+)\b|clip2md-task-start:(\d+)\b/g;
+            let match: RegExpExecArray | null;
+            while ((match = markers.exec(content)) !== null) {
+                const id = Number(match[1] || match[2] || match[3]);
+                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id]) verifiedMap[id] = file.path;
+            }
+        }
+        if (this.settings.preventReimportAfterLocalRemoval) {
+            for (const key of Object.keys(legacyMap)) {
+                const id = Number(key);
+                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id]) unresolved.push(id);
+            }
+        }
+        if (this.settings.preventReimportAfterLocalRemoval && isNumberArray(saved.ignoredTaskIds)) {
+            for (const id of saved.ignoredTaskIds) {
+                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id] && !unresolved.includes(id)) unresolved.push(id);
+            }
+        }
+        const oldKey = typeof saved.apiKey === 'string' ? saved.apiKey : '';
+        const existingLocalKey = this.app.secretStorage.getSecret(API_SECRET_ID);
+        if (oldKey && !existingLocalKey) setLocalSecret(this.app, API_SECRET_ID, oldKey);
+        this.justMigratedLegacyKey = Boolean(oldKey && !existingLocalKey);
+        const state: LocalDeviceState = {
+            version: 1,
+            installationId: this.createInstallationId(),
+            credentialId: typeof saved.credentialId === 'number' ? saved.credentialId : undefined,
+            credentialName: typeof saved.credentialName === 'string' ? saved.credentialName : undefined,
+            cursor: null,
+            taskFileMap: verifiedMap,
+            pendingTaskIds: [],
+            ignoredTaskIds: [],
+            pendingAcks: [],
+            restoreMissingMappedTasksOnNextSync: false,
+            unresolvedTaskIds: unresolved,
+            legacyKeyMigrated: Boolean(oldKey && !existingLocalKey),
+            credentialInvalid: false,
+        };
+        saveLocalDeviceState(this.app, state);
+        return state;
+    }
+
     async verifyConnection(): Promise<void> {
         try {
             await this.syncService.probeConnection();
             this.updateConnectionState('connected', '已验证连接');
+            this.startSyncInterval();
+            this.startAckRetryInterval();
             this.refreshSettingTab();
         } catch (error) {
             this.handleConnectionError(error);
@@ -510,7 +795,7 @@ export default class BijiSyncPlugin extends Plugin {
         this.timers.clearInterval(this.syncIntervalId);
         this.syncIntervalId = null;
 
-        if (!this.appVisible || !this.settings.apiKey || this.settings.syncInterval === 0) {
+        if (!this.appVisible || !this.settings.apiKey || this.connectionState === 'invalid' || this.settings.syncInterval === 0) {
             return;
         }
 
@@ -524,14 +809,14 @@ export default class BijiSyncPlugin extends Plugin {
     private startAckRetryInterval(): void {
         this.timers.clearInterval(this.ackRetryIntervalId);
         this.ackRetryIntervalId = null;
-        if (!this.appVisible || !this.settings.apiKey) return;
+        if (!this.appVisible || !this.settings.apiKey || this.connectionState === 'invalid') return;
         this.ackRetryIntervalId = this.timers.setInterval(
             () => this.retryPendingAcks(), 5 * 60 * 1000, 'network',
         );
     }
 
     private retryPendingAcks(): void {
-        if (!this.syncing && this.appVisible && this.settings.apiKey && this.syncAckQueue.snapshot().length > 0) {
+        if (!this.syncing && this.appVisible && this.settings.apiKey && this.connectionState !== 'invalid' && this.syncAckQueue.snapshot().length > 0) {
             void this.syncAckQueue.flush();
         }
     }
@@ -551,11 +836,20 @@ export default class BijiSyncPlugin extends Plugin {
             await this.persistSyncState();
             return 'discard';
         }
-        return postSyncAck(ack, this.settings.apiKey);
+        try {
+            return await postSyncAck(ack, this.settings.apiKey);
+        } catch (error) {
+            if (error instanceof SyncAckHttpError && error.status === 401) {
+                this.updateConnectionState('invalid', '回执请求返回 401；请为本机重新绑定 Key');
+                new Notice('Clip2MD: 本机 API Key 已失效，请重新绑定；待发回执已保留。', 8000);
+                this.refreshSettingTab();
+            }
+            throw error;
+        }
     }
 
     scheduleStartupSync() {
-        if (!this.settings.syncOnStart || !this.settings.apiKey) {
+        if (!this.settings.syncOnStart || !this.settings.apiKey || this.connectionState === 'invalid') {
             return;
         }
         this.app.workspace.onLayoutReady(() => {
@@ -580,6 +874,7 @@ export default class BijiSyncPlugin extends Plugin {
         if (this.appVisible === visible) {
             if (visible) {
                 this.retryPendingAcks();
+                this.scheduleDeviceBindingPoll(0);
                 this.settingTab?.onAppVisibilityChange(true);
             }
             return;
@@ -589,10 +884,13 @@ export default class BijiSyncPlugin extends Plugin {
             this.startSyncInterval();
             this.startAckRetryInterval();
             this.retryPendingAcks();
+            this.scheduleDeviceBindingPoll(0);
             if (!this.startupSyncTriggered) this.scheduleStartupSync();
             this.settingTab?.onAppVisibilityChange(true);
         } else {
             this.timers.clearGroup('network');
+            this.timers.clearTimeout(this.bindingTimer);
+            this.bindingTimer = null;
             this.syncIntervalId = null;
             this.ackRetryIntervalId = null;
             this.settingTab?.onAppVisibilityChange(false);
@@ -901,6 +1199,10 @@ export default class BijiSyncPlugin extends Plugin {
 
     private async processTasks(tasks: SyncTask[], counters: SyncCounters) {
         for (const task of tasks) {
+            if (this.localState?.unresolvedTaskIds?.includes(task.id)) {
+                counters.skipped += 1;
+                continue;
+            }
             counters.processed += 1;
             this.processedCount = counters.processed;
 
@@ -981,12 +1283,24 @@ export default class BijiSyncPlugin extends Plugin {
             : summary.outcome === 'partial'
                 ? 'partial'
                 : 'success';
-        void this.saveSettings();
+        void this.persistSyncState();
         return summary;
     }
 
     private updateConnectionState(state: ConnectionState, message?: string) {
         this.connectionState = state;
+        if (state === 'invalid') {
+            this.timers.clearInterval(this.syncIntervalId);
+            this.timers.clearInterval(this.ackRetryIntervalId);
+            this.syncIntervalId = null;
+            this.ackRetryIntervalId = null;
+            if (this.localState && !this.localState.credentialInvalid) {
+                this.localState.credentialInvalid = true;
+                void this.persistSyncState().catch(error => {
+                    console.warn('Clip2MD: 本机无效 Key 标记暂未保存', error);
+                });
+            }
+        }
         if (state === 'unconfigured') {
             this.connectionMessage = '请填写 API Key 开始使用';
         } else if (state === 'configured') {

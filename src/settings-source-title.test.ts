@@ -64,6 +64,17 @@ vi.mock('obsidian', async importOriginal => {
             callback(component);
             return this;
         }
+
+        addButton(callback: (component: unknown) => unknown) {
+            const button = document.createElement('button');
+            this.controlEl.appendChild(button);
+            const component = {
+                setButtonText(value: string) { button.textContent = value; return component; },
+                onClick(handler: () => void) { button.addEventListener('click', handler); return component; },
+            };
+            callback(component);
+            return this;
+        }
     }
     return { ...original, Setting };
 });
@@ -115,6 +126,8 @@ function settingsPage() {
         getTemplatePreview: () => sync.getTemplatePreviewData(),
         renderTemplatePreview: () => sync.renderTemplatePreview(settings.template),
         validateTemplate: (template: string) => sync.validateTemplate(template),
+        getMigrationUnresolvedTasks: () => [],
+        hasLegacySharedState: () => false,
     } as unknown as BijiSyncPlugin;
     const tab = Object.create(BijiSyncSettingTab.prototype) as BijiSyncSettingTab;
     tab.plugin = plugin;
