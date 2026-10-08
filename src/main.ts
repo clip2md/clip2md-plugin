@@ -1,5 +1,5 @@
 import { validateCustomTitle } from './note-title';
-import { App, MarkdownView, Notice, Plugin, PluginSettingTab, WorkspaceLeaf, addIcon, requestUrl } from 'obsidian';
+import { App, MarkdownView, Notice, Plugin, WorkspaceLeaf, addIcon, requestUrl } from 'obsidian';
 import {
     BijiSyncSettings,
     BijiSyncSettingTab,

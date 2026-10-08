@@ -428,7 +428,7 @@ input.clip2md-flash {
 .clip2md-note-properties { display: grid; grid-template-columns: minmax(5rem, 1fr) minmax(0, 3fr); gap: .5rem; border-bottom: 1px solid var(--background-modifier-border); padding-block-end: 1rem; }
 .clip2md-note-properties dt { color: var(--text-muted); }
 .clip2md-note-properties dd { margin: 0; white-space: pre-wrap; }
-.clip2md-note-content [hidden], .setting-item[hidden] { display: none !important; }
+.clip2md-settings .clip2md-note-content [hidden], .clip2md-settings .setting-item[hidden] { display: none; }
 @media (pointer: coarse) {
     .clip2md-note-content button, .clip2md-note-content select, .clip2md-note-content summary { min-height: 48px; }
 }
@@ -436,4 +436,4 @@ input.clip2md-flash {
 .clip2md-title-invalid .setting-item-description { color: var(--text-error); }
 
 /* The settings host hides headings; preview headings belong to the note. */
-.clip2md-content-preview .clip2md-note-body :is(h1, h2, h3, h4, h5, h6) { display: block !important; }
+.clip2md-settings .clip2md-content-preview .clip2md-note-body :is(h1, h2, h3, h4, h5, h6) { display: block; }

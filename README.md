@@ -5,6 +5,33 @@ Markdown and syncs completed clipping tasks to your knowledge base. It can
 save images locally, preserve task metadata, update previously synchronized
 notes, and organize files with customizable folder and filename templates.
 
+## Features
+
+- Sync completed Clip2MD clipping tasks as Markdown notes in your vault.
+- Download images locally and keep links and task metadata in the note.
+- Update the same note when a task is synchronized again.
+- Choose manual, startup, or scheduled synchronization.
+- Bind each device by scanning a WeChat QR code or entering an API Key.
+- Customize note titles, folders, filenames, YAML properties, and body templates.
+- Preview the resulting note or Markdown before synchronizing.
+
+## Requirements and setup
+
+Requires Obsidian **1.13.7 or later** on desktop or mobile, a Clip2MD account
+or valid API Key, and an internet connection. The plugin connects to the
+Clip2MD service to bind your device, fetch completed tasks, and download images.
+
+Install **Clip2MD** from Community plugins, enable it, and open its settings.
+Bind the current device, choose a destination folder, then run the sync command.
+Credentials and sync progress are stored separately on each device; bind each
+device individually even when they share a vault. Community-market updates
+are managed through Obsidian's plugin updater.
+
+For a manual installation, download `main.js`, `manifest.json`, and `styles.css`
+from the same release and place them in `.obsidian/plugins/clipmd/`.
+
+## 中文说明
+
 将网页剪藏内容转换为 Markdown，并同步到 Obsidian。Clip2MD 负责网页内容的提取与整理，Obsidian 插件负责把已完成的剪藏任务写入你的 Vault。
 
 ## 功能

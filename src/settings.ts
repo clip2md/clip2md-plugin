@@ -249,6 +249,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private renderInto(containerEl: HTMLElement): void {
         this.activeContainerEl = containerEl;
         installButtonClickGuard(containerEl);
+        containerEl.addClass('clip2md-settings');
         containerEl.toggleClass('clip2md-platform-mobile', Platform.isMobileApp);
         containerEl.empty();
 

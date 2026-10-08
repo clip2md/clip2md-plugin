@@ -99,11 +99,7 @@ export class NoteContentSettings {
     }
 
     private el<K extends keyof HTMLElementTagNameMap>(parent: HTMLElement, tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {
-        const element = parent.ownerDocument.createElement(tag);
-        if (text) element.textContent = text;
-        if (cls) element.className = cls;
-        parent.appendChild(element);
-        return element;
+        return parent.createEl(tag, { text, cls });
     }
 
     private button(parent: HTMLElement, title: string, action: () => void): HTMLButtonElement {
@@ -244,8 +240,9 @@ export class NoteContentSettings {
             this.el(table, 'dd', typeof value === 'string' ? value : JSON.stringify(value));
         }
         const body = markdown.slice(match![0].length);
-        const target = this.preview.ownerDocument.createElement('div');
-        target.className = 'markdown-rendered clip2md-note-body';
+        const target = this.preview.createDiv({ cls: 'markdown-rendered clip2md-note-body' });
+        // Render off-screen; only the latest completed preview is attached.
+        target.remove();
         const component = new Component();
         component.load();
         this.renderer = component;

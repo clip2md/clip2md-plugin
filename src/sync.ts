@@ -768,7 +768,7 @@ export class SyncService {
                             title: typeof parsed.title === 'string' ? parsed.title : heading,
                             url: typeof parsed.url === 'string' ? parsed.url : undefined,
                             tags: Array.isArray(parsed.tags) && parsed.tags.every(tag => typeof tag === 'string')
-                                ? parsed.tags as string[] : undefined,
+                                ? parsed.tags : undefined,
                         };
                     }
                 } catch { /* Historical or edited blocks retain their visible heading. */ }
