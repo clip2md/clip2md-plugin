@@ -21,7 +21,7 @@ function testPlugin(tasks: SyncTask[], renderToVault: ReturnType<typeof vi.fn>) 
         syncService: {
             fetchPendingTasks: async () => [], fetchIgnoredTasks: async () => [], getCursor: () => null, setCursor: vi.fn(),
             markIgnored: vi.fn(),
-            fetchNextPage: async () => ({ tasks, total: tasks.length, nextCursor: 'done', hasMore: false }),
+            fetchNextPage: vi.fn(async () => ({ tasks, total: tasks.length, nextCursor: 'done', hasMore: false })),
             renderToVault, markPending: vi.fn(), markComplete: vi.fn(),
         },
         updateRibbonState: vi.fn(), updateViewActions: vi.fn(), refreshSettingTab: vi.fn(),
@@ -39,6 +39,18 @@ const task = {
 } as SyncTask;
 
 describe('local deletion receipt feedback', () => {
+    it('blocks a handwritten body YAML before fetching tasks or moving the cursor', async () => {
+        const render = vi.fn();
+        const { plugin } = testPlugin([task], render);
+        plugin.settings.template = '---\ntitle: duplicate\n---\n{{content}}';
+        const result = await plugin.syncNow('scheduled');
+        expect(result).toBeUndefined();
+        expect(plugin.syncAckQueue.flush).toHaveBeenCalledOnce();
+        expect(plugin.syncService.fetchNextPage).not.toHaveBeenCalled();
+        expect(plugin.syncService.setCursor).not.toHaveBeenCalled();
+        expect(render).not.toHaveBeenCalled();
+    });
+
     it('counts intentional local ignores as success without retries or receipts', async () => {
         const { plugin, notice, enqueue } = testPlugin([task], vi.fn(async () => ({
             filepath: null, skipped: true, ignoredLocally: true,

@@ -1,5 +1,6 @@
+import { resolveNoteTitle } from './note-title';
 import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
-import { BijiSyncSettings, SyncContentMode } from './settings';
+import { BijiSyncSettings, DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, SyncContentMode } from './settings';
 import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
 
 export interface SyncTask {
@@ -8,6 +9,7 @@ export interface SyncTask {
     url: string;
     status: string;
     title: string | null;
+    display_title?: string | null;
     summary: string | null;
     note_markdown_content: string | null;
     source_markdown_content: string | null;
@@ -42,6 +44,25 @@ export interface SyncResult {
     failedAssets?: boolean;
     localizedAssetCount?: number;
     unlocalizedImages?: boolean;
+    warning?: string;
+}
+
+const DAILY_FRONTMATTER_MARKER = '<!-- clip2md-daily-frontmatter:v1 -->';
+const DAILY_BLOCK_PATTERN = /<!-- clip2md-task-start:(\d+) -->([\s\S]*?)<!-- clip2md-task-end:\1 -->/g;
+
+interface DailyTaskMetadata {
+    id: number;
+    title: string;
+    url?: string;
+    tags?: string[];
+}
+
+export function validateMarkdownBodyTemplate(template: string): { valid: boolean; message: string } {
+    if (!template.trim()) return { valid: false, message: 'Markdown 模板不能为空。' };
+    if (/^\uFEFF?\s*---[ \t]*(?:\r?\n|$)/.test(template)) {
+        return { valid: false, message: 'Markdown 模板不能包含开头的 frontmatter；请将 YAML 移到前置元数据模板后再同步。' };
+    }
+    return { valid: true, message: '' };
 }
 
 export interface SyncBatch {
@@ -100,6 +121,7 @@ function isSyncTask(value: unknown): value is SyncTask {
     return numberFields.every(field => typeof value[field] === 'number')
         && stringFields.every(field => typeof value[field] === 'string')
         && nullableStringFields.every(field => isNullableString(value[field]))
+        && (value.display_title === undefined || isNullableString(value.display_title))
         && (value.duration_seconds === null || typeof value.duration_seconds === 'number')
         && (value.ack_token === undefined || isNullableString(value.ack_token))
         && (value.tags === undefined || (
@@ -224,6 +246,7 @@ export class SyncService {
     private taskFileMap: TaskFileMapping = {};
     private pendingTaskIds: number[] = [];
     private ignoredTaskIds = new Set<number>();
+    private warnedUnmanagedDailyPaths = new Set<string>();
 
     constructor(settings: BijiSyncSettings, fileManager?: FileManager) {
         this.settings = settings;
@@ -375,6 +398,7 @@ export class SyncService {
             url: 'https://clip2.md/example',
             status: 'SUCCESS',
             title: 'Clip2MD 使用示例',
+            display_title: '网站展示标题',
             summary: '示例摘要',
             note_markdown_content: '## 智能笔记\n\n这是智能笔记示例。',
             source_markdown_content: '# 原文标题\n\n这是原文内容示例。',
@@ -408,24 +432,30 @@ export class SyncService {
         };
     }
 
-    renderTemplatePreview(template: string): string {
-        return this.renderTemplate(template, this.createPreviewTask());
+    renderTemplatePreview(template: string, target?: 'single' | 'daily'): string {
+        const task = this.createPreviewTask();
+        const body = this.renderBodyTemplate(template, task);
+        if (target === 'daily' || (!target && this.shouldMergeDaily(task))) {
+            let block = this.buildMergeBlock(task.id, this.getNoteTitle(task), body, task);
+            if (target === 'daily') {
+                const second = { ...task, id: task.id + 1, title: '第二篇示例', display_title: '第二篇网站标题', url: 'https://clip2.md/example-2',
+                    note_markdown_content: '这是第二篇智能笔记。', source_markdown_content: '这是第二篇原文。' };
+                block += `\n\n${this.buildMergeBlock(second.id, this.getNoteTitle(second), this.renderBodyTemplate(template, second), second)}`;
+            }
+            const heading = `# ${this.getSourceLabel(task)} · ${this.formatDateForFilename(task.created_at)}`;
+            return this.applyDailyFrontmatter(`${heading}\n\n${block}`, task).content;
+        }
+        return this.renderSingleTask(task, body);
+    }
+
+    renderDailyMergeFrontmatterPreview(): string {
+        const task = this.createPreviewTask();
+        const block = this.buildMergeBlock(task.id, task.title || '', '', task);
+        return this.renderDailyFrontmatter(block, task);
     }
 
     validateTemplate(template: string): { valid: boolean; message: string } {
-        const trimmed = template.trim();
-        if (!trimmed) {
-            return { valid: false, message: '模板不能为空。' };
-        }
-        const frontmatterMatch = trimmed.match(/^---\n[\s\S]*?\n---/);
-        if (frontmatterMatch) {
-            const lines = frontmatterMatch[0].split('\n').slice(1, -1);
-            const invalid = lines.find(line => line.trim() && !line.includes(':'));
-            if (invalid) {
-                return { valid: false, message: `frontmatter 格式可能有误：${invalid}` };
-            }
-        }
-        return { valid: true, message: '' };
+        return validateMarkdownBodyTemplate(template);
     }
 
     validateTargetFolder(folder: string): boolean {
@@ -443,6 +473,8 @@ export class SyncService {
         folderTemplate: string,
         template: string,
     ): Promise<SyncResult> {
+        const validation = this.validateTemplate(template);
+        if (!validation.valid) throw new Error(validation.message);
         const mappedPath = this.taskFileMap[task.id];
         const wasIgnored = this.ignoredTaskIds.has(task.id);
         const protectLocalRemoval = this.settings.preventReimportAfterLocalRemoval;
@@ -468,12 +500,12 @@ export class SyncService {
                     && [task.note_markdown_content, task.source_markdown_content]
                         .some(markdown => Boolean(markdown && (markdown.includes('![') || /<img\b/i.test(markdown))))),
         };
-        let content = this.renderTemplate(template, localizedTask);
+        let body = this.renderBodyTemplate(template, localizedTask);
         if (localized.pendingAssets) {
-            content = `${content}\n\n> 图片仍在处理中（任务 #${task.id}），稍后会自动重试。`;
+            body = `${body}\n\n> 图片仍在处理中（任务 #${task.id}），稍后会自动重试。`;
         }
         if (localized.failedAssets) {
-            content = `${content}\n\n> 部分图片下载失败（任务 #${task.id}），请在 clip2md 网站同步页重试。`;
+            body = `${body}\n\n> 部分图片下载失败（任务 #${task.id}），请在 clip2md 网站同步页重试。`;
         }
 
         // The note can be moved while an image request is in flight.
@@ -483,8 +515,10 @@ export class SyncService {
         }
 
         if (this.shouldMergeDaily(localizedTask)) {
-            return this.renderMergedTask(vault, localizedTask, folder, content, assetResult, restoring);
+            return this.renderMergedTask(vault, localizedTask, folder, body, assetResult, restoring);
         }
+
+        const content = this.renderSingleTask(localizedTask, body);
 
         const filename = this.generateFilename(localizedTask);
         const filepath = `${folder}/${filename}`;
@@ -637,14 +671,15 @@ export class SyncService {
         await this.ensureFolder(vault, folder);
         const mergedFilename = `${this.formatDateForFilename(task.created_at)}-${this.getSourceLabel(task)}.md`;
         const targetPath = `${folder}/${this.sanitizeFilenameSegment(mergedFilename)}`;
-        const block = this.buildMergeBlock(task.id, task.title || this.extractTitle(content), content);
+        const block = this.buildMergeBlock(task.id, this.getNoteTitle(task), content, task);
         const mappedPath = this.taskFileMap[task.id];
         const mappedFile = mappedPath ? vault.getFileByPath(mappedPath) : null;
         if (mappedFile) {
             const mappedContent = await vault.read(mappedFile);
             if (this.hasMergeBlock(mappedContent, task.id)) {
-                await vault.modify(mappedFile, this.upsertMergeBlock(mappedContent, task.id, block));
-                return this.completedResult(task.id, mappedPath, assetResult);
+                const next = this.applyDailyFrontmatter(this.upsertMergeBlock(mappedContent, task.id, block), task);
+                await vault.modify(mappedFile, next.content);
+                return { ...this.completedResult(task.id, mappedPath, assetResult), warning: this.dailyWarning(mappedPath, next.warning) };
             }
         }
         let filepath = targetPath;
@@ -660,16 +695,87 @@ export class SyncService {
 
         if (!existing) {
             const initial = `# ${this.getSourceLabel(task)} · ${this.formatDateForFilename(task.created_at)}\n\n${block}`;
-            await vault.create(filepath, initial);
+            await vault.create(filepath, this.applyDailyFrontmatter(initial, task).content);
             this.taskFileMap[task.id] = filepath;
             return this.completedResult(task.id, filepath, assetResult);
         }
 
         const existingContent = await vault.read(existing);
-        const nextContent = this.upsertMergeBlock(existingContent, task.id, block);
-        await vault.modify(existing, nextContent);
+        const next = this.applyDailyFrontmatter(this.upsertMergeBlock(existingContent, task.id, block), task);
+        await vault.modify(existing, next.content);
         this.taskFileMap[task.id] = filepath;
-        return this.completedResult(task.id, filepath, assetResult);
+        return { ...this.completedResult(task.id, filepath, assetResult), warning: this.dailyWarning(filepath, next.warning) };
+    }
+
+    private dailyWarning(path: string, warning?: string): string | undefined {
+        if (!warning || this.warnedUnmanagedDailyPaths.has(path)) return undefined;
+        this.warnedUnmanagedDailyPaths.add(path);
+        return `${path}：${warning}`;
+    }
+
+    private applyDailyFrontmatter(content: string, task: SyncTask): { content: string; warning?: string } {
+        const frontmatter = this.renderDailyFrontmatter(content, task);
+        const managed = /^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n<!-- clip2md-daily-frontmatter:v1 -->/;
+        if (managed.test(content)) {
+            return { content: content.replace(managed, () => `${frontmatter}\n${DAILY_FRONTMATTER_MARKER}`) };
+        }
+        if (/^\uFEFF?---[ \t]*(?:\r?\n|$)/.test(content)) {
+            return { content, warning: '文件顶部已有手写 frontmatter，已保留；请手动迁移后使用按日合并元数据模板。' };
+        }
+        return { content: `${frontmatter}\n${DAILY_FRONTMATTER_MARKER}\n\n${content}` };
+    }
+
+    private renderDailyFrontmatter(content: string, task: SyncTask): string {
+        const tasks = this.collectDailyTasks(content);
+        const tags = [...new Set(tasks.flatMap(item => item.tags || []))];
+        const fileHeading = content.match(/^# (.+) · (\d{4}-\d{2}-\d{2})$/m);
+        const date = fileHeading?.[2] || this.formatDateForFilename(task.created_at);
+        const source = fileHeading?.[1] || this.getSourceLabel(task);
+        const yamlTasks = tasks.flatMap(item => [
+            `  - id: ${item.id}`,
+            ...(item.title ? [`    title: ${JSON.stringify(item.title)}`] : []),
+            ...(item.url ? [`    url: ${JSON.stringify(item.url)}`] : []),
+        ]).join('\n') || '  []';
+        return this.replaceTemplateVariables(this.settings.dailyMergeFrontmatterTemplate || DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, {
+            '{{title}}': JSON.stringify(`${source} · ${date}`).slice(1, -1),
+            '{{date}}': date,
+            '{{source}}': JSON.stringify(source).slice(1, -1),
+            '{{tags}}': JSON.stringify(tags),
+            '{{task_count}}': String(tasks.length),
+            '{{task_ids}}': JSON.stringify(tasks.map(item => item.id)),
+            '{{tasks}}': yamlTasks,
+        }).trimEnd();
+    }
+
+    private collectDailyTasks(content: string): DailyTaskMetadata[] {
+        const tasks: DailyTaskMetadata[] = [];
+        const seen = new Set<number>();
+        const pattern = new RegExp(DAILY_BLOCK_PATTERN.source, 'g');
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(content)) !== null) {
+            const id = Number(match[1]);
+            if (!Number.isSafeInteger(id) || seen.has(id)) continue;
+            seen.add(id);
+            const block = match[2];
+            const heading = block.match(/^\s*## (.+)$/m)?.[1] || '';
+            const encoded = block.match(new RegExp(`^\\s*<!-- clip2md-task-meta:${id}:([^\\s]+) -->`, 'm'))?.[1];
+            let metadata: Partial<DailyTaskMetadata> = {};
+            if (encoded) {
+                try {
+                    const parsed: unknown = JSON.parse(decodeURIComponent(encoded));
+                    if (isRecord(parsed)) {
+                        metadata = {
+                            title: typeof parsed.title === 'string' ? parsed.title : heading,
+                            url: typeof parsed.url === 'string' ? parsed.url : undefined,
+                            tags: Array.isArray(parsed.tags) && parsed.tags.every(tag => typeof tag === 'string')
+                                ? parsed.tags as string[] : undefined,
+                        };
+                    }
+                } catch { /* Historical or edited blocks retain their visible heading. */ }
+            }
+            tasks.push({ id, title: metadata.title || heading, url: metadata.url, tags: metadata.tags });
+        }
+        return tasks;
     }
 
     private isManagedDailyFile(content: string): boolean {
@@ -682,9 +788,15 @@ export class SyncService {
         ).test(content);
     }
 
-    private buildMergeBlock(taskId: number, title: string, content: string): string {
+    private buildMergeBlock(taskId: number, title: string, content: string, task: SyncTask): string {
+        const metadata = encodeURIComponent(JSON.stringify({
+            title,
+            url: task.url || undefined,
+            tags: task.tags?.map(tag => tag.name) || [],
+        }));
         return [
             `<!-- clip2md-task-start:${taskId} -->`,
+            `<!-- clip2md-task-meta:${taskId}:${metadata} -->`,
             `## ${title}`,
             '',
             content,
@@ -700,8 +812,8 @@ export class SyncService {
         if (pattern.test(existing)) {
             return existing.replace(pattern, () => block);
         }
-        const trimmed = existing.replace(/\s+$/, '');
-        return `${trimmed}\n\n${block}\n`;
+        const separator = existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n';
+        return `${existing}${separator}${block}\n`;
     }
 
     private shouldMergeDaily(task: SyncTask): boolean {
@@ -881,24 +993,18 @@ export class SyncService {
         const mode: SyncContentMode = this.settings.syncContentMode;
         const noteContent = task.note_markdown_content || '';
         const sourceContent = task.source_markdown_content || '';
-        const marker = `<!-- biji-task-id:${task.id} -->`;
 
         if (mode === 'note') {
-            return `${marker}\n\n${noteContent}`;
+            return noteContent;
         }
         if (mode === 'source') {
-            return `${marker}\n\n${sourceContent}`;
+            return sourceContent;
         }
 
         if (noteContent && sourceContent) {
-            const title = task.title || this.extractTitle(noteContent);
-            const fm = this.generateFrontmatter(task, title);
-            return `${fm}\n\n${noteContent}\n\n# 原文\n\n${sourceContent}`;
+            return `${noteContent}\n\n# 原文\n\n${sourceContent}`;
         }
-        if (noteContent) {
-            return `${marker}\n\n${noteContent}`;
-        }
-        return `${marker}\n\n${sourceContent}`;
+        return noteContent || sourceContent;
     }
 
     private generateFrontmatter(task: SyncTask, title: string): string {
@@ -909,8 +1015,11 @@ export class SyncService {
 
         if (template && template.trim()) {
             return this.replaceTemplateVariables(template, {
+                '{{note_title}}': JSON.stringify(this.getNoteTitle(task)).slice(1, -1),
                 '{{title}}': title.replace(/"/g, '\\"'),
                 '{{source_title}}': JSON.stringify(task.source_title || '').slice(1, -1),
+                '{{source_title_or_title}}': JSON.stringify(task.source_title || task.title || `untitled-${task.id}`).slice(1, -1),
+                '{{display_title}}': JSON.stringify(task.display_title || task.title || task.source_title || `untitled-${task.id}`).slice(1, -1),
                 '{{source_date}}': task.source_date || '',
                 '{{created_at}}': task.created_at,
                 '{{source}}': this.getSourceLabel(task).replace(/"/g, '\\"'),
@@ -918,16 +1027,14 @@ export class SyncService {
                 '{{content_type}}': task.content_type || '',
                 '{{task_id}}': String(task.id),
                 '{{tags}}': tagsValue,
-                '{{url}}': task.url || '',
+                '{{url}}': JSON.stringify(task.url || '').slice(1, -1),
             });
         }
 
         // 默认格式
         const lines: string[] = ['---'];
-        lines.push(`title: "${title.replace(/"/g, '\\"')}"`);
-        if (task.source_date) {
-            lines.push(`date: "${task.source_date}"`);
-        }
+        lines.push(`title: ${JSON.stringify(this.getNoteTitle(task))}`);
+        lines.push(`date: ${JSON.stringify(task.source_date || '')}`);
         lines.push(`created_at: "${task.created_at}"`);
         lines.push(`source: "${this.getSourceLabel(task).replace(/"/g, '\\"')}"`);
         if (task.duration_seconds) {
@@ -936,12 +1043,8 @@ export class SyncService {
         if (task.content_type) {
             lines.push(`content_type: "${task.content_type}"`);
         }
-        if (task.tags && task.tags.length > 0) {
-            lines.push('tags:');
-            for (const tag of task.tags) {
-                lines.push(`  - "${tag.name.replace(/"/g, '\\"')}"`);
-            }
-        }
+        lines.push(`tags: ${tagsValue}`);
+        lines.push(`url: ${JSON.stringify(task.url || '')}`);
         lines.push(`task_id: ${task.id}`);
         lines.push('---');
         return lines.join('\n');
@@ -956,17 +1059,30 @@ export class SyncService {
         return `${m}m`;
     }
 
-    private renderTemplate(template: string, task: SyncTask): string {
+    private getNoteTitle(task: SyncTask): string {
+        return resolveNoteTitle(this.settings, task, this.getSourceLabel(task), this.formatDateForFilename(task.created_at));
+    }
+
+    private renderSingleTask(task: SyncTask, body: string): string {
+        const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '');
+        const frontmatter = this.generateFrontmatter(task, title);
+        const marker = `<!-- biji-task-id:${task.id} -->`;
+        return [frontmatter, marker, body].filter(Boolean).join('\n\n');
+    }
+
+    private renderBodyTemplate(template: string, task: SyncTask): string {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '');
         const noteContent = task.note_markdown_content || '';
         const sourceContent = task.source_markdown_content || '';
         const content = this.getContentByMode(task);
-        const marker = `<!-- biji-task-id:${task.id} -->`;
         const tagsStr = task.tags && task.tags.length > 0 ? task.tags.map(t => t.name).join(', ') : '';
 
-        let result = this.replaceTemplateVariables(template, {
+        return this.replaceTemplateVariables(template, {
+            '{{note_title}}': this.getNoteTitle(task),
             '{{title}}': title,
             '{{source_title}}': task.source_title || '',
+            '{{source_title_or_title}}': task.source_title || task.title || `untitled-${task.id}`,
+            '{{display_title}}': task.display_title || task.title || task.source_title || `untitled-${task.id}`,
             '{{content}}': content,
             '{{note_content}}': noteContent,
             '{{source_content}}': sourceContent,
@@ -980,11 +1096,6 @@ export class SyncService {
             '{{task_id}}': String(task.id),
             '{{tags}}': tagsStr,
         });
-
-        if (!this.hasTaskMarker(result, task.id)) {
-            result = `${marker}\n\n${result}`;
-        }
-        return result;
     }
 
     private extractTitle(markdown: string): string {
@@ -1013,8 +1124,11 @@ export class SyncService {
     private replaceTaskVariables(template: string, task: SyncTask): string {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '') || `untitled-${task.id}`;
         const replacements: Record<string, string> = {
+            '{{note_title}}': this.sanitizeFilenameSegment(this.getNoteTitle(task)),
             '{{title}}': title || `untitled-${task.id}`,
             '{{source_title}}': this.sanitizeFilenameSegment(task.source_title || ''),
+            '{{source_title_or_title}}': this.sanitizeFilenameSegment(task.source_title || task.title || '') || `untitled-${task.id}`,
+            '{{display_title}}': this.sanitizeFilenameSegment(task.display_title || task.title || task.source_title || '') || `untitled-${task.id}`,
             '{{date}}': task.source_date || '',
             '{{created_at}}': task.created_at,
             '{{created_date}}': this.formatDateForFilename(task.created_at),

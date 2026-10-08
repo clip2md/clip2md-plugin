@@ -22,8 +22,23 @@ function fixture() {
         rename: async (file: TFile, path: string) => { files.set(path, files.get(file.path)!); files.delete(file.path); },
     };
     let saved: Record<string, unknown> = {};
+    let localSaved: Record<string, unknown> = {};
+    const secrets = new Map<string, string>([['clip2md-api-key', 'test-only']]);
     Object.assign(plugin, {
-        app: { vault }, syncing: false, syncWriteInProgress: false, appVisible: true,
+        app: {
+            vault,
+            loadLocalStorage: () => localSaved,
+            saveLocalStorage: (_key: string, value: Record<string, unknown>) => { localSaved = structuredClone(value); },
+            secretStorage: {
+                getSecret: (id: string) => secrets.get(id) ?? null,
+                setSecret: (id: string, value: string) => { secrets.set(id, value); },
+            },
+        }, syncing: false, syncWriteInProgress: false, appVisible: true,
+        localState: {
+            version: 1, installationId: 'test', cursor: null, taskFileMap: {},
+            pendingTaskIds: [], ignoredTaskIds: [], pendingAcks: [],
+            restoreMissingMappedTasksOnNextSync: false, unresolvedTaskIds: [], legacyKeyMigrated: false,
+        },
         restoreMissingMappedTasksOnNextSync: false, persistenceQueue: Promise.resolve(),
         saveData: vi.fn(async (value: Record<string, unknown>) => { saved = structuredClone(value); }),
         backupConfig: vi.fn(async () => undefined),
@@ -40,7 +55,7 @@ function fixture() {
     vi.spyOn(plugin.syncService, 'fetchNextPage').mockImplementation(async () => ({
         tasks: page, total: page.length, nextCursor: 'cursor-done', hasMore: false,
     }));
-    return { plugin, files, vault, task, tasks, fetchIds, saved: () => saved, setPage: (items: SyncTask[]) => { page = items; } };
+    return { plugin, files, vault, task, tasks, fetchIds, saved: () => ({ ...saved, ...localSaved }), shared: () => saved, setPage: (items: SyncTask[]) => { page = items; } };
 }
 
 beforeEach(() => { request.mockReset(); request.mockResolvedValue({ status: 200 }); });

@@ -40,7 +40,7 @@
     padding: 12px 14px;
     margin: 12px 0 18px;
     border: 1px solid var(--background-modifier-border);
-    border-radius: 10px;
+    border-radius: var(--radius-m);
     background: var(--background-secondary);
     flex-wrap: wrap;
 }
@@ -88,17 +88,9 @@
     gap: 8px;
 }
 
-.clip2md-inline-button {
-    padding: 6px 10px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    background: var(--background-primary);
-    cursor: pointer;
-}
-
 .clip2md-guide-card {
     border: 1px solid var(--background-modifier-border);
-    border-radius: 12px;
+    border-radius: var(--radius-m);
     background: var(--background-secondary);
     padding: 16px;
     margin-bottom: 16px;
@@ -109,11 +101,6 @@
     grid-template-columns: 1fr 1fr;
     gap: 8px;
     margin: 12px 0;
-}
-
-.clip2md-binding-tabs button {
-    padding: 8px 12px;
-    border-radius: 8px;
 }
 
 .clip2md-binding-tabs button.is-active {
@@ -136,7 +123,7 @@
     width: 220px;
     height: 220px;
     margin: 0 auto 12px;
-    border-radius: 12px;
+    border-radius: var(--radius-m);
     background: #fff;
 }
 
@@ -426,3 +413,27 @@ input.clip2md-flash {
     animation: clip2md-flash 0.4s ease 3;
     border-color: var(--text-warning, var(--text-accent));
 }
+
+/* Template editors use the same native rows and controls as other settings. */
+.clip2md-note-content { margin-block: .75rem; }
+.clip2md-content-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.clip2md-content-custom { margin-block: 1rem; }
+.clip2md-content-custom summary, .clip2md-content-variables summary { cursor: pointer; color: var(--text-muted); padding-block: .5rem; }
+.clip2md-content-editor { margin-block: .75rem; }
+.clip2md-template-setting { flex-wrap: wrap; }
+.clip2md-template-setting .setting-item-control { width: 100%; flex: 1 0 100%; margin-block-start: .5rem; }
+.clip2md-content-editor textarea { box-sizing: border-box; width: 100%; resize: vertical; font-family: var(--font-monospace); }
+.clip2md-content-preview { padding: 1rem; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); background: var(--background-primary); overflow-wrap: anywhere; }
+.clip2md-content-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.clip2md-note-properties { display: grid; grid-template-columns: minmax(5rem, 1fr) minmax(0, 3fr); gap: .5rem; border-bottom: 1px solid var(--background-modifier-border); padding-block-end: 1rem; }
+.clip2md-note-properties dt { color: var(--text-muted); }
+.clip2md-note-properties dd { margin: 0; white-space: pre-wrap; }
+.clip2md-note-content [hidden], .setting-item[hidden] { display: none !important; }
+@media (pointer: coarse) {
+    .clip2md-note-content button, .clip2md-note-content select, .clip2md-note-content summary { min-height: 48px; }
+}
+
+.clip2md-title-invalid .setting-item-description { color: var(--text-error); }
+
+/* The settings host hides headings; preview headings belong to the note. */
+.clip2md-content-preview .clip2md-note-body :is(h1, h2, h3, h4, h5, h6) { display: block !important; }

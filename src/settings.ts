@@ -2,6 +2,8 @@ import { App, Modal, Notice, Platform, PluginSettingTab, Setting, SettingPage, T
 import type { SettingDefinitionItem } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from './binding';
+import { NoteContentSettings, type NoteContentViewState } from './note-content-settings';
+import { validateCustomTitle, type TitleMode } from './note-title';
 import { installButtonClickGuard } from './button-guard';
 
 export type SyncContentMode = 'full' | 'note' | 'source';
@@ -39,8 +41,11 @@ export interface BijiSyncSettings {
     targetFolder: string;
     filenameTemplate: string;
     filenameDateFormat: string;
+    titleMode?: TitleMode;
+    customTitleTemplate?: string;
     template: string;
     frontmatterTemplate: string;
+    dailyMergeFrontmatterTemplate: string;
     syncContentMode: SyncContentMode;
     imageMode: ImageMode;
     imageFolder: string;
@@ -65,24 +70,48 @@ const SYNC_INTERVAL_OPTIONS = [
     { value: '1440', label: '24 小时' },
 ];
 
-const TEMPLATE_PRESETS: Array<{ value: SyncContentMode; label: string; template: string }> = [
-    { value: 'full', label: '完整内容', template: '{{content}}' },
-    { value: 'note', label: '仅智能笔记', template: '{{note_content}}' },
-    { value: 'source', label: '仅原文', template: '{{source_content}}' },
+const FOLDER_PRESETS = [
+    { label: '全部放在一个目录', targetFolder: 'Clip2MD', filenameTemplate: '{{created_date}}-{{note_title}}' },
+    { label: '按日期', targetFolder: 'Clip2MD/{{created_date}}', filenameTemplate: '{{note_title}}' },
+    { label: '按来源/日期', targetFolder: 'Clip2MD/{{source}}/{{created_date}}', filenameTemplate: '{{note_title}}' },
 ];
 
-const FOLDER_PRESETS = [
-    { label: '全部放在一个目录', targetFolder: 'Clip2MD', filenameTemplate: '{{created_date}}-{{title}}' },
-    { label: '按日期', targetFolder: 'Clip2MD/{{created_date}}', filenameTemplate: '{{title}}' },
-    { label: '按来源/日期', targetFolder: 'Clip2MD/{{source}}/{{created_date}}', filenameTemplate: '{{title}}' },
-];
+export const LEGACY_TAGGED_FRONTMATTER_TEMPLATE = `---
+title: "{{title}}"
+date: "{{source_date}}"
+source: "{{source}}"
+tags: {{tags}}
+task_id: {{task_id}}
+---`;
 
 export const DEFAULT_FRONTMATTER_TEMPLATE = `---
 title: "{{title}}"
 date: "{{source_date}}"
 source: "{{source}}"
 tags: {{tags}}
+url: "{{url}}"
 task_id: {{task_id}}
+---`;
+
+export const NEW_DEFAULT_FRONTMATTER_TEMPLATE = `---
+title: "{{note_title}}"
+date: "{{source_date}}"
+source: "{{source}}"
+tags: {{tags}}
+url: "{{url}}"
+task_id: {{task_id}}
+---`;
+export const NEW_DEFAULT_FILENAME_TEMPLATE = '{{created_date}}-{{note_title}}';
+
+export const DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE = `---
+title: "{{title}}"
+date: "{{date}}"
+source: "{{source}}"
+tags: {{tags}}
+task_count: {{task_count}}
+task_ids: {{task_ids}}
+tasks:
+{{tasks}}
 ---`;
 
 // Used only to upgrade installations that still have the v1.0.3 built-in
@@ -93,40 +122,6 @@ date: "{{source_date}}"
 source: "{{source}}"
 task_id: {{task_id}}
 ---`;
-
-const INSERTABLE_TEMPLATE_VARIABLES = [
-    '{{content}}',
-    '{{note_content}}',
-    '{{source_content}}',
-    '{{title}}',
-    '{{source_title}}',
-    '{{source}}',
-    '{{date}}',
-    '{{created_at}}',
-    '{{created_date}}',
-    '{{duration}}',
-    '{{content_type}}',
-    '{{url}}',
-    '{{task_id}}',
-    '{{tags}}',
-];
-
-const FRONTMATTER_PREVIEW_VALUES: ReadonlyArray<readonly [string, string]> = [
-    ['{{title}}', '示例标题'],
-    ['{{source_title}}', '示例原文'],
-    ['{{source_date}}', '2026-08-08'],
-    ['{{created_at}}', '2026-08-08T09:30:00Z'],
-    ['{{source}}', '微信公众号'],
-    ['{{duration}}', '5m'],
-    ['{{content_type}}', 'LINK'],
-    ['{{task_id}}', '12345'],
-    ['{{tags}}', '示例, 知识管理'],
-    ['{{url}}', 'https://example.com/article'],
-];
-
-function normalizeSyncContentMode(value: string): SyncContentMode {
-    return value === 'note' || value === 'source' ? value : 'full';
-}
 
 class Clip2MDSettingsPage extends SettingPage {
     constructor(
@@ -150,22 +145,22 @@ class Clip2MDSettingsPage extends SettingPage {
 export class BijiSyncSettingTab extends PluginSettingTab {
     plugin: BijiSyncPlugin;
     private onboardingDraft: OnboardingDraft | null = null;
-    private templatePreviewEl: HTMLElement | null = null;
-    private fmPreviewEl: HTMLElement | null = null;
+    private noteContent: NoteContentSettings | null = null;
+    private noteContentState: NoteContentViewState = {};
     private folderSettingEl: HTMLElement | null = null;
     private bindingMode: 'qr' | 'manual' = 'qr';
+    private showBindingForExistingKey = false;
+    private confirmLegacyCleanup = false;
     private bindingClient = new DeviceBindingClient();
     private bindingSession: DeviceBindingSession | null = null;
     private bindingQrDataUrl = '';
+    private qrLoadInFlight = false;
+    private qrUnavailableForCode = '';
     private bindingState: 'idle' | 'starting' | 'waiting' | 'approving' | 'error' | 'expired' = 'idle';
     private bindingMessage = '';
-    private bindingTimer: number | null = null;
-    private bindingExpiresAt = 0;
-    private pollInFlight = false;
-    private lastPollAt = 0;
-    private nextPollAt = 0;
-    private appVisible = true;
     private testingConnection = false;
+    private advancedOpen = false;
+    private bindingRenderKey = '';
     private launchUrl = '';
     private launchState: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
     private launchMessage = '';
@@ -198,16 +193,17 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             }
             await this.plugin.verifyConnection();
             new Notice('Clip2MD: 连接成功，可以开始同步。', 5000);
-            this.refreshDisplay();
+            this.refresh();
         } catch (err) {
             this.plugin.handleConnectionError(err);
-            this.refreshDisplay();
+            this.refresh();
         } finally {
             this.testingConnection = false;
             btnEl.textContent = origText;
             btnEl.toggleClass('is-loading', false);
             btnEl.removeAttribute('aria-busy');
             if (btnEl.instanceOf(HTMLButtonElement)) btnEl.disabled = false;
+            this.refresh();
         }
     }
 
@@ -228,7 +224,26 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     refresh(): void {
-        this.refreshDisplay();
+        const container = this.activeContainerEl;
+        if (!container) return;
+        const status = this.plugin.getStatusSnapshot();
+        const indicator = container.querySelector<HTMLElement>('.clip2md-status-indicator');
+        if (indicator) { indicator.className = `clip2md-status-indicator is-${status.kind}`; indicator.textContent = status.label; }
+        const summary = container.querySelector('.clip2md-status-summary');
+        if (summary) summary.textContent = status.description;
+        const sync = container.querySelector<HTMLButtonElement>('[data-clip2md-action="sync"]');
+        if (sync) { sync.disabled = status.runtimeState === 'syncing'; sync.textContent = sync.disabled ? '同步中...' : '立即同步'; }
+        const test = container.querySelector<HTMLButtonElement>('[data-clip2md-action="test"]');
+        if (test) test.disabled = this.testingConnection || !this.plugin.settings.apiKey || status.runtimeState === 'syncing';
+        const binding = container.querySelector<HTMLElement>('.clip2md-binding-region');
+        const bindingKey = JSON.stringify([this.plugin.getDeviceBindingSession?.()?.device_code, this.plugin.getDeviceBindingMessage?.(), this.bindingQrDataUrl, this.bindingState, this.bindingMessage, this.launchState, this.launchMessage, this.qrUnavailableForCode]);
+        if (binding && this.bindingMode === 'qr' && bindingKey !== this.bindingRenderKey) {
+            this.bindingRenderKey = bindingKey;
+            const scroll = container.scrollTop;
+            binding.empty();
+            this.renderQrOnboarding(binding);
+            container.scrollTop = scroll;
+        }
     }
 
     private renderInto(containerEl: HTMLElement): void {
@@ -237,9 +252,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         containerEl.toggleClass('clip2md-platform-mobile', Platform.isMobileApp);
         containerEl.empty();
 
-        // 重置预览元素引用（DOM 已被清空）
-        this.templatePreviewEl = null;
-        this.fmPreviewEl = null;
+        this.noteContent?.dispose();
+        this.noteContent = null;
         this.folderSettingEl = null;
 
         containerEl.createEl('p', {
@@ -264,6 +278,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             return;
         }
 
+        if (this.showBindingForExistingKey) {
+            new Setting(containerEl).setName('重新绑定此设备').setHeading();
+            new Setting(containerEl).setName('返回设置').addButton(btn => btn.setButtonText('返回').onClick(() => {
+                this.showBindingForExistingKey = false;
+                this.refreshDisplay();
+            }));
+            this.renderQrOnboarding(containerEl.createDiv({ cls: 'clip2md-binding-region' }));
+            return;
+        }
+
         this.showingInvalidOnboarding = false;
         this.renderBasicSettings(containerEl);
         this.renderAdvancedSettings(containerEl);
@@ -274,20 +298,20 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private releaseActivePage(): void {
-        this.stopBindingPolling();
         this.plugin.timers.clearGroup('settings-ui');
+        this.noteContent?.dispose();
+        this.noteContent = null;
         this.activeContainerEl = null;
     }
 
     onAppVisibilityChange(visible: boolean): void {
-        this.appVisible = visible;
-        if (!visible) {
-            // Keep nextPollAt so a resume/focus event cannot bypass the
-            // server-provided retry_after interval.
-            this.stopBindingPolling(true);
-            return;
-        }
-        this.pollBindingIfDue();
+        if (visible && this.activeContainerEl) this.refresh();
+    }
+
+    onDeviceBindingFinished(): void {
+        this.showBindingForExistingKey = false;
+        this.resetBindingSession();
+        if (this.activeContainerEl) this.refreshDisplay();
     }
     private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
@@ -306,12 +330,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             text: status.runtimeState === 'syncing' ? '同步中...' : '立即同步',
             cls: 'mod-cta',
         });
+        syncButton.dataset.clip2mdAction = 'sync';
         syncButton.toggleClass('clip2md-inline-button', true);
         syncButton.disabled = status.runtimeState === 'syncing';
         syncButton.addEventListener('click', () => {
             this.runAsync(async () => {
                 await this.plugin.syncNow('manual');
-                this.refreshDisplay();
+                this.refresh();
             });
         });
 
@@ -319,6 +344,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             text: '测试连接',
             cls: 'clip2md-inline-button',
         });
+        testButton.dataset.clip2mdAction = 'test';
         testButton.disabled = !this.plugin.settings.apiKey || status.runtimeState === 'syncing';
         testButton.addEventListener('click', () => {
             this.runAsync(() => this.testConnection(testButton));
@@ -341,26 +367,40 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         qrTab.addEventListener('click', () => {
             this.bindingMode = 'qr';
             this.refreshDisplay();
-            if (this.bindingSession) {
-                this.pollBindingIfDue();
-            }
         });
         manualTab.addEventListener('click', () => {
             this.bindingMode = 'manual';
-            this.stopBindingPolling();
             this.refreshDisplay();
         });
         if (this.bindingMode === 'qr') {
-            this.renderQrOnboarding(containerEl);
+            this.renderQrOnboarding(containerEl.createDiv({ cls: 'clip2md-binding-region' }));
         } else {
             this.renderManualOnboarding(containerEl, apiKeyInvalid);
         }
         const advanced = containerEl.createEl('details');
+        advanced.open = this.advancedOpen;
+        advanced.addEventListener('toggle', () => { this.advancedOpen = advanced.open; });
         advanced.createEl('summary', { text: '使用高级设置' });
         this.renderAdvancedSettings(advanced, true);
     }
 
     private renderQrOnboarding(containerEl: HTMLElement): void {
+        const resumed = this.plugin.getDeviceBindingSession();
+        if (resumed && !this.bindingSession) this.bindingSession = resumed;
+        if (!resumed && this.bindingSession) {
+            this.bindingState = 'expired';
+        }
+        if (resumed && !this.bindingQrDataUrl && !this.qrLoadInFlight
+            && this.qrUnavailableForCode !== resumed.device_code) {
+            this.qrLoadInFlight = true;
+            void this.bindingClient.qrcode(resumed.device_code).then(data => {
+                this.bindingQrDataUrl = data;
+                this.refresh();
+            }).catch(() => {
+                this.qrUnavailableForCode = resumed.device_code;
+                this.refresh();
+            }).finally(() => { this.qrLoadInFlight = false; });
+        }
         const card = containerEl.createDiv({ cls: 'clip2md-guide-card clip2md-binding-card' });
         card.createDiv({ text: '打开微信扫一扫，确认后自动完成绑定', cls: 'clip2md-binding-title' });
         if (this.bindingQrDataUrl) {
@@ -370,7 +410,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             });
         } else {
             card.createDiv({
-                text: this.bindingState === 'error' ? '小程序码加载失败' : '正在生成小程序码…',
+                text: this.qrUnavailableForCode === resumed?.device_code
+                    ? '小程序码不可用，请查看绑定码或等待插件完成'
+                    : this.bindingState === 'error' ? '小程序码加载失败' : '正在生成小程序码…',
                 cls: 'clip2md-binding-placeholder',
             });
         }
@@ -395,20 +437,18 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             }
         }
         card.createEl('p', {
-            text: this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。',
+            text: this.bindingSession ? this.plugin.getDeviceBindingMessage() : (this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。'),
             cls: this.bindingState === 'error' ? 'clip2md-error-text' : 'setting-item-description',
         });
         if (this.bindingState === 'error' || this.bindingState === 'expired') {
             const retry = card.createEl('button', { text: '重新生成', cls: 'mod-cta' });
             retry.addEventListener('click', () => {
                 this.resetBindingSession();
-                this.refreshDisplay();
+                this.refresh();
             });
         }
         if (!this.bindingSession && this.bindingState !== 'starting') {
             void this.startBinding();
-        } else if (this.bindingSession) {
-            this.pollBindingIfDue();
         }
     }
 
@@ -468,111 +508,38 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         try {
             const session = await this.bindingClient.start(this.plugin.getBindingClientName());
             this.bindingSession = session;
-            this.bindingExpiresAt = Date.now() + session.expires_in * 1000;
-            this.lastPollAt = 0;
-            this.nextPollAt = 0;
+            await this.plugin.beginDeviceBinding(session);
             this.launchUrl = '';
             this.launchState = 'idle';
             this.launchMessage = '';
             this.bindingState = 'waiting';
             this.bindingMessage = '请使用微信扫码，并在小程序中确认绑定。';
-            this.refreshDisplay();
+            this.qrLoadInFlight = true;
+            this.refresh();
             try {
                 this.bindingQrDataUrl = await this.bindingClient.qrcode(session.device_code);
             } catch (error) {
                 this.bindingState = 'error';
                 this.bindingMessage = error instanceof Error ? error.message : '小程序码加载失败，请重试。';
-                this.refreshDisplay();
+                this.refresh();
                 return;
+            } finally {
+                this.qrLoadInFlight = false;
             }
-            this.refreshDisplay();
-            this.scheduleBindingPoll(session.interval);
+            this.refresh();
         } catch (error) {
             this.bindingState = 'error';
             this.bindingMessage = error instanceof Error ? error.message : '无法创建绑定请求。';
-            this.refreshDisplay();
+            this.refresh();
         }
-    }
-
-    private scheduleBindingPoll(seconds: number): void {
-        this.stopBindingPolling();
-        if (!this.bindingSession || this.bindingMode !== 'qr' || !this.appVisible) return;
-        const delay = Math.max(1, seconds) * 1000;
-        this.nextPollAt = Date.now() + delay;
-        this.bindingTimer = this.plugin.timers.setTimeout(() => this.pollBindingIfDue(), delay, 'binding');
-    }
-
-    private async pollBinding(): Promise<void> {
-        const session = this.bindingSession;
-        if (!session || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
-        this.pollInFlight = true;
-        this.lastPollAt = Date.now();
-        this.bindingTimer = null;
-        if (Date.now() >= this.bindingExpiresAt) {
-            this.bindingState = 'expired';
-            this.bindingMessage = '小程序码已过期，请重新生成。';
-            this.refreshDisplay();
-            this.pollInFlight = false;
-            return;
-        }
-        try {
-            const result = await this.bindingClient.credential(session.device_code);
-            if (result.status === 'approved') {
-                this.stopBindingPolling();
-                await this.plugin.applyDeviceCredential(result);
-                this.resetBindingSession();
-                this.refreshDisplay();
-                return;
-            }
-            this.bindingState = result.status === 'approving' ? 'approving' : 'waiting';
-            this.bindingMessage = result.status === 'approving' ? '手机端已确认，正在安全下发 API Key…' : '等待手机端确认…';
-            this.refreshDisplay();
-            this.scheduleBindingPoll(result.retry_after || session.interval);
-        } catch (error) {
-            if (error instanceof DeviceBindingError && ['access_denied', 'expired_token'].includes(error.code)) {
-                this.bindingState = 'expired';
-                this.bindingMessage = error.code === 'access_denied' ? '本次绑定已被拒绝。' : '绑定请求已过期。';
-                this.refreshDisplay();
-                return;
-            }
-            const retryAfter = error instanceof DeviceBindingError && error.code === 'slow_down'
-                ? Math.min(60, session.interval + 5) : 10;
-            this.bindingMessage = '网络暂时不可用，正在重试…';
-            this.refreshDisplay();
-            this.scheduleBindingPoll(retryAfter);
-        } finally {
-            this.pollInFlight = false;
-        }
-    }
-
-    private pollBindingIfDue(): void {
-        if (!this.bindingSession || !this.activeContainerEl || this.bindingMode !== 'qr' || !this.appVisible || this.pollInFlight) return;
-        const now = Date.now();
-        if (now >= this.bindingExpiresAt) {
-            void this.pollBinding();
-            return;
-        }
-        if (this.nextPollAt && now < this.nextPollAt) return;
-        if (!this.nextPollAt && this.lastPollAt && now - this.lastPollAt < 30_000) return;
-        void this.pollBinding();
-    }
-
-    private stopBindingPolling(preserveSchedule = false): void {
-        this.plugin.timers.clearTimeout(this.bindingTimer);
-        this.bindingTimer = null;
-        if (!preserveSchedule) this.nextPollAt = 0;
     }
 
     private resetBindingSession(): void {
-        this.stopBindingPolling();
         this.bindingSession = null;
         this.bindingQrDataUrl = '';
+        this.qrUnavailableForCode = '';
         this.bindingState = 'idle';
         this.bindingMessage = '';
-        this.bindingExpiresAt = 0;
-        this.pollInFlight = false;
-        this.lastPollAt = 0;
-        this.nextPollAt = 0;
         this.launchUrl = '';
         this.launchState = 'idle';
         this.launchMessage = '';
@@ -616,7 +583,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 : '快捷入口暂不可用，请使用二维码或绑定码。';
             button.disabled = false;
             button.setText('打开 Clip2MD 小程序');
-            this.refreshDisplay();
+            this.refresh();
             return;
         }
         button.disabled = false;
@@ -627,7 +594,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             window.location.assign(this.launchUrl);
         } catch {
             this.launchMessage = '请再次点击按钮打开小程序。';
-            this.refreshDisplay();
+            this.refresh();
         }
     }
 
@@ -641,17 +608,56 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .setHeading();
 
         new Setting(containerEl)
+            .setName('重新扫码绑定此设备')
+            .setDesc('每台设备应分别绑定自己的 Key；旧 Key 会保留至新绑定完成。')
+            .addButton(btn => btn.setButtonText('生成绑定码').onClick(() => {
+                this.showBindingForExistingKey = true;
+                this.refreshDisplay();
+            }));
+
+        for (const taskId of this.plugin.getMigrationUnresolvedTasks()) {
+            new Setting(containerEl)
+                .setName(`迁移待确认任务 #${taskId}`)
+                .setDesc('旧配置指向的笔记在本机不存在。请选择保留忽略或重新导入，选择前不提交该任务的删除回执。')
+                .addButton(btn => btn.setButtonText('保留忽略').onClick(() => {
+                    this.runAsync(() => this.plugin.resolveMigrationTask(taskId, 'ignore'));
+                }))
+                .addButton(btn => btn.setButtonText('重新导入').onClick(() => {
+                    this.runAsync(() => this.plugin.resolveMigrationTask(taskId, 'reimport'));
+                }));
+        }
+
+        if (this.plugin.hasLegacySharedState()) {
+            new Setting(containerEl)
+                .setName('清理旧共享状态')
+                .setDesc('确认所有设备均已升级并分别绑定后，清除 Vault 配置中的旧 Key 和进度。旧版插件将无法再从共享配置恢复。')
+                .addButton(btn => btn
+                    .setButtonText(this.confirmLegacyCleanup ? '再次点击，确认清理' : '清理旧状态')
+                    .onClick(() => {
+                        if (!this.confirmLegacyCleanup) {
+                            this.confirmLegacyCleanup = true;
+                            btn.setButtonText('再次点击，确认清理');
+                            return;
+                        }
+                        this.confirmLegacyCleanup = false;
+                        this.runAsync(() => this.plugin.clearLegacySharedState());
+                    }));
+        }
+
+        new Setting(containerEl)
             .setName('API Key')
             .setDesc('从 clip2md 网站获取的 API Key')
-            .addText(text => text
-                .setPlaceholder('clip2md_...')
-                .setValue(this.plugin.settings.apiKey)
-                .onChange((value) => {
-                    this.runAsync(async () => {
-                        this.plugin.settings.apiKey = value.trim();
-                        await this.plugin.saveSettings();
+            .addText(text => {
+                text.setPlaceholder('clip2md_...')
+                    .setValue(this.plugin.settings.apiKey)
+                    .onChange((value) => {
+                        this.runAsync(async () => {
+                            this.plugin.settings.apiKey = value.trim();
+                            await this.plugin.saveSettings();
+                        });
                     });
-                }))
+                text.inputEl.type = 'password';
+            })
             .addExtraButton(btn => btn
                 .setIcon('external-link')
                 .setTooltip('获取 API Key')
@@ -689,7 +695,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     // 同步两个目标文件夹输入框的值
     private syncFolderInputs(containerEl: HTMLElement, value: string) {
-        containerEl.querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
+        (this.activeContainerEl || containerEl).querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
             if (document.activeElement !== input) {
                 input.value = value;
             }
@@ -699,7 +705,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private openFolderPicker(containerEl: HTMLElement): void {
         const modal = new FolderPickerModal(this.app, this.plugin.settings.targetFolder, (folder) => {
             // 更新所有目标文件夹输入框
-            containerEl.querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
+            (this.activeContainerEl || containerEl).querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
                 input.value = folder;
                 input.dispatchEvent(new Event('input', { bubbles: true }));
             });
@@ -728,6 +734,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
 
         const details = containerEl.createEl('details', { cls: 'clip2md-advanced-settings' });
+        details.open = this.advancedOpen;
+        details.addEventListener('toggle', () => { this.advancedOpen = details.open; });
         details.createEl('summary', { text: '高级设置（点击展开）', cls: 'clip2md-advanced-summary' });
         this.renderAdvancedContent(details);
     }
@@ -774,27 +782,27 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
                 }));
 
-        new Setting(containerEl)
-            .setName('同步内容预设')
-            .setDesc('快速切换同步内容模式')
-            .addDropdown(dropdown => {
-                for (const option of TEMPLATE_PRESETS) {
-                    dropdown.addOption(option.value, option.label);
-                }
-                dropdown
-                    .setValue(this.plugin.settings.syncContentMode)
-                    .onChange((value) => {
-                        this.runAsync(async () => {
-                            const preset = TEMPLATE_PRESETS.find(item => item.value === value);
-                            this.plugin.settings.syncContentMode = normalizeSyncContentMode(value);
-                            if (preset) {
-                                this.plugin.settings.template = preset.template;
-                            }
-                            await this.plugin.saveSettings();
-                            this.updateTemplatePreviewOnly(containerEl);
-                        });
-                    });
-            });
+        const titleSetting = new Setting(containerEl).setName('笔记标题')
+            .setDesc('默认跟随网站标题偏好。自定义模板中的明确标题字段优先；{{note_title}} 使用这里选择的标题。');
+        const custom = new Setting(containerEl).setName('自定义标题模板')
+            .setDesc('支持 {{title}}、{{source_title}}、{{display_title}}、{{source}}、{{created_date}}、{{task_id}}；空结果使用网站标题。');
+        custom.addText(text => text.setValue(this.plugin.settings.customTitleTemplate || '').onChange(value => {
+            const error = validateCustomTitle(value);
+            custom.setDesc(error ? `未保存：${error}` : '支持标题、来源、日期和任务 ID 变量；空结果使用网站标题。');
+            custom.settingEl.toggleClass('clip2md-title-invalid', !!error);
+            if (error) return;
+            this.plugin.settings.customTitleTemplate = value;
+            this.runAsync(async () => { await this.plugin.saveSettings(); this.updatePreview(containerEl); this.noteContent?.refreshPreview(); });
+        }));
+        custom.settingEl.hidden = this.plugin.settings.titleMode !== 'custom';
+        titleSetting.addDropdown(dropdown => dropdown
+            .addOption('website', '跟随网站设置').addOption('source', '原标题')
+            .addOption('task', '智能标题').addOption('custom', '自定义标题模板')
+            .setValue(this.plugin.settings.titleMode || 'website').onChange(value => {
+                this.plugin.settings.titleMode = value as TitleMode;
+                custom.settingEl.hidden = value !== 'custom';
+                this.runAsync(async () => { await this.plugin.saveSettings(); this.updatePreview(containerEl); this.noteContent?.refreshPreview(); });
+            }));
 
         new Setting(containerEl)
             .setName('文件夹/文件名预设')
@@ -814,10 +822,10 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                         this.plugin.settings.filenameTemplate = preset.filenameTemplate;
                         await this.plugin.saveSettings();
                         // 更新文件夹输入框的显示值（不保存到设置）
-                        containerEl.querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
+                        (this.activeContainerEl || containerEl).querySelectorAll<HTMLInputElement>('input[placeholder="留空则不同步"]').forEach(input => {
                             input.value = preset.targetFolder;
                         });
-                        const filenameInput = containerEl.querySelector<HTMLInputElement>('input[placeholder="{{created_date}}-{{title}}"]');
+                        const filenameInput = containerEl.querySelector<HTMLInputElement>(`input[placeholder="${NEW_DEFAULT_FILENAME_TEMPLATE}"]`);
                         if (filenameInput) filenameInput.value = preset.filenameTemplate;
                         this.updatePreview(containerEl);
                         // 如果文件夹之前为空，滚动到文件夹区域，滚动结束后闪烁提醒
@@ -834,13 +842,13 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('文件名模板')
-            .setDesc('默认 {{created_date}}-{{title}}；可使用 {{source_title}} 引用来源标题，非法文件名字符会被清理。')
+            .setDesc('默认日期加笔记标题；{{note_title}} 跟随标题选择，其他变量保留各自含义。')
             .addText(text => text
-                .setPlaceholder('{{created_date}}-{{title}}')
+                .setPlaceholder(NEW_DEFAULT_FILENAME_TEMPLATE)
                 .setValue(this.plugin.settings.filenameTemplate)
                 .onChange((value) => {
                     this.runAsync(async () => {
-                        this.plugin.settings.filenameTemplate = value.trim() || '{{created_date}}-{{title}}';
+                        this.plugin.settings.filenameTemplate = value.trim() || NEW_DEFAULT_FILENAME_TEMPLATE;
                         await this.plugin.saveSettings();
                         this.updatePreview(containerEl);
                     });
@@ -862,15 +870,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
         const preview = this.plugin.getTemplatePreview();
         containerEl.createDiv({
-            cls: 'setting-item-description clip2md-preview-block',
+            cls: 'setting-item-description clip2md-preview-block clip2md-path-preview',
             text: `示例目录：${preview.folder}\n示例文件：${preview.filename}`,
         });
 
-        // 前置元数据模板 - 放在 Markdown 模板前面
-        this.renderFrontmatterSection(containerEl);
-
-        // Markdown 模板
-        this.renderMarkdownTemplateSection(containerEl);
+        this.renderNoteContent(containerEl);
 
         new Setting(containerEl)
             .setName('图片处理')
@@ -903,146 +907,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 .setTooltip('浏览图片存放目录')
                 .onClick(() => this.openImageFolderPicker(containerEl)));
 
-        new Setting(containerEl)
-            .setName('消息按日合并')
-            .setDesc('微信、QQ、邮件可按日期合并到同一文件')
-            .addDropdown(dropdown => dropdown
-                .addOption('none', '关闭')
-                .addOption('daily', '按日合并')
-                .setValue(this.plugin.settings.mergeMode)
-                .onChange((value) => {
-                    this.runAsync(async () => {
-                        this.plugin.settings.mergeMode = value === 'daily' ? 'daily' : 'none';
-                        await this.plugin.saveSettings();
-                    });
-                }));
-
     }
 
-    private renderFrontmatterSection(containerEl: HTMLElement) {
-        const FM_VARIABLES = [
-            '{{title}}', '{{source_title}}', '{{source_date}}', '{{created_at}}',
-            '{{source}}', '{{duration}}', '{{content_type}}',
-            '{{task_id}}', '{{tags}}', '{{url}}',
-        ];
-
-        const fmSetting = new Setting(containerEl)
-            .setName('前置元数据模板')
-            .setDesc('每个同步文件的 frontmatter 头部，支持变量。来源标题可写为 source_title: "{{source_title}}"，来源标题中的引号、反斜杠和换行会自动转义。')
-            .addTextArea(text => {
-                text.setPlaceholder('')
-                    .setValue(this.plugin.settings.frontmatterTemplate)
-                    .onChange((value) => {
-                        this.runAsync(async () => {
-                            this.plugin.settings.frontmatterTemplate = value;
-                            await this.plugin.saveSettings();
-                            this.debouncedUpdateFmPreview(containerEl);
-                        });
-                    });
-                text.inputEl.rows = 6;
-                text.inputEl.addClass('clip2md-template-editor');
-            });
-
-        // 变量工具栏
-        const toolbarWrap = containerEl.createDiv({ cls: 'clip2md-template-toolbar' });
-        toolbarWrap.createSpan({ text: '可用变量：', cls: 'clip2md-toolbar-label' });
-        FM_VARIABLES.forEach(variable => {
-            const button = toolbarWrap.createEl('button', { text: variable, cls: 'clip2md-chip-button' });
-            button.addEventListener('click', () => {
-                const textarea = fmSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
-                if (!textarea) return;
-                const start = textarea.selectionStart ?? textarea.value.length;
-                const end = textarea.selectionEnd ?? textarea.value.length;
-                const nextValue = `${textarea.value.slice(0, start)}${variable}${textarea.value.slice(end)}`;
-                textarea.value = nextValue;
-                textarea.focus();
-                textarea.selectionStart = textarea.selectionEnd = start + variable.length;
-                this.plugin.settings.frontmatterTemplate = nextValue;
-                this.runAsync(() => this.plugin.saveSettings());
-                this.debouncedUpdateFmPreview(containerEl);
-            });
-        });
-
-        const resetButton = toolbarWrap.createEl('button', { text: '恢复默认', cls: 'clip2md-chip-button' });
-        resetButton.addEventListener('click', () => {
-            this.runAsync(async () => {
-                this.plugin.settings.frontmatterTemplate = DEFAULT_FRONTMATTER_TEMPLATE;
-                const textarea = fmSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
-                if (textarea) {
-                    textarea.value = DEFAULT_FRONTMATTER_TEMPLATE;
-                }
-                await this.plugin.saveSettings();
-                this.updateFmPreview();
-            });
-        });
-
-        // 预览容器
-        this.fmPreviewEl = containerEl.createDiv({ cls: 'clip2md-fm-preview-container' });
-        this.updateFmPreview();
-    }
-
-    private renderMarkdownTemplateSection(containerEl: HTMLElement) {
-        const templateSetting = new Setting(containerEl)
-            .setName('Markdown 模板')
-            .setDesc('支持内容变量、frontmatter 与任务标记')
-            .addTextArea(text => {
-                text.setPlaceholder('{{content}}')
-                    .setValue(this.plugin.settings.template)
-                .onChange((value) => {
-                    this.runAsync(async () => {
-                        this.plugin.settings.template = value;
-                        await this.plugin.saveSettings();
-                        this.debouncedUpdateTemplatePreview(containerEl);
-                    });
-                });
-                text.inputEl.rows = 10;
-                text.inputEl.addClass('clip2md-template-editor');
-            });
-
-        const templateEditor = templateSetting.controlEl.querySelector<HTMLTextAreaElement>('textarea');
-        if (templateEditor) {
-            this.renderTemplateToolbar(containerEl, templateEditor);
-            this.renderTemplatePreview(containerEl);
-        }
-    }
-
-    // 防抖定时器
-    private fmDebounceTimer: number | null = null;
-    private templateDebounceTimer: number | null = null;
-
-    private debouncedUpdateFmPreview(_containerEl: HTMLElement) {
-        this.plugin.timers.clearTimeout(this.fmDebounceTimer);
-        this.fmDebounceTimer = this.plugin.timers.setTimeout(() => this.updateFmPreview(), 400, 'settings-ui');
-    }
-
-    private debouncedUpdateTemplatePreview(containerEl: HTMLElement) {
-        this.plugin.timers.clearTimeout(this.templateDebounceTimer);
-        this.templateDebounceTimer = this.plugin.timers.setTimeout(() => this.updateTemplatePreviewOnly(containerEl), 400, 'settings-ui');
-    }
-
-    private updateFmPreview() {
-        if (!this.fmPreviewEl) return;
-        this.fmPreviewEl.empty();
-
-        const template = this.plugin.settings.frontmatterTemplate;
-        if (!template || !template.trim()) {
-            return;
-        }
-
-        let rendered = template;
-        for (const [key, value] of FRONTMATTER_PREVIEW_VALUES) {
-            rendered = rendered.split(key).join(value);
-        }
-
-        const previewEl = this.fmPreviewEl.createDiv({
-            cls: 'clip2md-preview-block clip2md-fm-preview clip2md-preview-compact',
-        });
-        previewEl.setText(rendered);
+    private renderNoteContent(containerEl: HTMLElement) {
+        this.noteContent?.dispose();
+        this.noteContent = new NoteContentSettings(this.plugin, containerEl, this.noteContentState || (this.noteContentState = {}));
     }
 
     private updatePreview(containerEl: HTMLElement) {
         // 更新预览区域显示
-        const previewEl = containerEl.querySelector('.clip2md-preview-block');
+        const previewEl = containerEl.querySelector('.clip2md-path-preview');
         if (previewEl) {
             const preview = this.plugin.getTemplatePreview();
             previewEl.textContent = `示例目录：${preview.folder}\n示例文件：${preview.filename}`;
@@ -1084,77 +958,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         target.addEventListener('animationend', () => {
             target.classList.remove('clip2md-flash');
         }, { once: true });
-    }
-
-    private updateTemplatePreviewOnly(_containerEl: HTMLElement) {
-        const validation = this.plugin.validateTemplate(this.plugin.settings.template);
-        const previewContent = this.plugin.renderTemplatePreview();
-
-        if (!this.templatePreviewEl) return;
-
-        // 清空并重新填充预览区域
-        this.templatePreviewEl.empty();
-
-        if (!validation.valid) {
-            this.templatePreviewEl.createDiv({
-                cls: 'clip2md-preview-block clip2md-template-error clip2md-error-text clip2md-preview-compact',
-                text: validation.message,
-            });
-        }
-
-        this.templatePreviewEl.createDiv({
-            cls: 'clip2md-preview-block clip2md-template-preview clip2md-preview-compact',
-            text: previewContent,
-        });
-    }
-
-    private renderTemplateToolbar(containerEl: HTMLElement, editor: HTMLTextAreaElement) {
-        const buttonWrap = containerEl.createDiv({ cls: 'clip2md-template-toolbar' });
-        INSERTABLE_TEMPLATE_VARIABLES.forEach((variable) => {
-            const button = buttonWrap.createEl('button', { text: variable, cls: 'clip2md-chip-button' });
-            button.addEventListener('click', () => {
-                this.runAsync(async () => {
-                    const start = editor.selectionStart ?? editor.value.length;
-                    const end = editor.selectionEnd ?? editor.value.length;
-                    const nextValue = `${editor.value.slice(0, start)}${variable}${editor.value.slice(end)}`;
-                    editor.value = nextValue;
-                    editor.focus();
-                    editor.selectionStart = editor.selectionEnd = start + variable.length;
-                    this.plugin.settings.template = nextValue;
-                    await this.plugin.saveSettings();
-                    this.updateTemplatePreviewOnly(containerEl);
-                });
-            });
-        });
-
-        const resetButton = buttonWrap.createEl('button', { text: '恢复默认', cls: 'clip2md-chip-button' });
-        resetButton.addEventListener('click', () => {
-            this.runAsync(async () => {
-                this.plugin.settings.template = '{{content}}';
-                editor.value = '{{content}}';
-                editor.focus();
-                await this.plugin.saveSettings();
-                this.updateTemplatePreviewOnly(containerEl);
-            });
-        });
-    }
-
-    private renderTemplatePreview(containerEl: HTMLElement) {
-        // 创建固定的预览容器（只创建一次）
-        this.templatePreviewEl = containerEl.createDiv({ cls: 'clip2md-template-preview-container' });
-
-        const validation = this.plugin.validateTemplate(this.plugin.settings.template);
-        if (!validation.valid) {
-            this.templatePreviewEl.createDiv({
-                cls: 'clip2md-preview-block clip2md-template-error clip2md-error-text',
-                text: validation.message,
-            });
-        }
-
-        this.templatePreviewEl.createDiv({
-            cls: 'clip2md-preview-block clip2md-template-preview',
-            text: this.plugin.renderTemplatePreview(),
-        });
     }
 
 }

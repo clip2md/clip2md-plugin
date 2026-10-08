@@ -1,7 +1,9 @@
+import { parse } from 'yaml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile } from 'obsidian';
-import { isInvalidApiKeyError, SyncRequestError, SyncService, type SyncTask } from './sync';
-import { DEFAULT_FRONTMATTER_TEMPLATE, type BijiSyncSettings } from './settings';
+import { isInvalidApiKeyError, SyncRequestError, SyncService, validateMarkdownBodyTemplate, type SyncTask } from './sync';
+import { DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FILENAME_TEMPLATE, type BijiSyncSettings } from './settings';
+import { buildSyncAck } from './sync-ack';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
 
@@ -34,6 +36,7 @@ const makeSettings = (overrides: Partial<BijiSyncSettings> = {}): BijiSyncSettin
     filenameDateFormat: 'yyyy-MM-dd',
     template: '{{content}}',
     frontmatterTemplate: DEFAULT_FRONTMATTER_TEMPLATE,
+    dailyMergeFrontmatterTemplate: DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE,
     syncContentMode: 'full',
     imageMode: 'local',
     imageFolder: '',
@@ -130,6 +133,78 @@ describe('SyncService', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         requestUrlMock.mockReset();
+    });
+
+    it.each(['full', 'note', 'source'] as const)('keeps frontmatter at the top in %s mode', async mode => {
+        const settings = makeSettings({ syncContentMode: mode, imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const task = makeTask();
+        const template = '# {{title}}\n\n{{content}}\n\n{{url}}';
+        const result = await service.renderToVault(vault as never, task, 'Clippings', template);
+        const markdown = String(vault.content(result.filepath!));
+        expect(markdown).toMatch(/^---\ntitle: "Test Title"[\s\S]*?\n---\n\n<!-- biji-task-id:101 -->/);
+        expect(markdown.match(/^---$/gm)).toHaveLength(2);
+        expect(markdown).toContain('# Test Title');
+        expect(markdown).toContain('https://example.com/post');
+        expect(markdown.includes('## Note')).toBe(mode !== 'source');
+        expect(markdown.includes('# Source')).toBe(mode !== 'note');
+    });
+
+    it('writes frontmatter and other fields when the body template omits content', async () => {
+        const settings = makeSettings({ imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const template = '# {{title}}\n{{url}}';
+        const task = makeTask({ ack_token: 'signed-token' });
+        const result = await service.renderToVault(vault as never, task, 'Clippings', template);
+        const markdown = String(vault.content(result.filepath!));
+        expect(markdown).toContain('task_id: 101\n---\n\n<!-- biji-task-id:101 -->');
+        expect(markdown).toContain('# Test Title\nhttps://example.com/post');
+        expect(markdown).not.toContain('## Note');
+        expect(buildSyncAck(task, result, { ...settings, template })).toBeNull();
+    });
+
+    it('keeps frontmatter when a full-mode task has only one content source', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const result = await service.renderToVault(vault as never,
+            makeTask({ note_markdown_content: null }), 'Clippings', '{{content}}');
+        expect(String(vault.content(result.filepath!))).toMatch(/^---\ntitle: /);
+        expect(String(vault.content(result.filepath!))).toContain('# Source');
+    });
+
+    it('updates an old single note that has a task ID only in frontmatter', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const filepath = 'Clippings/2026-08-08-Test Title.md';
+        await vault.create(filepath, '---\ntask_id: 101\n---\n\n旧正文');
+        service.loadTaskFileMap({ 101: filepath });
+        const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        expect(result.filepath).toBe(filepath);
+        expect(String(vault.content(filepath))).toContain('<!-- biji-task-id:101 -->');
+        expect(String(vault.content(filepath))).not.toContain('旧正文');
+    });
+
+    it('uses the same composed output for preview and Vault writes', async () => {
+        const settings = makeSettings({ imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const preview = service.createPreviewTask();
+        const result = await service.renderToVault(vault as never, preview, 'Clippings', settings.template);
+        expect(vault.content(result.filepath!)).toBe(service.renderTemplatePreview(settings.template));
+    });
+
+    it('rejects a body frontmatter before creating a Vault file, but allows later separators', async () => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        const yaml = '---\ntitle: duplicate\n---\n{{content}}';
+        expect(service.validateTemplate(yaml)).toMatchObject({ valid: false });
+        expect(validateMarkdownBodyTemplate('')).toMatchObject({ valid: false });
+        expect(validateMarkdownBodyTemplate('正文\n---\n分隔')).toMatchObject({ valid: true });
+        await expect(service.renderToVault(vault as never, makeTask(), 'Clippings', yaml))
+            .rejects.toThrow('请将 YAML 移到前置元数据模板');
+        expect(vault.paths()).toEqual([]);
     });
 
     it.each(['delete', 'rename', 'move'])('ignores a local %s before downloading images and keeps the decision after restart', async action => {
@@ -306,14 +381,89 @@ describe('SyncService', () => {
             vault as never,
             task,
             'Clippings/{{source_title}}/{{created_date}}',
-            '任务标题：{{title}}\n来源标题：{{source_title}}\n\n{{content}}',
+            '智能标题：{{title}}\n来源标题：{{source_title}}\n\n{{content}}',
         );
 
         expect(result.filepath).toBe('Clippings/来源中文标题/2026-08-08/来源中文标题-智能笔记标题.md');
         const content = String(vault.content(result.filepath!));
-        expect(content).toContain('任务标题：智能笔记标题\n来源标题：来源中文标题');
+        expect(content).toContain('智能标题：智能笔记标题\n来源标题：来源中文标题');
         expect(content).toContain('title: "智能笔记标题"\nsource_title: "来源中文标题"');
         expect(content).not.toContain('{{source_title}}');
+    });
+
+    it.each([
+        ['website', '网站标题'], ['source', '原始标题'], ['task', '智能标题'], ['custom', '原始标题 · 101'],
+    ] as const)('uses %s titles consistently in files, properties, body and daily task lists', async (titleMode, expected) => {
+        const settings = makeSettings({ titleMode, customTitleTemplate: '{{source_title}} · {{task_id}}',
+            filenameTemplate: NEW_DEFAULT_FILENAME_TEMPLATE, frontmatterTemplate: NEW_DEFAULT_FRONTMATTER_TEMPLATE, imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const task = makeTask({ title: '智能标题', source_title: '原始标题', display_title: '网站标题' });
+        const vault = new FakeVault();
+        const single = await service.renderToVault(vault as never, task, 'Clippings', '# {{note_title}}\n{{title}}\n{{display_title}}\n{{content}}');
+        expect(single.filepath).toContain(`${expected}.md`);
+        const text = String(vault.content(single.filepath!));
+        expect(text).toContain(`title: "${expected}"`);
+        expect(text).toContain(`# ${expected}\n智能标题\n网站标题`);
+        service.updateSettings({ ...settings, mergeMode: 'daily' });
+        const dailyVault = new FakeVault();
+        const daily = await service.renderToVault(dailyVault as never, task, 'Clippings', '{{note_title}}\n{{content}}');
+        const merged = String(dailyVault.content(daily.filepath!));
+        expect(merged).toContain(`## ${expected}`);
+        expect(merged).toContain(`    title: "${expected}"`);
+        expect(daily.filepath).not.toContain(expected);
+    });
+    it('renames an owned note on the next sync but preserves a conflicting manual file', async () => {
+        const settings = makeSettings({ titleMode: 'website', filenameTemplate: '{{note_title}}', frontmatterTemplate: NEW_DEFAULT_FRONTMATTER_TEMPLATE, imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const first = await service.renderToVault(vault as never, makeTask({ display_title: '旧标题' }), 'Clippings', '{{note_title}}');
+        const next = await service.renderToVault(vault as never, makeTask({ display_title: '新标题' }), 'Clippings', '{{note_title}}');
+        expect(first.filepath).toBe('Clippings/旧标题.md');
+        expect(next.filepath).toBe('Clippings/新标题.md');
+        expect(vault.content(first.filepath!)).toBeUndefined();
+        await vault.create('Clippings/手写标题.md', '手写正文');
+        const conflict = await service.renderToVault(vault as never, makeTask({ display_title: '手写标题' }), 'Clippings', '{{note_title}}');
+        expect(conflict.skipped).toBe(true);
+        expect(vault.content('Clippings/手写标题.md')).toBe('手写正文');
+        expect(vault.content(next.filepath!)).toContain('title: "新标题"');
+    });
+
+
+    it.each([NEW_DEFAULT_FRONTMATTER_TEMPLATE, DEFAULT_FRONTMATTER_TEMPLATE, ''])('always renders the required default metadata fields (%s)', template => {
+        const service = new SyncService(makeSettings({ frontmatterTemplate: template }));
+        const emptyTask = makeTask({ source_date: null, tags: [], url: '' });
+        const empty = parse(service['generateFrontmatter'](emptyTask, emptyTask.title!).split('---')[1]);
+        expect(empty).toMatchObject({ title: emptyTask.title, date: '', tags: [], url: '' });
+        const task = makeTask({ source_date: '2026-10-08', tags: [{ id: 1, name: '标签 "A"\\B' }], url: 'https://example.com/?q="A"' });
+        const filled = parse(service['generateFrontmatter'](task, task.title!).split('---')[1]);
+        expect(filled).toMatchObject({ title: task.title, date: '2026-10-08', tags: ['标签 "A"\\B'], url: task.url });
+    });
+
+    it('uses the website title and escaped URL in the new default template', async () => {
+        const service = new SyncService(makeSettings({
+            filenameTemplate: NEW_DEFAULT_FILENAME_TEMPLATE,
+            frontmatterTemplate: NEW_DEFAULT_FRONTMATTER_TEMPLATE,
+            imageMode: 'disabled',
+        }));
+        const vault = new FakeVault();
+        const task = makeTask({ title: 'AI 标题', source_title: '原始标题', display_title: 'AI 标题', url: 'https://example.com/?q="quoted"' });
+        const result = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result.filepath).toContain('AI 标题.md');
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('title: "AI 标题"');
+        expect(content).toContain('url: "https://example.com/?q=\\"quoted\\""');
+
+        const noSource = makeTask({ id: 102, title: 'AI 标题', source_title: null, display_title: 'AI 标题' });
+        const fallback = await service.renderToVault(new FakeVault() as never, noSource, 'Clippings', '{{content}}');
+        expect(fallback.filepath).toContain('AI 标题.md');
+    });
+
+    it('keeps template variable meanings separate from the account display choice', () => {
+        const service = new SyncService(makeSettings());
+        const task = makeTask({ title: 'AI 标题', source_title: '原始标题', display_title: 'AI 标题' });
+        const render = service['renderBodyTemplate'].bind(service);
+        expect(render('{{title}}|{{source_title}}|{{source_title_or_title}}|{{display_title}}', task))
+            .toContain('AI 标题|原始标题|原始标题|AI 标题');
     });
 
     it('previews source-title variables separately from the task title', () => {
@@ -323,7 +473,7 @@ describe('SyncService', () => {
         }));
 
         expect(service.renderTemplatePreview('{{source_title}} | {{title}}'))
-            .toBe('<!-- biji-task-id:9527 -->\n\n示例原文 | Clip2MD 使用示例');
+            .toContain('<!-- biji-task-id:9527 -->\n\n示例原文 | Clip2MD 使用示例');
         expect(service.getTemplatePreviewData()).toEqual({
             folder: 'Clippings/示例原文',
             filename: '示例原文-Clip2MD 使用示例.md',
@@ -432,7 +582,7 @@ describe('SyncService', () => {
         const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
         const vault = new FakeVault();
         const task = makeTask({ source_title: null });
-        const expectedContent = '---\ntitle: "Test Title"\ndate: "2026-08-07T10:00:00Z"\nsource: "微信公众号"\ntags: []\ntask_id: 101\n---\n\n## Note\n\nhello\n\n# 原文\n\n# Source\n\nworld';
+        const expectedContent = '---\ntitle: "Test Title"\ndate: "2026-08-07T10:00:00Z"\nsource: "微信公众号"\ntags: []\nurl: "https://example.com/post"\ntask_id: 101\n---\n\n<!-- biji-task-id:101 -->\n\n## Note\n\nhello\n\n# 原文\n\n# Source\n\nworld';
 
         const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
         expect(first.filepath).toBe('Clippings/2026-08-08-Test Title.md');
@@ -522,6 +672,92 @@ describe('SyncService', () => {
         expect(content).toContain('用户手写内容');
         expect(content).toContain(task.source_title);
         expect(content).toContain(task.note_markdown_content);
+    });
+
+    it('summarizes daily tasks once and updates tags, links, and task order', async () => {
+        const service = new SyncService(makeSettings({ mergeMode: 'daily', imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const first = makeTask({ id: 101, title: '第一篇', tags: [{ id: 1, name: '知识', source: 'USER', upstream_type: 'manual' }] });
+        const second = makeTask({ id: 102, title: '第二篇', url: 'https://example.com/two', tags: [{ id: 2, name: '工作', source: 'USER', upstream_type: 'manual' }] });
+        const firstResult = await service.renderToVault(vault as never, first, 'Clippings', '{{content}}');
+        const filepath = firstResult.filepath!;
+        const firstContent = String(vault.content(filepath));
+        expect(firstContent).toMatch(/^---\n/);
+        expect(firstContent).toContain('task_count: 1');
+        expect(firstContent).toContain('task_ids: [101]');
+        expect(firstContent).toContain('<!-- clip2md-daily-frontmatter:v1 -->');
+
+        await service.renderToVault(vault as never, second, 'Clippings', '{{content}}');
+        let content = String(vault.content(filepath));
+        expect(content.match(/^---$/gm)).toHaveLength(2);
+        expect(content).toContain('tags: ["知识","工作"]');
+        expect(content).toContain('task_count: 2');
+        expect(content).toContain('task_ids: [101,102]');
+        expect(content).toContain('title: "第一篇"');
+        expect(content).toContain('title: "第二篇"');
+        expect(content).toContain('url: "https://example.com/two"');
+
+        await vault.modify(vault.getFileByPath(filepath)!, `${content}\n用户手写内容\n`);
+        await service.renderToVault(vault as never, first, 'Clippings', '{{content}}');
+        content = String(vault.content(filepath));
+        expect(content).toContain('用户手写内容');
+        expect(content).toContain('task_ids: [101,102]');
+        expect(content.match(/clip2md-daily-frontmatter:v1/g)).toHaveLength(1);
+        expect(content.match(/clip2md-task-start:101/g)).toHaveLength(1);
+    });
+
+    it('shows the same merged frontmatter and body in preview as a new daily file', async () => {
+        const settings = makeSettings({ mergeMode: 'daily', imageMode: 'disabled' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const result = await service.renderToVault(vault as never,
+            service.createPreviewTask(), 'Clippings', settings.template);
+        expect(vault.content(result.filepath!)).toBe(service.renderTemplatePreview(settings.template));
+    });
+
+    it('updates a custom daily frontmatter template with a trailing newline', async () => {
+        const service = new SyncService(makeSettings({
+            mergeMode: 'daily', imageMode: 'disabled',
+            dailyMergeFrontmatterTemplate: '---\ntask_count: {{task_count}}\ntask_ids: {{task_ids}}\n---\n',
+        }));
+        const vault = new FakeVault();
+        const first = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        await service.renderToVault(vault as never, makeTask({ id: 102 }), 'Clippings', '{{content}}');
+        const content = String(vault.content(first.filepath!));
+        expect(content).toContain('task_count: 2');
+        expect(content.match(/clip2md-daily-frontmatter:v1/g)).toHaveLength(1);
+    });
+
+    it('silently builds metadata for a legacy daily file and preserves old blocks', async () => {
+        const service = new SyncService(makeSettings({ mergeMode: 'daily', imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const filepath = 'Clippings/2026-08-08-微信公众号.md';
+        const oldBlock = '<!-- clip2md-task-start:77 -->\n## 旧文章\n\n旧正文\n<!-- clip2md-task-end:77 -->';
+        await vault.create(filepath, `# 微信公众号 · 2026-08-08\n\n${oldBlock}\n\n手写结尾`);
+        const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        const content = String(vault.content(filepath));
+        expect(result.warning).toBeUndefined();
+        expect(content).toContain('task_count: 2');
+        expect(content).toContain('task_ids: [77,101]');
+        expect(content).toContain('title: "旧文章"');
+        expect(content).not.toContain('url: ""');
+        expect(content).toContain(oldBlock);
+        expect(content).toContain('手写结尾');
+    });
+
+    it('preserves an existing handwritten daily frontmatter and reports migration once', async () => {
+        const service = new SyncService(makeSettings({ mergeMode: 'daily', imageMode: 'disabled' }));
+        const vault = new FakeVault();
+        const filepath = 'Clippings/2026-08-08-微信公众号.md';
+        await vault.create(filepath, '---\ncustom: keep\n---\n\n# 日记\n\n手写内容');
+        const first = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        expect(first.warning).toContain('请手动迁移');
+        const second = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        expect(second.warning).toBeUndefined();
+        const content = String(vault.content(filepath));
+        expect(content).toMatch(/^---\ncustom: keep\n---/);
+        expect(content).not.toContain('clip2md-daily-frontmatter:v1');
+        expect(content).toContain('手写内容');
     });
 
     it('includes tags in the default frontmatter template as a YAML list', async () => {
