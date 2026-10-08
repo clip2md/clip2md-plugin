@@ -1,11 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
 import { TFile } from 'obsidian';
 import BijiSyncPlugin from './main';
 import { SyncService, type SyncTask } from './sync';
 import { SyncAckQueue } from './sync-ack';
+import { sha256 } from './saved-sync-proof';
 
 const request = vi.hoisted(() => vi.fn());
+const askSubset = vi.hoisted(() => vi.fn(() => true));
 vi.mock('obsidian', async original => ({ ...await original<Record<string, unknown>>(), requestUrl: request }));
+vi.mock('./subset-delete-modal', () => ({ SubsetDeleteModal: class {
+    constructor(_app: unknown, _mode: unknown, private readonly resolve: (accepted: boolean) => void) {}
+    open() { this.resolve(askSubset()); }
+} }));
 
 function fixture() {
     const plugin = Object.create(BijiSyncPlugin.prototype) as BijiSyncPlugin;
@@ -58,7 +65,11 @@ function fixture() {
     return { plugin, files, vault, task, tasks, fetchIds, saved: () => ({ ...saved, ...localSaved }), shared: () => saved, setPage: (items: SyncTask[]) => { page = items; } };
 }
 
-beforeEach(() => { request.mockReset(); request.mockResolvedValue({ status: 200 }); });
+beforeEach(() => {
+    request.mockReset(); request.mockResolvedValue({ status: 200 });
+    askSubset.mockReset(); askSubset.mockReturnValue(true);
+    vi.stubGlobal('crypto', webcrypto);
+});
 
 describe('Vault local removal lifecycle', () => {
     it('defaults off, persists the setting and ignored IDs, and restores on next sync without a server delta', async () => {
@@ -146,6 +157,58 @@ describe('Vault local removal lifecycle', () => {
 
 describe('receipt preflight against the actual Vault mapping', () => {
     const ack = { taskId: 42, ackToken: 'test-token', imagesProcessed: 0, imagesFailed: 0 };
+
+    it.each(['mode', 'content', 'imageMode'] as const)('discards a v2 receipt when %s changes before retry', async changed => {
+        const f = fixture();
+        await f.plugin.syncNow();
+        const filepath = f.plugin.syncService.getTaskFileMap()[42];
+        const v2 = { ...ack, scopeVersion: 2 as const, contentMode: 'full' as const, processedAssetIds: [],
+            savedProof: { filepath, contentHash: await sha256(f.files.get(filepath)!), images: [] } };
+        await f.plugin.syncAckQueue.enqueue(v2);
+        if (changed === 'mode') f.plugin.settings.syncContentMode = 'source';
+        else if (changed === 'imageMode') f.plugin.settings.imageMode = 'disabled';
+        else f.files.set(filepath, `${f.files.get(filepath)}\nuser edit`);
+        await f.plugin.syncAckQueue.flush();
+        expect(request).not.toHaveBeenCalled();
+        expect(f.plugin.syncAckQueue.snapshot()).toEqual([]);
+        expect(f.plugin.syncService.getPendingTaskIds()).toEqual([42]);
+    });
+
+    it('persists subset consent per credential and mode only on this device', async () => {
+        const f = fixture();
+        f.plugin.settings.syncContentMode = 'source';
+        expect(await f.plugin['confirmSubsetDelete']('source')).toBe(true);
+        expect(askSubset).toHaveBeenCalledOnce();
+        expect(await f.plugin['confirmSubsetDelete']('source')).toBe(true);
+        expect(askSubset).toHaveBeenCalledOnce();
+        expect(f.saved().subsetDeleteConsent).toEqual({ credentialFingerprint: await sha256('test-only'), modes: ['source'] });
+        expect(f.shared().subsetDeleteConsent).toBeUndefined();
+        f.plugin.settings.syncContentMode = 'note';
+        askSubset.mockReturnValue(false);
+        expect(await f.plugin['confirmSubsetDelete']('note')).toBe(false);
+        expect(askSubset).toHaveBeenCalledTimes(2);
+        f.plugin.settings.apiKey = 'another-device-key';
+        askSubset.mockReturnValue(true);
+        expect(await f.plugin['confirmSubsetDelete']('note')).toBe(true);
+        expect(askSubset).toHaveBeenCalledTimes(3);
+    });
+
+    it('requires a separate image omission consent and supports full content without images', async () => {
+        const f = fixture();
+        f.plugin.settings.syncContentMode = 'source';
+        await f.plugin['confirmSubsetDelete']('source');
+        f.plugin.settings.imageMode = 'disabled';
+        await f.plugin['confirmSubsetDelete']('source');
+        expect(askSubset).toHaveBeenCalledTimes(2);
+        expect(f.saved().imageOmissionDeleteConsent).toEqual({ credentialFingerprint: await sha256('test-only'), modes: ['source'] });
+        await f.plugin['confirmSubsetDelete']('source');
+        expect(askSubset).toHaveBeenCalledTimes(2);
+        f.plugin.settings.syncContentMode = 'full';
+        await f.plugin['confirmSubsetDelete']('full');
+        expect(askSubset).toHaveBeenCalledTimes(3);
+        expect(f.saved().imageOmissionDeleteConsent).toEqual({ credentialFingerprint: await sha256('test-only'), modes: ['source', 'full'] });
+        expect(f.shared().imageOmissionDeleteConsent).toBeUndefined();
+    });
 
     it.each([true, false])('discards a missing-file receipt without POST when protection is %s', async enabled => {
         const f = fixture();

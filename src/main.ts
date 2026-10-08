@@ -23,6 +23,8 @@ import { sanitizeConfigForBackup } from './config-backup';
 import { TimerRegistry } from './timers';
 import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckHttpError, SyncAckQueue, type PendingSyncAck } from './sync-ack';
 import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState } from './local-state';
+import { sha256, verifySavedSyncProof } from './saved-sync-proof';
+import { SubsetDeleteModal } from './subset-delete-modal';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -127,6 +129,7 @@ export default class BijiSyncPlugin extends Plugin {
     settings: BijiSyncSettings;
     syncService: SyncService;
     syncAckQueue: SyncAckQueue;
+    private subsetDeleteDecisions?: Map<string, boolean>;
     syncIntervalId: number | null = null;
     ackRetryIntervalId: number | null = null;
     settingTab: BijiSyncSettingTab | null = null;
@@ -836,6 +839,13 @@ export default class BijiSyncPlugin extends Plugin {
 
     private async deliverSyncAck(ack: PendingSyncAck): Promise<'accepted' | 'discard'> {
         if (this.syncWriteInProgress) throw new Error('Vault 写入期间暂缓回执');
+        if (ack.scopeVersion === 2 && (ack.contentMode !== this.settings.syncContentMode
+            || (ack.imageMode ?? 'local') !== this.settings.imageMode
+            || !ack.savedProof || !await verifySavedSyncProof(this.app.vault, ack.taskId, ack.savedProof))) {
+            this.syncService.markPending(ack.taskId);
+            await this.persistSyncState();
+            return 'discard';
+        }
         if (this.settings.preventReimportAfterLocalRemoval
             && this.syncService.getIgnoredTaskIds().includes(ack.taskId)) {
             return 'discard';
@@ -846,6 +856,12 @@ export default class BijiSyncPlugin extends Plugin {
             } else {
                 this.syncService.markPending(ack.taskId);
             }
+            await this.persistSyncState();
+            return 'discard';
+        }
+        // Settings can change while the readback checks await Vault I/O.
+        if (ack.scopeVersion === 2 && (ack.contentMode !== this.settings.syncContentMode || (ack.imageMode ?? 'local') !== this.settings.imageMode)) {
+            this.syncService.markPending(ack.taskId);
             await this.persistSyncState();
             return 'discard';
         }
@@ -971,6 +987,7 @@ export default class BijiSyncPlugin extends Plugin {
             ackBlockedCount: 0, ackBlockedReasons: new Set(),
         };
         const processedTaskIds = new Set<number>();
+        this.subsetDeleteDecisions = new Map();
 
         try {
             await this.syncAckQueue.flush();
@@ -1272,7 +1289,29 @@ export default class BijiSyncPlugin extends Plugin {
                 counters.pending += 1;
             } else {
                 this.syncService.markComplete(task.id);
-                const ack = buildSyncAck(task, result, this.settings);
+                let subsetDecision = false;
+                if (task.ack_scope && (this.settings.syncContentMode !== 'full' || this.settings.imageMode === 'disabled')
+                    && !getSyncAckBlockedReason(task, result, this.settings)) {
+                    const key = this.settings.apiKey;
+                    const mode = this.settings.syncContentMode;
+                    const imageMode = this.settings.imageMode;
+                    subsetDecision = await this.confirmSubsetDelete(this.settings.syncContentMode);
+                    if (key !== this.settings.apiKey || mode !== this.settings.syncContentMode || imageMode !== this.settings.imageMode) {
+                        this.syncService.markPending(task.id);
+                        counters.pending += 1;
+                        counters.ackBlockedCount += 1;
+                        counters.ackBlockedReasons.add('同步设置或账号已变化，请重新同步');
+                        this.updateSyncProgress(counters, 'syncing');
+                        continue;
+                    }
+                }
+                const ack = buildSyncAck(task, result, this.settings, subsetDecision === true);
+                if (task.ack_scope && (this.settings.syncContentMode !== 'full' || this.settings.imageMode === 'disabled')
+                    && !getSyncAckBlockedReason(task, result, this.settings) && !subsetDecision) {
+                    counters.ackBlockedCount += 1;
+                    counters.ackBlockedReasons.add(this.settings.imageMode === 'disabled'
+                        ? '未确认删除未保存图片，已保留云端任务' : '未确认删除未同步内容，已保留云端任务');
+                }
                 if (ack) {
                     // The same saved record contains the Vault path and receipt.
                     // Never contact the server before the receipt is durable.
@@ -1288,6 +1327,32 @@ export default class BijiSyncPlugin extends Plugin {
             }
             this.updateSyncProgress(counters, 'syncing');
         }
+    }
+
+    private async confirmSubsetDelete(mode: SyncContentMode): Promise<boolean> {
+        const credentialFingerprint = await sha256(this.settings.apiKey);
+        const imageMode = this.settings.imageMode;
+        const key = `${credentialFingerprint}:${mode}:${imageMode}`;
+        const priorDecision = this.subsetDeleteDecisions?.get(key);
+        if (priorDecision !== undefined) return priorDecision;
+        const consent = imageMode === 'disabled' ? this.localState.imageOmissionDeleteConsent : this.localState.subsetDeleteConsent;
+        if (consent?.credentialFingerprint === credentialFingerprint && consent.modes.some(item => item === mode)) return true;
+        const accepted = await new Promise<boolean>(resolve => new SubsetDeleteModal(this.app, mode, resolve, imageMode).open());
+        if (!accepted || this.settings.syncContentMode !== mode || this.settings.imageMode !== imageMode || await sha256(this.settings.apiKey) !== credentialFingerprint) {
+            this.subsetDeleteDecisions?.set(key, false);
+            return false;
+        }
+        const modes = [...new Set([...(consent?.credentialFingerprint === credentialFingerprint ? consent.modes : []), mode])];
+        if (imageMode === 'disabled') this.localState.imageOmissionDeleteConsent = {
+            credentialFingerprint,
+            modes,
+        };
+        else if (mode !== 'full') this.localState.subsetDeleteConsent = {
+            credentialFingerprint, modes: modes.filter((item): item is 'note' | 'source' => item !== 'full'),
+        };
+        await this.persistSyncState();
+        this.subsetDeleteDecisions?.set(key, true);
+        return true;
     }
 
     private recordBlockedAck(task: SyncTask, result: SyncResult, counters: SyncCounters) {

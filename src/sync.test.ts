@@ -1,9 +1,11 @@
 import { parse } from 'yaml';
+import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile } from 'obsidian';
 import { isInvalidApiKeyError, SyncRequestError, SyncService, validateMarkdownBodyTemplate, type SyncTask } from './sync';
 import { DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FILENAME_TEMPLATE, type BijiSyncSettings } from './settings';
 import { buildSyncAck } from './sync-ack';
+import { verifySavedSyncProof } from './saved-sync-proof';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
 
@@ -108,6 +110,12 @@ class FakeVault {
         return String(this.files.get(file.path) || '');
     }
 
+    async readBinary(file: TFile): Promise<ArrayBuffer> {
+        const bytes = this.files.get(file.path);
+        if (!(bytes instanceof ArrayBuffer)) throw new Error('not a binary file');
+        return bytes;
+    }
+
     async modify(file: TFile, content: string) {
         this.files.set(file.path, content);
     }
@@ -133,6 +141,210 @@ describe('SyncService', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         requestUrlMock.mockReset();
+        vi.stubGlobal('crypto', webcrypto);
+    });
+
+    const scopedTask = (mode: 'full' | 'note' | 'source', overrides: Partial<SyncTask> = {}): SyncTask => makeTask({
+        ack_token: 'v2-token', ack_scope: { version: 2, content_mode: mode, required_assets: [] }, ...overrides,
+    });
+
+    it.each(['full', 'note', 'source'] as const)('verifies and acknowledges actual selected text in %s mode', async mode => {
+        const settings = makeSettings({ syncContentMode: mode });
+        const vault = new FakeVault();
+        const task = scopedTask(mode, { asset_count: 3, asset_failed_count: 2, asset_pending_count: 1 });
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result).toMatchObject({ selectedContentWritten: true, verifiedAssetIds: [], imageErrors: [] });
+        expect(buildSyncAck(task, result, settings, true)).toMatchObject({ scopeVersion: 2, contentMode: mode, imagesProcessed: 0 });
+        if (mode !== 'full') expect(buildSyncAck(task, result, settings)).toBeNull();
+        expect(await verifySavedSyncProof(vault as never, task.id, result.savedProof!)).toBe(true);
+        const content = String(vault.content(result.filepath!));
+        expect(content.includes('## Note')).toBe(mode !== 'source');
+        expect(content.includes('# Source')).toBe(mode !== 'note');
+    });
+
+    it.each(['full', 'note', 'source'] as const)('withholds a receipt for omitted selected text in %s mode', async mode => {
+        const settings = makeSettings({ syncContentMode: mode });
+        const task = scopedTask(mode);
+        const result = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{title}}');
+        expect(result.selectedContentWritten).toBe(false);
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
+    });
+
+    it('accepts an explicit source template and rejects an empty selected source', async () => {
+        const settings = makeSettings({ syncContentMode: 'source', template: '{{source_content}}' });
+        const service = new SyncService(settings);
+        const task = scopedTask('source');
+        const result = await service.renderToVault(new FakeVault() as never, task, 'Clippings', settings.template);
+        expect(buildSyncAck(task, result, settings, true)).not.toBeNull();
+        const empty = scopedTask('source', { source_markdown_content: '' });
+        const emptyResult = await service.renderToVault(new FakeVault() as never, empty, 'Clippings', settings.template);
+        expect(buildSyncAck(empty, emptyResult, settings, true)).toBeNull();
+    });
+
+    it('preserves explicitly requested unselected text in a custom template without treating it as the selected body', async () => {
+        const settings = makeSettings({ syncContentMode: 'source', template: '{{note_content}}' });
+        const task = scopedTask('source');
+        const vault = new FakeVault();
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', settings.template);
+        expect(String(vault.content(result.filepath!))).toContain(task.note_markdown_content);
+        expect(result.selectedContentWritten).toBe(false);
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
+    });
+
+    it('keeps image references correct when an existing daily note lives in a different folder', async () => {
+        const settings = makeSettings({ syncContentMode: 'source', mergeMode: 'daily', imageFolder: '附件 图片' });
+        const url = '/api/v1/assets/7';
+        const task = scopedTask('source', { source_markdown_content: `source ![a](${url})`,
+            ack_scope: { version: 2, content_mode: 'source', required_assets: [{ id: 7, url, status: 'READY' }] } });
+        const vault = new FakeVault();
+        const service = new SyncService(settings);
+        requestUrlMock.mockResolvedValue({ status: 200, headers: { 'content-type': 'image/png' }, arrayBuffer: pngBytes() });
+        const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        await vault.rename(vault.getFileByPath(first.filepath!)!, 'Other/Nested/daily.md');
+        service.loadTaskFileMap({ [task.id]: 'Other/Nested/daily.md' });
+        const result = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result.filepath).toBe('Other/Nested/daily.md');
+        expect(result.imageErrors).toEqual([]);
+        expect(String(vault.content(result.filepath!))).toContain('../../');
+        expect(buildSyncAck(task, result, settings, true)).not.toBeNull();
+    });
+
+    it.each(['附件 图片', '/', 'Clippings/中文 附件'] as const)('verifies images in custom folder %s and ignores unselected remote images', async imageFolder => {
+        const settings = makeSettings({ syncContentMode: 'source', imageFolder });
+        const assetUrl = '/api/v1/assets/7?signature=fresh';
+        const task = scopedTask('source', {
+            source_markdown_content: `source ![one](${assetUrl}) ![two](${assetUrl})`,
+            note_markdown_content: 'note ![external](https://other.test/unselected.png)',
+            asset_count: 5, asset_failed_count: 4,
+            ack_scope: { version: 2, content_mode: 'source', required_assets: [{ id: 7, url: assetUrl, status: 'READY' }] },
+        });
+        requestUrlMock.mockResolvedValue({ status: 200, headers: { 'content-type': 'image/png' }, arrayBuffer: pngBytes() });
+        const vault = new FakeVault();
+        const service = new SyncService(settings);
+        const result = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result.imageErrors).toEqual([]);
+        expect(result.verifiedAssetIds).toEqual([7]);
+        expect(requestUrlMock).toHaveBeenCalledOnce();
+        expect(result.savedProof!.images).toHaveLength(2);
+        expect(buildSyncAck(task, result, settings, true)).toMatchObject({ imagesProcessed: 1 });
+        const modify = vi.spyOn(vault, 'modifyBinary');
+        await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(modify).not.toHaveBeenCalled();
+        vault.remove(result.savedProof!.images[0].path);
+        expect(await verifySavedSyncProof(vault as never, task.id, result.savedProof!)).toBe(false);
+    });
+
+    it('withholds a receipt when the scoped manifest names an omitted failed asset', async () => {
+        const settings = makeSettings({ syncContentMode: 'source' });
+        const task = scopedTask('source', { ack_scope: { version: 2, content_mode: 'source', required_assets: [
+            { id: 7, url: '/api/v1/assets/7', status: 'FAILED' },
+        ] } });
+        const result = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(result.imageErrors?.join()).toContain('FAILED');
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
+    });
+
+    it('retains a task when a text link still depends on a hosted attachment', async () => {
+        const settings = makeSettings({ syncContentMode: 'source' });
+        const task = scopedTask('source', { source_markdown_content: 'source [download](/api/v1/assets/7)' });
+        const result = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(result.imageErrors?.join()).toContain('托管素材引用');
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
+    });
+
+    it.each(['<img src="https://other.test/a.png">', '![a][image]\n\n[image]: https://other.test/a.png',
+        '![image]', '![a](https://other.test/a.png)', '![a](./missing.png)'])('retains a task with unverified image syntax: %s', async image => {
+        const settings = makeSettings({ syncContentMode: 'source' });
+        const task = scopedTask('source', { source_markdown_content: `source ${image}` });
+        const result = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(result.imageErrors?.length).toBeGreaterThan(0);
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
+    });
+
+    it('verifies an existing relative attachment with Chinese, spaces and angle brackets', async () => {
+        const settings = makeSettings({ syncContentMode: 'source' });
+        const task = scopedTask('source', { source_markdown_content: 'source ![a](<../附件 图片/图.png>)' });
+        const vault = new FakeVault();
+        await vault.createBinary('附件 图片/图.png', pngBytes());
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result.imageErrors).toEqual([]);
+        expect(result.savedProof?.images[0].path).toBe('附件 图片/图.png');
+        expect(buildSyncAck(task, result, settings, true)).not.toBeNull();
+        await vault.modify(vault.getFileByPath(result.filepath!)!, 'modified body');
+        expect(await verifySavedSyncProof(vault as never, task.id, result.savedProof!)).toBe(false);
+    });
+
+    it('withholds receipts for disabled external images or failed downloads, with an actionable path', async () => {
+        const disabled = makeSettings({ syncContentMode: 'source', imageMode: 'disabled' });
+        const external = scopedTask('source', { source_markdown_content: 'source ![a](https://other.test/a.png)' });
+        const result = await new SyncService(disabled).renderToVault(new FakeVault() as never, external, 'Clippings', '{{content}}');
+        expect(buildSyncAck(external, result, disabled, true)).toBeNull();
+        requestUrlMock.mockResolvedValue({ status: 503 });
+        const settings = makeSettings({ syncContentMode: 'source', imageFolder: '附件' });
+        const task = scopedTask('source', { source_markdown_content: 'source ![a](/api/v1/assets/7)',
+            ack_scope: { version: 2, content_mode: 'source', required_assets: [{ id: 7, url: '/api/v1/assets/7', status: 'READY' }] } });
+        const failed = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(failed.imageErrors?.join()).toContain('附件/task-101');
+        expect(failed.imageErrors?.join()).toContain('HTTP 503');
+        expect(buildSyncAck(task, failed, settings, true)).toBeNull();
+    });
+
+    it.each(['full', 'note', 'source'] as const)('allows explicitly ignored images after verifying text and confirming deletion in %s mode', async mode => {
+        const settings = makeSettings({ syncContentMode: mode, imageMode: 'disabled' });
+        const task = scopedTask(mode, {
+            note_markdown_content: 'note ![note](/api/v1/assets/7)',
+            source_markdown_content: 'source ![source](https://other.test/a.png)',
+            asset_count: 2, asset_failed_count: 2,
+            ack_scope: { version: 2, content_mode: mode, image_mode: 'disabled', required_assets: [] },
+        });
+        const vault = new FakeVault();
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result).toMatchObject({ selectedContentWritten: true, imagesOmitted: true, verifiedAssetIds: [], imageErrors: [] });
+        expect(result.savedProof?.images).toEqual([]);
+        expect(String(vault.content(result.filepath!))).not.toContain('![');
+        expect(requestUrlMock).not.toHaveBeenCalled();
+        expect(buildSyncAck(task, result, settings)).toBeNull();
+        expect(buildSyncAck(task, result, settings, true)).toMatchObject({ imageMode: 'disabled', imagesProcessed: 0, imagesOmittedConfirmed: true });
+        expect(buildSyncAck(task, result, { ...settings, imageMode: 'local' }, true)).toBeNull();
+    });
+
+    it.each(['![a](/api/v1/assets/7)', '<img src="/api/v1/assets/7">', '![a][img]\n\n[img]: /api/v1/assets/7', '![[a.png]]'])('omits image syntax without deleting other text: %s', async image => {
+        const settings = makeSettings({ syncContentMode: 'source', imageMode: 'disabled' });
+        const task = scopedTask('source', { source_markdown_content: `source ${image}\n\nafter`,
+            ack_scope: { version: 2, content_mode: 'source', image_mode: 'disabled', required_assets: [] } });
+        const vault = new FakeVault();
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('source');
+        expect(content).toContain('after');
+        expect(content).not.toContain('/api/v1/assets/7');
+        expect(content).not.toContain('![');
+        expect(buildSyncAck(task, result, settings, true)).not.toBeNull();
+    });
+
+    it('keeps code examples and shared text-link definitions when images are omitted', async () => {
+        const settings = makeSettings({ syncContentMode: 'source', imageMode: 'disabled' });
+        const source = 'source `![example](./code.png)`\n\n```md\n![example](./fence.png)\n```\n\n![photo][shared] [download][shared]\n\n[shared]: https://example.test/image.png';
+        const task = scopedTask('source', { source_markdown_content: source,
+            ack_scope: { version: 2, content_mode: 'source', image_mode: 'disabled', required_assets: [] } });
+        const vault = new FakeVault();
+        const result = await new SyncService(settings).renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('`![example](./code.png)`');
+        expect(content).toContain('![example](./fence.png)');
+        expect(content).not.toContain('![photo]');
+        expect(content).toContain('[download][shared]');
+        expect(content).toContain('[shared]: https://example.test/image.png');
+        expect(buildSyncAck(task, result, settings, true)).not.toBeNull();
+    });
+
+    it('retains an image-only selection even after the user has confirmed omission', async () => {
+        const settings = makeSettings({ syncContentMode: 'source', imageMode: 'disabled' });
+        const task = scopedTask('source', { source_markdown_content: '![a](/api/v1/assets/7)',
+            ack_scope: { version: 2, content_mode: 'source', image_mode: 'disabled', required_assets: [] } });
+        const result = await new SyncService(settings).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(result.selectedContentWritten).toBe(false);
+        expect(buildSyncAck(task, result, settings, true)).toBeNull();
     });
 
     it.each(['full', 'note', 'source'] as const)('keeps frontmatter at the top in %s mode', async mode => {
@@ -638,7 +850,7 @@ describe('SyncService', () => {
             hasMore: true,
         });
         expect(requestUrlMock).toHaveBeenCalledWith(expect.objectContaining({
-            url: 'https://api.clip2md.cn/api/v1/sync/tasks?limit=100&cursor=cursor-1',
+            url: 'https://api.clip2md.cn/api/v1/sync/tasks?limit=100&sync_content_mode=full&sync_image_mode=local&cursor=cursor-1',
             headers: { 'X-API-Key': 'clip2md_test' },
             throw: false,
         }));

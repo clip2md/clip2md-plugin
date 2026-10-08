@@ -2,10 +2,19 @@ import { resolveNoteTitle } from './note-title';
 import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
 import { BijiSyncSettings, DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, SyncContentMode } from './settings';
 import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
+import { resolveImagePath, savedTaskContent, sha256, type SavedSyncProof } from './saved-sync-proof';
+
+export interface SyncAckScope {
+    version: 2;
+    content_mode: SyncContentMode;
+    image_mode?: 'local' | 'disabled';
+    required_assets: Array<{ id: number; url: string; original_url?: string | null; status: string }>;
+}
 
 export interface SyncTask {
     id: number;
     ack_token?: string | null;
+    ack_scope?: SyncAckScope | null;
     url: string;
     status: string;
     title: string | null;
@@ -45,6 +54,11 @@ export interface SyncResult {
     localizedAssetCount?: number;
     unlocalizedImages?: boolean;
     warning?: string;
+    selectedContentWritten?: boolean;
+    verifiedAssetIds?: number[];
+    imageErrors?: string[];
+    savedProof?: SavedSyncProof;
+    imagesOmitted?: boolean;
 }
 
 const DAILY_FRONTMATTER_MARKER = '<!-- clip2md-daily-frontmatter:v1 -->';
@@ -124,6 +138,14 @@ function isSyncTask(value: unknown): value is SyncTask {
         && (value.display_title === undefined || isNullableString(value.display_title))
         && (value.duration_seconds === null || typeof value.duration_seconds === 'number')
         && (value.ack_token === undefined || isNullableString(value.ack_token))
+        && (value.ack_scope == null || (isRecord(value.ack_scope)
+            && value.ack_scope.version === 2
+            && ['full', 'note', 'source'].includes(String(value.ack_scope.content_mode))
+            && (value.ack_scope.image_mode === undefined || ['local', 'disabled'].includes(String(value.ack_scope.image_mode)))
+            && Array.isArray(value.ack_scope.required_assets)
+            && value.ack_scope.required_assets.every(asset => isRecord(asset)
+                && Number.isSafeInteger(asset.id) && Number(asset.id) > 0
+                && typeof asset.url === 'string' && typeof asset.status === 'string')))
         && (value.tags === undefined || (
             Array.isArray(value.tags)
             && value.tags.every(tag => isRecord(tag)
@@ -146,6 +168,8 @@ interface LocalizeResult {
     pendingAssets: boolean;
     failedAssets: boolean;
     localizedAssetCount: number;
+    images: Array<{ url: string; path: string; id?: number }>;
+    imageErrors: string[];
 }
 
 interface MarkdownImageParts {
@@ -154,30 +178,15 @@ interface MarkdownImageParts {
     suffix: string;
 }
 
+const markdownImagePattern = () => /!\[([^\]]*)\]\((<[^>\n]+>|(?:[^\s()]|\([^()\n]*\))+)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)/g;
+
 function parseMarkdownImage(whole: string): MarkdownImageParts | null {
-    const separator = whole.indexOf('](');
-    const targetStart = separator + 2;
-    const targetEnd = whole.length - 1;
-    if (!whole.startsWith('![') || separator < 2 || !whole.endsWith(')') || targetStart >= targetEnd) {
-        return null;
-    }
-
-    let urlEnd = targetStart;
-    while (urlEnd < targetEnd) {
-        const character = whole[urlEnd];
-        if (character === ')' || character === ' ' || character === '\t') {
-            break;
-        }
-        urlEnd += 1;
-    }
-    if (urlEnd === targetStart) {
-        return null;
-    }
-
+    const match = markdownImagePattern().exec(whole);
+    if (!match || match[0] !== whole) return null;
     return {
-        altText: whole.slice(2, separator),
-        remoteUrl: whole.slice(targetStart, urlEnd),
-        suffix: whole.slice(urlEnd, targetEnd),
+        altText: match[1],
+        remoteUrl: match[2].replace(/^<|>$/g, ''),
+        suffix: match[3] || '',
     };
 }
 
@@ -204,6 +213,15 @@ function stableImageIdentity(remoteUrl: string): string {
     } catch {
         return remoteUrl.replace(/[?#].*$/, '');
     }
+}
+
+function apiAssetId(remoteUrl: string): number | null {
+    try {
+        const url = new URL(remoteUrl, CLIP2MD_API_BASE_URL);
+        if (url.origin !== new URL(CLIP2MD_API_BASE_URL).origin) return null;
+        const match = /^\/api\/v1\/assets\/(\d+)$/.exec(url.pathname);
+        return match ? Number(match[1]) : null;
+    } catch { return null; }
 }
 
 function hasUnlocalizedImages(markdown: string | null): boolean {
@@ -356,7 +374,7 @@ export class SyncService {
             const batch = await Promise.all(ids.slice(offset, offset + 5).map(async (taskId) => {
                 try {
                     const response = await requestUrl({
-                        url: `${CLIP2MD_API_BASE_URL}/sync/tasks/${taskId}`,
+                        url: `${CLIP2MD_API_BASE_URL}/sync/tasks/${taskId}?sync_content_mode=${this.settings.syncContentMode}&sync_image_mode=${this.settings.imageMode}`,
                         method: 'GET',
                         headers: { 'X-API-Key': this.settings.apiKey },
                         throw: false,
@@ -473,6 +491,21 @@ export class SyncService {
         folderTemplate: string,
         template: string,
     ): Promise<SyncResult> {
+        // Freeze the content settings while downloads and Vault writes await I/O.
+        const settings = { ...this.settings };
+        const writer = new SyncService(settings, this.fileManager ?? undefined);
+        writer.taskFileMap = this.taskFileMap;
+        writer.ignoredTaskIds = this.ignoredTaskIds;
+        writer.pendingTaskIds = this.pendingTaskIds;
+        writer.warnedUnmanagedDailyPaths = this.warnedUnmanagedDailyPaths;
+        try {
+            return await writer.writeTaskToVault(vault, task, folderTemplate, template);
+        } finally {
+            this.pendingTaskIds = writer.pendingTaskIds;
+        }
+    }
+
+    private async writeTaskToVault(vault: Vault, task: SyncTask, folderTemplate: string, template: string): Promise<SyncResult> {
         const validation = this.validateTemplate(template);
         if (!validation.valid) throw new Error(validation.message);
         const mappedPath = this.taskFileMap[task.id];
@@ -488,8 +521,22 @@ export class SyncService {
         }
         const restoring = Boolean(wasIgnored || (mappedPath && !mappedFilePresent));
         const folder = this.resolveFolderPath(task, folderTemplate);
-        const localized = await this.localizeTaskImages(vault, task, folder);
-        const localizedTask = localized.task;
+        const selectedTask = task.ack_scope ? {
+            ...task,
+            note_markdown_content: this.settings.syncContentMode === 'source' ? null : task.note_markdown_content,
+            source_markdown_content: this.settings.syncContentMode === 'note' ? null : task.source_markdown_content,
+        } : task;
+        const referenceFolder = this.shouldMergeDaily(task) && mappedFilePresent && mappedPath
+            ? mappedPath.split('/').slice(0, -1).join('/') : folder;
+        const localized = await this.localizeTaskImages(vault, selectedTask, folder, referenceFolder);
+        // Explicit custom template variables retain their existing meaning.
+        // Only the selected fields are localized; additional remote images in
+        // a custom template will be caught by the final-file verification.
+        const localizedTask = task.ack_scope ? {
+            ...task,
+            note_markdown_content: this.settings.syncContentMode === 'source' ? task.note_markdown_content : localized.task.note_markdown_content,
+            source_markdown_content: this.settings.syncContentMode === 'note' ? task.source_markdown_content : localized.task.source_markdown_content,
+        } : localized.task;
         const assetResult = {
             pendingAssets: localized.pendingAssets,
             failedAssets: localized.failedAssets,
@@ -497,10 +544,15 @@ export class SyncService {
             unlocalizedImages: [localizedTask.note_markdown_content, localizedTask.source_markdown_content]
                 .some(hasUnlocalizedImages)
                 || (this.settings.imageMode === 'disabled'
-                    && [task.note_markdown_content, task.source_markdown_content]
+                    && [selectedTask.note_markdown_content, selectedTask.source_markdown_content]
                         .some(markdown => Boolean(markdown && (markdown.includes('![') || /<img\b/i.test(markdown))))),
         };
         let body = this.renderBodyTemplate(template, localizedTask);
+        if (task.ack_scope?.image_mode === 'disabled' && this.settings.imageMode === 'disabled') body = this.stripImages(body) || '';
+        const finalize = async (result: SyncResult): Promise<SyncResult> => {
+            if (!task.ack_scope || result.skipped || !result.filepath) return result;
+            return this.verifyWrittenTask(vault, task, selectedTask, localized, result);
+        };
         if (localized.pendingAssets) {
             body = `${body}\n\n> 图片仍在处理中（任务 #${task.id}），稍后会自动重试。`;
         }
@@ -515,7 +567,7 @@ export class SyncService {
         }
 
         if (this.shouldMergeDaily(localizedTask)) {
-            return this.renderMergedTask(vault, localizedTask, folder, body, assetResult, restoring);
+            return finalize(await this.renderMergedTask(vault, localizedTask, folder, body, assetResult, restoring));
         }
 
         const content = this.renderSingleTask(localizedTask, body);
@@ -552,7 +604,7 @@ export class SyncService {
                                     console.warn(`Clip2MD: 清理旧文件失败 ${mappedPath}: ${String(error)}`);
                                 }
                                 this.taskFileMap[task.id] = filepath;
-                                return this.completedResult(task.id, filepath, assetResult);
+                                return finalize(this.completedResult(task.id, filepath, assetResult));
                             }
                             return {
                                 filepath: null,
@@ -568,7 +620,7 @@ export class SyncService {
                     }
                     await vault.modify(targetFile, content);
                     this.taskFileMap[task.id] = filepath;
-                    return this.completedResult(task.id, filepath, assetResult);
+                    return finalize(this.completedResult(task.id, filepath, assetResult));
                 }
             }
             delete this.taskFileMap[task.id];
@@ -580,7 +632,7 @@ export class SyncService {
             if (this.hasTaskMarker(fileContent, task.id)) {
                 await vault.modify(existingFile, content);
                 this.taskFileMap[task.id] = filepath;
-                return this.completedResult(task.id, filepath, assetResult);
+                return finalize(this.completedResult(task.id, filepath, assetResult));
             }
             if (!restoring) {
                 return {
@@ -595,7 +647,78 @@ export class SyncService {
 
         await vault.create(createPath, content);
         this.taskFileMap[task.id] = createPath;
-        return this.completedResult(task.id, createPath, assetResult);
+        return finalize(this.completedResult(task.id, createPath, assetResult));
+    }
+
+    private async verifyWrittenTask(vault: Vault, task: SyncTask, selectedTask: SyncTask, localized: LocalizeResult, result: SyncResult): Promise<SyncResult> {
+        const filepath = result.filepath!;
+        const file = vault.getAbstractFileByPath(filepath);
+        if (!(file instanceof TFile)) return { ...result, selectedContentWritten: false };
+        const content = savedTaskContent(await vault.read(file), task.id);
+        const selectedBodies = [selectedTask.note_markdown_content, selectedTask.source_markdown_content].filter(value => Boolean(value?.trim()));
+        const localizedBodies = [localized.task.note_markdown_content, localized.task.source_markdown_content].filter(value => Boolean(value?.trim()));
+        const selectedContentWritten = selectedBodies.length > 0 && localizedBodies.length === selectedBodies.length
+            && localizedBodies.every(value => content.includes(value!));
+        if (task.ack_scope?.image_mode === 'disabled' && this.settings.imageMode === 'disabled') {
+            return {
+                ...result, selectedContentWritten, verifiedAssetIds: [], imageErrors: [],
+                imagesOmitted: true, unlocalizedImages: false,
+                savedProof: { filepath, contentHash: await sha256(content), images: [] },
+            };
+        }
+        const imageErrors = [...localized.imageErrors];
+        if (this.settings.imageMode === 'disabled'
+            && [selectedTask.note_markdown_content, selectedTask.source_markdown_content].some(value => value && /!\[|<img\b/i.test(value))) {
+            imageErrors.push('所选正文含图片，但图片未设置为本地保存');
+        }
+        const verifiedAssetIds = new Set<number>();
+        const images: SavedSyncProof['images'] = [];
+        // HTML, reference and wiki images need a parser-specific mapping; withhold
+        // receipts until supported rather than infer success from a file count.
+        if (/<img\b|!\[[^\]]*\]\[[^\]]*\]|!\[\[/i.test(content)) {
+            imageErrors.push('正文含暂不支持核验的 HTML、引用式或 Wiki 图片，请使用 Markdown 行内图片');
+        }
+        const refs = [...content.matchAll(markdownImagePattern())];
+        if ((content.match(/!\[/g) || []).length !== refs.length) {
+            imageErrors.push('正文含无法解析的图片引用，请检查图片语法');
+        }
+        for (const match of refs) {
+            const reference = match[2];
+            const path = resolveImagePath(filepath, reference);
+            if (!path) {
+                imageErrors.push(`图片 ${reference}：仍为远程引用或路径无效`);
+                continue;
+            }
+            const image = vault.getAbstractFileByPath(path);
+            if (!(image instanceof TFile)) {
+                imageErrors.push(`图片 ${reference} → ${path}：附件不存在`);
+                continue;
+            }
+            try {
+                const bytes = await vault.readBinary(image);
+                if (!imageExtension(bytes)) throw new Error('附件为空或图片格式无效');
+                images.push({ path, hash: await sha256(bytes) });
+                for (const saved of localized.images) {
+                    if (saved.path === path && saved.id !== undefined) verifiedAssetIds.add(saved.id);
+                }
+            } catch (error) {
+                imageErrors.push(`图片 ${reference} → ${path}：${String(error)}`);
+            }
+        }
+        for (const asset of task.ack_scope!.required_assets) {
+            if (asset.status !== 'READY' || !verifiedAssetIds.has(asset.id)) {
+                imageErrors.push(`图片 #${asset.id} (${asset.url})：${asset.status !== 'READY' ? `服务端状态 ${asset.status}` : '未在正文中找到已核验的本地附件'}`);
+            }
+        }
+        // A text link to a hosted attachment would also break after cleanup.
+        if (content.includes('/api/v1/assets/') || content.includes(`${CLIP2MD_MEDIA_CDN_BASE_URL}/assets/`)) {
+            imageErrors.push('正文仍包含未保存到本地的托管素材引用');
+        }
+        return {
+            ...result, selectedContentWritten, verifiedAssetIds: [...verifiedAssetIds].sort((a, b) => a - b), imageErrors,
+            unlocalizedImages: imageErrors.length > 0,
+            savedProof: { filepath, contentHash: await sha256(content), images },
+        };
     }
 
     private ignoredResult(taskId: number): SyncResult {
@@ -629,7 +752,7 @@ export class SyncService {
     }
 
     private async fetchTasksPage(cursor: string | null, limit: number): Promise<SyncBatch> {
-        const params = new URLSearchParams({ limit: String(limit) });
+        const params = new URLSearchParams({ limit: String(limit), sync_content_mode: this.settings.syncContentMode, sync_image_mode: this.settings.imageMode });
         if (cursor) {
             params.set('cursor', cursor);
         }
@@ -828,6 +951,7 @@ export class SyncService {
         vault: Vault,
         task: SyncTask,
         folder: string,
+        referenceFolder = folder,
     ): Promise<LocalizeResult> {
         if (this.settings.imageMode === 'disabled') {
             return {
@@ -839,6 +963,7 @@ export class SyncService {
                 pendingAssets: false,
                 failedAssets: false,
                 localizedAssetCount: 0,
+                images: [], imageErrors: [],
             };
         }
 
@@ -853,12 +978,15 @@ export class SyncService {
         let pendingAssets = false;
         let failedAssets = false;
         const localizedAssets = new Set<string>();
+        const images: LocalizeResult['images'] = [];
+        const imageErrors: string[] = [];
+        const downloaded = new Map<string, string>();
 
         const localize = async (markdown: string | null): Promise<string | null> => {
             if (!markdown) {
                 return markdown;
             }
-            const regex = /!\[([^\]]*)\]\(([^) \t]+)([^)]*)\)/g;
+            const regex = markdownImagePattern();
             const replacements = new Map<string, string | null>();
             const imageMatches: MarkdownImageParts[] = [];
             markdown.replace(regex, (whole: string) => {
@@ -869,7 +997,10 @@ export class SyncService {
                 return whole;
             });
             for (const { remoteUrl } of imageMatches) {
-                if (!isManagedImageUrl(remoteUrl)) {
+                const asset = task.ack_scope?.required_assets.find(item => stableImageIdentity(item.url) === stableImageIdentity(remoteUrl)
+                    || item.original_url === remoteUrl
+                    || apiAssetId(remoteUrl) === item.id);
+                if (!isManagedImageUrl(remoteUrl) && !asset) {
                     continue;
                 }
                 if (replacements.has(remoteUrl)) {
@@ -877,15 +1008,25 @@ export class SyncService {
                 }
 
                 try {
-                    const isApiAsset = remoteUrl.startsWith('/api/v1/assets/');
+                    const identity = asset ? `asset:${asset.id}` : stableImageIdentity(remoteUrl);
+                    const cachedPath = downloaded.get(identity);
+                    if (cachedPath) {
+                        replacements.set(remoteUrl, this.relativeImageUrl(referenceFolder, cachedPath));
+                        continue;
+                    }
+                    const downloadUrl = asset?.url || remoteUrl;
+                    const parsedDownload = new URL(downloadUrl, CLIP2MD_API_BASE_URL);
+                    const isApiAsset = parsedDownload.origin === new URL(CLIP2MD_API_BASE_URL).origin
+                        && parsedDownload.pathname.startsWith('/api/v1/assets/');
                     const response = await requestUrl({
-                        url: new URL(remoteUrl, CLIP2MD_API_BASE_URL).toString(),
+                        url: parsedDownload.toString(),
                         method: 'GET',
                         headers: isApiAsset ? { 'X-API-Key': this.settings.apiKey } : {},
                         throw: false,
                     });
                     if (response.status < 200 || response.status >= 300) {
                         pendingAssets = true;
+                        imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：下载失败 (HTTP ${response.status})`);
                         replacements.set(remoteUrl, null);
                         continue;
                     }
@@ -894,11 +1035,13 @@ export class SyncService {
                         || (responseType.startsWith('image/') && !responseType.includes('svg') ? 'READY' : 'PENDING');
                     if (assetStatus === 'PENDING' || assetStatus === 'PROCESSING') {
                         pendingAssets = true;
+                        imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：仍在处理中 (${assetStatus})`);
                         replacements.set(remoteUrl, null);
                         continue;
                     }
                     if (assetStatus === 'FAILED') {
                         failedAssets = true;
+                        imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：服务端保存失败`);
                         replacements.set(remoteUrl, null);
                         continue;
                     }
@@ -907,10 +1050,11 @@ export class SyncService {
                     const extension = imageExtension(bytes);
                     if (!extension) {
                         pendingAssets = true;
+                        imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：图片为空或格式无效`);
                         replacements.set(remoteUrl, null);
                         continue;
                     }
-                    const safeName = `${this.hash(stableImageIdentity(remoteUrl))}.${extension}`;
+                    const safeName = `${this.hash(identity)}.${extension}`;
                     const path = `${imageFolder}/${safeName}`;
                     if (!imageFolderReady) {
                         await this.ensureFolder(vault, imageFolder);
@@ -923,14 +1067,20 @@ export class SyncService {
                     if (!existingImage) {
                         await vault.createBinary(path, bytes);
                     } else {
-                        await vault.modifyBinary(existingImage, bytes);
+                        // A filename alone is not identity proof. Compare with
+                        // the freshly fetched asset before reusing local bytes.
+                        const same = task.ack_scope && await sha256(await vault.readBinary(existingImage)) === await sha256(bytes);
+                        if (!same) await vault.modifyBinary(existingImage, bytes);
                     }
                     localizedAssets.add(stableImageIdentity(remoteUrl));
-                    replacements.set(remoteUrl, this.relativeImageUrl(folder, path));
+                    downloaded.set(identity, path);
+                    images.push({ url: remoteUrl, path, id: asset?.id });
+                    replacements.set(remoteUrl, this.relativeImageUrl(referenceFolder, path));
                 } catch (error) {
                     pendingAssets = true;
                     replacements.set(remoteUrl, null);
                     console.warn(`Clip2MD: 图片下载失败 ${remoteUrl}`, error);
+                    imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：${String(error)}`);
                 }
             }
 
@@ -958,6 +1108,7 @@ export class SyncService {
             pendingAssets,
             failedAssets,
             localizedAssetCount: localizedAssets.size,
+            images, imageErrors,
         };
     }
 
@@ -965,9 +1116,37 @@ export class SyncService {
         if (!markdown) {
             return markdown;
         }
-        return markdown
-            .replace(/!\[[^\]]*\]\(([^)]+)\)/g, '')
-            .replace(/<img\b[^>]*>/gi, '');
+        // Preserve image syntax used as code or an escaped example. Keeping
+        // offsets lets us remove image nodes without rewriting other text.
+        let masked = markdown.replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[ \t]*$/gm, match => match.replace(/[^\n]/g, ' '));
+        masked = masked.replace(/(`+)[^\n]*?\1/g, match => ' '.repeat(match.length));
+        const ranges: Array<[number, number]> = [];
+        const labels = new Set<string>();
+        const definitions = new Set([...masked.matchAll(/^ {0,3}\[([^\]]+)\]:[^\n]*/gm)].map(match => match[1].trim().toLowerCase()));
+        for (const pattern of [markdownImagePattern(), /<img\b[^>]*>/gi, /!\[\[[^\]]*\]\]/g]) {
+            for (const match of masked.matchAll(pattern)) {
+                if (match.index! > 0 && masked[match.index! - 1] === '\\') continue;
+                ranges.push([match.index!, match.index! + match[0].length]);
+            }
+        }
+        for (const match of masked.matchAll(/!\[([^\]]*)\](?:\[([^\]]*)\])?/g)) {
+            const label = (match[2] || match[1]).trim().toLowerCase();
+            if (!definitions.has(label) || masked[match.index! + match[0].length] === '(' || masked[match.index! - 1] === '\\') continue;
+            labels.add(label);
+            ranges.push([match.index!, match.index! + match[0].length]);
+        }
+        let result = markdown;
+        const merged: Array<[number, number]> = [];
+        for (const range of ranges.sort((a, b) => a[0] - b[0])) {
+            const previous = merged[merged.length - 1];
+            if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
+            else merged.push([...range]);
+        }
+        for (const [start, end] of merged.reverse()) result = result.slice(0, start) + result.slice(end);
+        // Drop image-only definitions, retaining ones also used by text links.
+        const withoutDefinitions = result.replace(/^ {0,3}\[([^\]]+)\]:[^\n]*/gm, '');
+        return result.replace(/^ {0,3}\[([^\]]+)\]:[^\n]*(?:\n|$)/gm, (whole: string, label: string) =>
+            labels.has(label.trim().toLowerCase()) && !withoutDefinitions.toLowerCase().includes(`[${label.trim().toLowerCase()}]`) ? '' : whole);
     }
 
     private async ensureFolder(vault: Vault, path: string): Promise<void> {

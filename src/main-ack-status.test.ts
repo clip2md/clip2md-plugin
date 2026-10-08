@@ -39,6 +39,63 @@ const task = {
 } as SyncTask;
 
 describe('local deletion receipt feedback', () => {
+    it.each([true, false])('requires image omission confirmation even in full content mode: %s', async accepted => {
+        const scoped = { ...task, ack_scope: { version: 2 as const, content_mode: 'full' as const, image_mode: 'disabled' as const, required_assets: [] } };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true, imagesOmitted: true,
+            verifiedAssetIds: [], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash', images: [] } };
+        const { plugin, enqueue } = testPlugin([scoped], vi.fn(async () => result));
+        plugin.settings.imageMode = 'disabled';
+        const confirm = vi.fn(async () => accepted);
+        Object.assign(plugin, { confirmSubsetDelete: confirm });
+        const summary = await plugin.syncNow();
+        expect(confirm).toHaveBeenCalledWith('full');
+        expect(enqueue).toHaveBeenCalledTimes(accepted ? 1 : 0);
+        if (!accepted) expect(summary?.ackBlockedReasons).toEqual(['未确认删除未保存图片，已保留云端任务']);
+    });
+    it('resynchronizes instead of sending a receipt if image settings change during confirmation', async () => {
+        const scoped = { ...task, ack_scope: { version: 2 as const, content_mode: 'full' as const, image_mode: 'disabled' as const, required_assets: [] } };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true, imagesOmitted: true,
+            verifiedAssetIds: [], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash', images: [] } };
+        const { plugin, enqueue } = testPlugin([scoped], vi.fn(async () => result));
+        plugin.settings.imageMode = 'disabled';
+        Object.assign(plugin, { confirmSubsetDelete: async () => { plugin.settings.imageMode = 'local'; return true; } });
+        const summary = await plugin.syncNow();
+        expect(enqueue).not.toHaveBeenCalled();
+        expect(plugin.syncService.markPending).toHaveBeenCalledWith(task.id);
+        expect(summary).toMatchObject({ pending: 1, succeeded: 0, ackBlockedReasons: ['同步设置或账号已变化，请重新同步'] });
+    });
+
+    it.each([true, false])('requires the subset confirmation before enqueueing v2 receipts: %s', async accepted => {
+        const scoped = { ...task, ack_scope: { version: 2 as const, content_mode: 'source' as const, required_assets: [] } };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true,
+            verifiedAssetIds: [], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash', images: [] } };
+        const { plugin, enqueue } = testPlugin([scoped, { ...scoped, id: 43 }], vi.fn(async () => result));
+        plugin.settings.syncContentMode = 'source';
+        const confirm = vi.fn(async () => accepted);
+        Object.assign(plugin, { confirmSubsetDelete: confirm });
+        const summary = await plugin.syncNow();
+        expect(confirm).toHaveBeenCalledTimes(2);
+        expect(enqueue).toHaveBeenCalledTimes(accepted ? 2 : 0);
+        expect(summary?.ackBlockedCount).toBe(accepted ? 0 : 2);
+    });
+
+    it('does not reuse a source-only decision for note-only tasks when the mode changes during a run', async () => {
+        const source = { ...task, ack_scope: { version: 2 as const, content_mode: 'source' as const, required_assets: [] } };
+        const note = { ...source, id: 43, ack_scope: { ...source.ack_scope, content_mode: 'note' as const } };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true,
+            verifiedAssetIds: [], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash', images: [] } };
+        const render = vi.fn(async (_vault: unknown, taskToRender: SyncTask) => {
+            plugin.settings.syncContentMode = taskToRender.ack_scope!.content_mode;
+            return result;
+        });
+        const { plugin, enqueue } = testPlugin([source, note], render);
+        const confirm = vi.fn(async (mode: string) => mode === 'source');
+        Object.assign(plugin, { confirmSubsetDelete: confirm });
+        await plugin.syncNow();
+        expect(confirm.mock.calls).toEqual([['source'], ['note']]);
+        expect(enqueue).toHaveBeenCalledOnce();
+        expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ contentMode: 'source' }));
+    });
     it('blocks a handwritten body YAML before fetching tasks or moving the cursor', async () => {
         const render = vi.fn();
         const { plugin } = testPlugin([task], render);

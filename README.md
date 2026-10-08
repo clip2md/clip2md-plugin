@@ -14,6 +14,11 @@ notes, and organize files with customizable folder and filename templates.
 - Bind each device by scanning a WeChat QR code or entering an API Key.
 - Customize note titles, folders, filenames, YAML properties, and body templates.
 - Preview the resulting note or Markdown before synchronizing.
+- Optionally delete the cloud task after the selected content and local images
+  have been verified. Source-only or note-only deletion requires confirmation
+  and also removes the unsynchronized content from the cloud. Disabling image
+  sync permits verified text-only deletion after a separate confirmation that
+  unsaved images will be permanently deleted.
 
 ## Requirements and setup
 
@@ -45,7 +50,7 @@ from the same release and place them in `.obsidian/plugins/clipmd/`.
 - 支持自定义目标文件夹、文件名模板、Frontmatter 模板和合并模式。
 - 支持在正文、Frontmatter、文件名和目标文件夹模板中使用 `{{source_title}}` 引用原文标题；原文标题为空时输出空字符串，默认模板不变。
 - 可在高级设置中开启“本地删除或改名后不再补回”，避免被删除、改名或移动的笔记再次按原路径生成。
-- 可在 Clip2MD 网页按需开启“同步成功后删除”；插件仅在完整内容和图片均已写入后提交成功回执，不满足条件时保留原任务。
+- 可在 Clip2MD 网页按需开启“同步成功后删除”；1.0.15 起配合新版服务端，插件核验所选正文及图片的实际落盘结果。仅原文或仅笔记模式需确认：删除整个云端任务也会删除未同步内容。主动关闭图片同步时，可在另行确认丢弃图片后按去图正文删除；开启图片同步但下载失败仍保留原任务。去图后正文为空或其他条件不满足时保留原任务。
 
 ## 使用要求
 

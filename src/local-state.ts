@@ -31,6 +31,8 @@ export interface LocalDeviceState {
     legacyKeyMigrated: boolean;
     credentialInvalid?: boolean;
     pendingBinding?: PendingBinding;
+    subsetDeleteConsent?: { credentialFingerprint: string; modes: Array<'note' | 'source'> };
+    imageOmissionDeleteConsent?: { credentialFingerprint: string; modes: Array<'full' | 'note' | 'source'> };
 }
 
 export function readLocalDeviceState(app: App): LocalDeviceState | null {
@@ -52,6 +54,16 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
         || typeof state.pendingBinding.expiresAt !== 'number'
         || !['polling', 'prepared', 'completed'].includes(state.pendingBinding.phase))) {
         throw new Error('本机绑定状态损坏，已暂停自动领取 Key');
+    }
+    if (state.subsetDeleteConsent && (typeof state.subsetDeleteConsent.credentialFingerprint !== 'string'
+        || !Array.isArray(state.subsetDeleteConsent.modes)
+        || state.subsetDeleteConsent.modes.some(mode => mode !== 'source' && mode !== 'note'))) {
+        throw new Error('本机同步删除确认状态损坏，已暂停同步');
+    }
+    if (state.imageOmissionDeleteConsent && (typeof state.imageOmissionDeleteConsent.credentialFingerprint !== 'string'
+        || !Array.isArray(state.imageOmissionDeleteConsent.modes)
+        || state.imageOmissionDeleteConsent.modes.some(mode => !['full', 'note', 'source'].includes(mode)))) {
+        throw new Error('本机忽略图片删除确认状态损坏，已暂停同步');
     }
     return state as LocalDeviceState;
 }

@@ -2,12 +2,21 @@ import { requestUrl } from 'obsidian';
 import { CLIP2MD_API_BASE_URL } from './config';
 import type { BijiSyncSettings } from './settings';
 import type { SyncResult, SyncTask } from './sync';
+import type { ImageMode, SyncContentMode } from './settings';
+import type { SavedSyncProof } from './saved-sync-proof';
 
 export interface PendingSyncAck {
     taskId: number;
     ackToken: string;
     imagesProcessed: number;
     imagesFailed: number;
+    scopeVersion?: 2;
+    contentMode?: SyncContentMode;
+    processedAssetIds?: number[];
+    subsetConfirmed?: boolean;
+    savedProof?: SavedSyncProof;
+    imageMode?: ImageMode;
+    imagesOmittedConfirmed?: boolean;
 }
 
 type AckDisposition = 'accepted' | 'discard';
@@ -25,7 +34,18 @@ function isPendingSyncAck(value: unknown): value is PendingSyncAck {
     return Number.isSafeInteger(item.taskId) && Number(item.taskId) > 0
         && typeof item.ackToken === 'string' && item.ackToken.length > 0
         && Number.isSafeInteger(item.imagesProcessed) && Number(item.imagesProcessed) >= 0
-        && Number.isSafeInteger(item.imagesFailed) && Number(item.imagesFailed) >= 0;
+        && Number.isSafeInteger(item.imagesFailed) && Number(item.imagesFailed) >= 0
+        && (item.scopeVersion === undefined || (item.scopeVersion === 2
+            && ['full', 'source', 'note'].includes(String(item.contentMode))
+            && (item.contentMode === 'full' || item.subsetConfirmed === true)
+            && (item.imageMode === undefined || item.imageMode === 'local' || (item.imageMode === 'disabled' && item.imagesOmittedConfirmed === true))
+            && Array.isArray(item.processedAssetIds)
+            && item.processedAssetIds.every(id => Number.isSafeInteger(id) && Number(id) > 0)
+            && item.savedProof !== null && typeof item.savedProof === 'object'
+            && typeof (item.savedProof as SavedSyncProof).filepath === 'string'
+            && typeof (item.savedProof as SavedSyncProof).contentHash === 'string'
+            && Array.isArray((item.savedProof as SavedSyncProof).images)
+            && (item.savedProof as SavedSyncProof).images.every(image => image && typeof image.path === 'string' && typeof image.hash === 'string')));
 }
 
 export function parsePendingSyncAcks(value: unknown): PendingSyncAck[] {
@@ -45,6 +65,19 @@ export function getSyncAckBlockedReason(
 ): string | null {
     if (!task.ack_token || task.status !== 'SUCCESS') return null;
     if (result.skipped || !result.filepath) return 'Vault 文件未写入';
+    if (task.ack_scope) {
+        if (task.ack_scope.content_mode !== settings.syncContentMode) return '同步模式已变化，请重新同步';
+        if ((task.ack_scope.image_mode ?? 'local') !== settings.imageMode) return '图片同步设置已变化或服务端尚未支持，请重新同步';
+        if (result.failedAssets) return result.imageErrors?.join('；') || '部分图片保存失败';
+        if (result.pendingAssets) return result.imageErrors?.join('；') || '图片仍在处理中';
+        if (result.imageErrors?.length) return result.imageErrors.join('；');
+        if (!result.selectedContentWritten || !result.savedProof) return '所选正文为空或模板未完整输出所选正文';
+        if (settings.imageMode === 'disabled' && !result.imagesOmitted) return '尚未核验去图后的正文';
+        const ids = task.ack_scope.required_assets.map(asset => asset.id).sort((a, b) => a - b);
+        if (result.unlocalizedImages || JSON.stringify(result.verifiedAssetIds) !== JSON.stringify(ids)
+            || task.ack_scope.required_assets.some(asset => asset.status !== 'READY')) return '所选正文的图片尚未完整保存到 Vault';
+        return null;
+    }
     if (settings.syncContentMode !== 'full') return '同步内容未选择“完整内容”';
     if (!settings.template.includes('{{content}}')) return '模板未包含完整正文 {{content}}';
     if (settings.imageMode !== 'local' && (task.asset_count > 0 || result.unlocalizedImages)) {
@@ -64,8 +97,21 @@ export function buildSyncAck(
     task: SyncTask,
     result: SyncResult,
     settings: Pick<BijiSyncSettings, 'imageMode' | 'syncContentMode' | 'template'>,
+    subsetConfirmed = false,
 ): PendingSyncAck | null {
     if (!task.ack_token || task.status !== 'SUCCESS' || getSyncAckBlockedReason(task, result, settings)) return null;
+    if (task.ack_scope) {
+        if ((settings.syncContentMode !== 'full' || settings.imageMode === 'disabled') && !subsetConfirmed) return null;
+        return {
+            taskId: task.id, ackToken: task.ack_token,
+            imagesProcessed: result.verifiedAssetIds!.length, imagesFailed: 0,
+            scopeVersion: 2, contentMode: settings.syncContentMode,
+            processedAssetIds: result.verifiedAssetIds, subsetConfirmed,
+            savedProof: result.savedProof,
+            imageMode: settings.imageMode,
+            imagesOmittedConfirmed: settings.imageMode === 'disabled' && subsetConfirmed,
+        };
+    }
     return {
         taskId: task.id,
         ackToken: task.ack_token,
@@ -84,6 +130,11 @@ export async function postSyncAck(ack: PendingSyncAck, apiKey: string): Promise<
             vault_write_ok: true,
             images_processed: ack.imagesProcessed,
             images_failed: ack.imagesFailed,
+            ...(ack.scopeVersion === 2 ? {
+                scope_version: 2, content_mode: ack.contentMode,
+                processed_asset_ids: ack.processedAssetIds, subset_confirmed: ack.subsetConfirmed,
+                image_mode: ack.imageMode ?? 'local', images_omitted_confirmed: ack.imagesOmittedConfirmed ?? false,
+            } : {}),
         }),
         throw: false,
     });

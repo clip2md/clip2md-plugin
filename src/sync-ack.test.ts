@@ -49,6 +49,44 @@ describe('Obsidian sync receipts', () => {
         expect(buildSyncAck(task, { ...complete, skipped: true }, fullSettings)).toBeNull();
     });
 
+    it('persists and posts v2 scope without losing the local readback proof', async () => {
+        const scoped = {
+            ...task, ack_scope: { version: 2 as const, content_mode: 'source' as const,
+                required_assets: [{ id: 7, url: '/api/v1/assets/7', status: 'READY' }] },
+        };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true,
+            verifiedAssetIds: [7], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash',
+                images: [{ path: '附件/a.png', hash: 'image-hash' }] } };
+        const settings = { ...fullSettings, syncContentMode: 'source' as const };
+        expect(buildSyncAck(scoped, result, settings)).toBeNull();
+        const ack = buildSyncAck(scoped, result, settings, true)!;
+        expect(parsePendingSyncAcks([JSON.parse(JSON.stringify(ack))])).toEqual([ack]);
+        expect(parsePendingSyncAcks([{ ...ack, savedProof: null }, { ...ack, subsetConfirmed: false }])).toEqual([]);
+        expect(buildSyncAck(scoped, result, fullSettings, true)).toBeNull();
+        requestUrlMock.mockResolvedValue({ status: 200 });
+        await postSyncAck(ack, 'key');
+        expect(JSON.parse(requestUrlMock.mock.calls[0][0].body)).toEqual({
+            ack_token: 'signed-token', vault_write_ok: true, images_processed: 1, images_failed: 0,
+            scope_version: 2, content_mode: 'source', processed_asset_ids: [7], subset_confirmed: true,
+            image_mode: 'local', images_omitted_confirmed: false,
+        });
+    });
+
+    it('persists the explicit image omission scope and rejects an unconfirmed stored receipt', async () => {
+        const scoped = { ...task, ack_scope: { version: 2 as const, content_mode: 'full' as const, image_mode: 'disabled' as const, required_assets: [] } };
+        const settings = { ...fullSettings, imageMode: 'disabled' as const };
+        const result = { filepath: 'Clippings/task.md', skipped: false, selectedContentWritten: true, imagesOmitted: true,
+            verifiedAssetIds: [], imageErrors: [], savedProof: { filepath: 'Clippings/task.md', contentHash: 'hash', images: [] } };
+        const ack = buildSyncAck(scoped, result, settings, true)!;
+        expect(parsePendingSyncAcks([ack])).toEqual([ack]);
+        expect(parsePendingSyncAcks([{ ...ack, imagesOmittedConfirmed: false }])).toEqual([]);
+        requestUrlMock.mockResolvedValue({ status: 200 });
+        await postSyncAck(ack, 'key');
+        expect(JSON.parse(requestUrlMock.mock.calls[0][0].body)).toMatchObject({
+            image_mode: 'disabled', images_omitted_confirmed: true, images_processed: 0, processed_asset_ids: [],
+        });
+    });
+
     it('posts only a receipt and treats stale, missing or invalid tokens as terminal', async () => {
         requestUrlMock.mockResolvedValueOnce({ status: 200 })
             .mockResolvedValueOnce({ status: 404 })
