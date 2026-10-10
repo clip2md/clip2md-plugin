@@ -1,5 +1,10 @@
 # Clip2MD
 
+> **安装前请检查 Obsidian 版本：需要 1.13.1 或更高版本。**
+> 若安装提示 “No appropriate version found.”，请先在 **设置 → 关于** 查看 Obsidian 版本；版本低于 1.13.1 时，请升级 Obsidian 后重试。移动端请通过应用商店或官方安装渠道更新。
+>
+> **Requires Obsidian 1.13.1 or later.** If installation shows “No appropriate version found.”, check your Obsidian version in **Settings → About**. If it is older than 1.13.1, update Obsidian and try again. On mobile, update through your app store or official installation channel.
+
 Clip2MD is an Obsidian plugin that turns captured web content into clean
 Markdown and syncs completed clipping tasks to your knowledge base. It can
 save images locally, preserve task metadata, update previously synchronized
@@ -22,7 +27,7 @@ notes, and organize files with customizable folder and filename templates.
 
 ## Requirements and setup
 
-Requires Obsidian **1.13.7 or later** on desktop or mobile, a Clip2MD account
+Requires Obsidian **1.13.1 or later** on desktop or mobile, a Clip2MD account
 or valid API Key, and an internet connection. The plugin connects to the
 Clip2MD service to bind your device, fetch completed tasks, and download images.
 
@@ -54,7 +59,7 @@ from the same release and place them in `.obsidian/plugins/clipmd/`.
 
 ## 使用要求
 
-- Obsidian 1.13.7 或更高版本。
+- Obsidian 1.13.1 或更高版本。
 - 桌面版或移动版 Obsidian。
 - Clip2MD 账号或有效的 API Key。
 - 网络连接。插件需要访问 Clip2MD 服务才能绑定账号、获取任务和下载图片。
@@ -161,7 +166,7 @@ from reappearing applies only to the current vault and is off by default.
 
 社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
 
-当前市场可安装版本为 `1.0.12`，最低 Obsidian 版本为 `1.13.7`。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+源码最低 Obsidian 版本为 `1.13.1`，依据是设置页状态提示使用的 `SettingDefinitionPage.status` API（自 1.13.1 提供）。该门槛允许 Obsidian 1.13.4 安装；鸿蒙设备上的实际运行仍需验证。历史已发布版本的最低要求保持不变，降低门槛需随新 Release 发布后才在社区市场生效。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 
