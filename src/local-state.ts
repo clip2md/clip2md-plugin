@@ -1,6 +1,7 @@
 import type { App } from 'obsidian';
 import type { PendingSyncAck } from './sync-ack';
 import type { SyncRunSummary } from './settings';
+import type { SubscriptionDeviceState } from './subscriptions';
 
 export const LOCAL_STATE_KEY = 'clip2md-device-state-v1';
 export const API_SECRET_ID = 'clip2md-api-key';
@@ -16,6 +17,7 @@ export interface PendingBinding {
 }
 
 export interface LocalDeviceState {
+    subscriptions?: SubscriptionDeviceState;
     version: 1;
     installationId: string;
     credentialId?: number;
@@ -39,6 +41,15 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
     const data: unknown = app.loadLocalStorage(LOCAL_STATE_KEY);
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const state = data as Partial<LocalDeviceState>;
+    if (state.subscriptions && (state.subscriptions.version !== 1
+        || !Array.isArray(state.subscriptions.excludedTaskIds)
+        || !Array.isArray(state.subscriptions.keptLocalTaskIds)
+        || !state.subscriptions.statuses || typeof state.subscriptions.statuses !== 'object'
+        || (state.subscriptions.keptIndexIds !== undefined && (!Array.isArray(state.subscriptions.keptIndexIds)
+            || state.subscriptions.keptIndexIds.some(id => !Number.isSafeInteger(id) || id <= 0)))
+        || [...state.subscriptions.excludedTaskIds, ...state.subscriptions.keptLocalTaskIds].some(id => !Number.isSafeInteger(id) || id <= 0))) {
+        throw new Error('本机订阅状态损坏，已暂停同步');
+    }
     if (state.version !== 1 || typeof state.installationId !== 'string') return null;
     if ((state.cursor !== null && typeof state.cursor !== 'string')
         || !state.taskFileMap || typeof state.taskFileMap !== 'object'

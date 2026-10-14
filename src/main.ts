@@ -25,6 +25,10 @@ import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckHttpError, S
 import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState } from './local-state';
 import { sha256, verifySavedSyncProof } from './saved-sync-proof';
 import { SubsetDeleteModal } from './subset-delete-modal';
+import { archiveConfig, bloggerName, fetchArchiveSnapshot, isExcluded, newSubscriptionState, ArchiveRequestError, type ArchiveConfig, type SubscriptionContext } from './subscriptions';
+import { collidingSubscriptions, rebuildSubscriptionArchive, scanSubscriptionNotes, type LocalSubscriptionNote, type IndexConflict } from './subscription-archive';
+import { documentMetadata, verifiedRegion } from './subscription-document';
+import { SubscriptionView, SUBSCRIPTION_VIEW_TYPE } from './subscription-view';
 
 const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
 const MAX_CONFIG_BACKUPS = 5;
@@ -159,6 +163,13 @@ export default class BijiSyncPlugin extends Plugin {
     private restoreMissingMappedTasksOnNextSync = false;
     private syncWriteInProgress = false;
     private localState: LocalDeviceState;
+    subscriptionError = '';
+    subscriptionArchiveErrors: string[] = [];
+    subscriptionIndexConflicts: IndexConflict[] = [];
+    private indexReplacements = new Map<number, string>();
+    private subscriptionNotes: LocalSubscriptionNote[] = [];
+    private subscriptionRefresh: Promise<void> | null = null;
+    private subscriptionRebuild: Promise<void> | null = null;
     private legacySharedData: StoredPluginData = {};
     private readonly bindingClient = new DeviceBindingClient();
     private bindingTimer: number | null = null;
@@ -238,6 +249,11 @@ export default class BijiSyncPlugin extends Plugin {
             ack => this.deliverSyncAck(ack),
         );
         this.syncAckQueue.load(this.localState.pendingAcks);
+        const subscriptions = this.getSubscriptionState();
+        subscriptions.legacyProofs ??= {};
+        for (const ack of this.localState.pendingAcks) if (ack.savedProof && !ack.savedProof.scope) {
+            subscriptions.legacyProofs[ack.taskId] = { filepath: ack.savedProof.filepath, contentHash: ack.savedProof.contentHash };
+        }
         if (settingsMigrated) {
             await this.saveSettings();
         }
@@ -287,6 +303,19 @@ export default class BijiSyncPlugin extends Plugin {
                 void this.syncNow('manual');
             }
         });
+
+        this.registerView(SUBSCRIPTION_VIEW_TYPE, leaf => new SubscriptionView(leaf, this));
+        this.addCommand({ id: 'blogger-subscriptions', name: '打开博主订阅', callback: () => { void this.openSubscriptionPanel(); } });
+        this.registerEvent(this.app.vault.on('rename', file => {
+            void this.rebuildSubscriptions();
+        }));
+        this.registerEvent(this.app.vault.on('delete', file => {
+            const map = this.syncService.getTaskFileMap();
+            for (const [id, path] of Object.entries(map)) if (path === file.path && this.subscriptionNotes.some(n => n.metadata.task_id === Number(id))) {
+                if (this.settings.preventReimportAfterLocalRemoval) this.syncService.markIgnored(Number(id));
+            }
+            void this.rebuildSubscriptions();
+        }));
 
 
         this.startSyncInterval();
@@ -343,6 +372,10 @@ export default class BijiSyncPlugin extends Plugin {
         if (this.app.secretStorage.getSecret(API_SECRET_ID) !== this.settings.apiKey) {
             this.localState.credentialInvalid = false;
             this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
+            if (this.localState.subscriptions) {
+                this.localState.subscriptions.unverified = true;
+                this.subscriptionNotes = [];
+            }
         }
         await this.persistPluginState(true);
         this.startSyncInterval();
@@ -458,6 +491,10 @@ export default class BijiSyncPlugin extends Plugin {
     private async promotePendingCredential(credentialId?: number, credentialName?: string): Promise<void> {
         const pendingKey = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
         if (!pendingKey) throw new Error('待领取 Key 的本机草稿丢失，请重新扫码');
+        if (pendingKey !== this.settings.apiKey && this.localState.subscriptions) {
+            this.localState.subscriptions.unverified = true;
+            this.subscriptionNotes = [];
+        }
         setLocalSecret(this.app, API_SECRET_ID, pendingKey);
         this.settings.apiKey = pendingKey;
         this.settings.credentialId = credentialId;
@@ -794,6 +831,168 @@ export default class BijiSyncPlugin extends Plugin {
         window.open(`${CLIP2MD_APP_URL}/app/sync${query}#api-credentials`, '_blank');
     }
 
+    getSubscriptionState() {
+        return this.localState.subscriptions ??= newSubscriptionState();
+    }
+
+    getSubscriptionConfig(accountId = this.getSubscriptionState().accountId || ''): ArchiveConfig {
+        return archiveConfig(this.settings.subscriptionAccounts?.[accountId]);
+    }
+
+    getSubscriptionNotes(): LocalSubscriptionNote[] { return this.getSubscriptionState().unverified ? [] : this.subscriptionNotes; }
+
+    previewSubscriptionFolders(config: ArchiveConfig): string {
+        const state = this.getSubscriptionState();
+        const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(sub => ({
+            kind: 'work', account_id: state.accountId!, subscription_id: sub.id, platform: sub.platform,
+            blogger_id: sub.blogger_id, nickname: sub.profile?.nickname, remark: sub.name, work_id: '',
+        }));
+        const writer = new SyncService({ ...this.settings, subscriptionAccounts: {
+            ...this.settings.subscriptionAccounts, [state.accountId!]: config,
+        } });
+        writer.configureArchive(collidingSubscriptions(contexts, config));
+        return contexts.map(c => `${bloggerName(c)} → ${writer.folderForTask({ ...writer.createPreviewTask(), subscription_context: c })}`).join('\n')
+            || `示例目录：${config.folderTemplate}`;
+    }
+
+    async updateSubscriptionConfig(config: ArchiveConfig): Promise<void> {
+        const state = this.getSubscriptionState();
+        if (!state.accountId || state.unverified) throw new Error('请先刷新订阅列表，确认当前账号');
+        this.settings.subscriptionAccounts ??= {};
+        this.settings.subscriptionAccounts[state.accountId] = archiveConfig(config);
+        for (const id of state.excludedTaskIds) this.syncService.markPending(id);
+        await this.saveSettings();
+        await this.configureSubscriptionRouting();
+        this.refreshSubscriptionViews();
+    }
+
+    private async configureSubscriptionRouting() {
+        const state = this.getSubscriptionState();
+        const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(s => ({
+            kind: 'work', account_id: state.accountId!, subscription_id: s.id, platform: s.platform,
+            blogger_id: s.blogger_id, remark: s.name, nickname: s.profile?.nickname, work_id: '',
+        }));
+        this.syncService.configureArchive(collidingSubscriptions(contexts, this.getSubscriptionConfig()), state.legacyProofs);
+    }
+
+    async refreshSubscriptionSnapshot(): Promise<void> {
+        if (this.subscriptionRefresh) return this.subscriptionRefresh;
+        if (!this.settings.apiKey) { this.subscriptionError = '请先绑定当前设备'; return; }
+        const key = this.settings.apiKey;
+        this.subscriptionRefresh = (async () => {
+            try {
+                const snapshot = await fetchArchiveSnapshot(key);
+                if (key !== this.settings.apiKey) return;
+                const fingerprint = await sha256(key);
+                if (key !== this.settings.apiKey) return;
+                let state = this.getSubscriptionState();
+                if (state.accountId && state.accountId !== snapshot.account_id) {
+                    state = newSubscriptionState(); this.localState.subscriptions = state;
+                    this.syncService.setCursor(null);
+                    this.syncService.loadTaskFileMap({}); this.syncService.loadPendingTaskIds([]);
+                    this.syncService.loadIgnoredTaskIds([]); this.syncAckQueue.load([]);
+                    this.subscriptionNotes = [];
+                }
+                state.accountId = snapshot.account_id;
+                state.credentialFingerprint = fingerprint;
+                state.unverified = false;
+                state.snapshot = snapshot;
+                this.subscriptionError = '';
+                await this.configureSubscriptionRouting();
+                const successfulIds = [
+                    ...snapshot.works.filter(w => w.clip_status === 'SUCCESS' && w.task_id).map(w => w.task_id!),
+                    ...snapshot.works.filter(w => w.supplement_status === 'SUCCESS' && w.supplement_task_id).map(w => w.supplement_task_id!),
+                    ...snapshot.reports.filter(r => r.status === 'SUCCESS' && r.task_id).map(r => r.task_id!),
+                ];
+                for (const id of successfulIds) {
+                    if (state.keptLocalTaskIds.includes(id) || state.excludedTaskIds.includes(id)
+                        || this.syncService.getIgnoredTaskIds().includes(id)) continue;
+                    const path = this.syncService.getTaskFileMap()[id];
+                    const file = path ? this.app.vault.getFileByPath(path) : null;
+                    if (!file || !documentMetadata(await this.app.vault.read(file))) {
+                        this.syncService.markPending(id);
+                        // Older full-file receipts must not erase identity before the note is upgraded.
+                        await this.syncAckQueue.remove(id);
+                    }
+                }
+                await this.persistSyncState();
+            } catch (error) {
+                this.subscriptionError = error instanceof ArchiveRequestError ? error.message : `订阅刷新失败：${String(error)}`;
+                if (error instanceof ArchiveRequestError && error.status === 401) {
+                    this.updateConnectionState('invalid', 'API Key 已失效');
+                }
+            } finally { this.refreshSubscriptionViews(); }
+        })();
+        try { await this.subscriptionRefresh; } finally { this.subscriptionRefresh = null; }
+    }
+
+    async rebuildSubscriptions(): Promise<void> {
+        if (this.subscriptionRebuild) return this.subscriptionRebuild;
+        const state = this.getSubscriptionState();
+        if (!state.accountId || state.unverified) return;
+        this.subscriptionRebuild = (async () => {
+            try {
+                const result = await rebuildSubscriptionArchive(this.app, state.accountId!, this.getSubscriptionConfig(),
+                    state, this.syncService.getTaskFileMap(), this.indexReplacements);
+                this.subscriptionNotes = result.notes;
+                this.subscriptionArchiveErrors = result.errors;
+                this.subscriptionIndexConflicts = result.indexConflicts;
+                await this.persistSyncState();
+            } catch (error) { this.subscriptionArchiveErrors = [String(error)]; }
+            this.refreshSubscriptionViews();
+        })();
+        try { await this.subscriptionRebuild; } finally { this.subscriptionRebuild = null; }
+    }
+
+    private refreshSubscriptionViews() {
+        for (const leaf of this.app.workspace?.getLeavesOfType?.(SUBSCRIPTION_VIEW_TYPE) || []) {
+            if (leaf.view instanceof SubscriptionView) leaf.view.render();
+        }
+    }
+
+    async openSubscriptionPanel() {
+        const existing = this.app.workspace.getLeavesOfType(SUBSCRIPTION_VIEW_TYPE)[0];
+        const leaf = existing || this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf(true);
+        if (!existing) await leaf.setViewState({ type: SUBSCRIPTION_VIEW_TYPE, active: true });
+        await this.app.workspace.revealLeaf(leaf);
+    }
+
+    async retrySubscriptionTask(id: number) {
+        if (this.syncService.getIgnoredTaskIds().includes(id)) {
+            new Notice('此笔记已主动删除，请使用现有重新导入设置恢复'); return;
+        }
+        const state = this.getSubscriptionState();
+        state.keptLocalTaskIds = state.keptLocalTaskIds.filter(item => item !== id);
+        this.syncService.markPending(id);
+        await this.persistSyncState();
+        await this.syncNow();
+    }
+
+    async keepLocalSubscription(id: number) {
+        const state = this.getSubscriptionState();
+        if (!state.keptLocalTaskIds.includes(id)) state.keptLocalTaskIds.push(id);
+        await this.syncAckQueue.remove(id);
+        await this.persistSyncState();
+        this.refreshSubscriptionViews();
+    }
+
+    async replaceSubscription(id: number, reviewedContent: string) {
+        this.syncService.authorizeSubscriptionReplacement(id, reviewedContent);
+        await this.retrySubscriptionTask(id);
+        await this.rebuildSubscriptions();
+    }
+
+    async resolveSubscriptionIndex(conflict: IndexConflict, replace: boolean) {
+        const state = this.getSubscriptionState();
+        state.keptIndexIds ??= [];
+        if (replace) {
+            state.keptIndexIds = state.keptIndexIds.filter(id => id !== conflict.id);
+            this.indexReplacements.set(conflict.id, conflict.current);
+        } else if (!state.keptIndexIds.includes(conflict.id)) state.keptIndexIds.push(conflict.id);
+        await this.persistSyncState();
+        await this.rebuildSubscriptions();
+    }
+
     openSettingsTab() {
         const setting = (this.app as App & {
             setting?: {
@@ -839,6 +1038,32 @@ export default class BijiSyncPlugin extends Plugin {
 
     private async deliverSyncAck(ack: PendingSyncAck): Promise<'accepted' | 'discard'> {
         if (this.syncWriteInProgress) throw new Error('Vault 写入期间暂缓回执');
+        if (ack.savedProof?.scope === 'subscription-v1') {
+            const file = this.app.vault.getFileByPath(ack.savedProof.filepath);
+            const content = file ? await this.app.vault.read(file) : '';
+            const context = documentMetadata(content);
+            const state = this.getSubscriptionState();
+            if (!context || context.task_id !== ack.taskId || state.unverified || context.account_id !== state.accountId) {
+                this.syncService.markPending(ack.taskId);
+                state.statuses[ack.taskId] = { status: 'conflict', message: '账号或笔记身份尚未核对，已暂缓回执' };
+                await this.persistSyncState(); return 'discard';
+            }
+            if (isExcluded(context, this.getSubscriptionConfig(context.account_id))) {
+                if (!state.excludedTaskIds.includes(ack.taskId)) state.excludedTaskIds.push(ack.taskId);
+                state.statuses[ack.taskId] = { status: 'excluded' };
+                this.syncService.removePending(ack.taskId);
+                await this.persistSyncState(); return 'discard';
+            }
+            if (state.keptLocalTaskIds.includes(ack.taskId)) return 'discard';
+            if ((await scanSubscriptionNotes(this.app, context.account_id)).filter(n => n.metadata.task_id === ack.taskId).length !== 1) {
+                this.syncService.markPending(ack.taskId);
+                state.statuses[ack.taskId] = { status: 'conflict', message: '本地任务身份重复，已暂缓回执' };
+                await this.persistSyncState(); return 'discard';
+            }
+            try { await verifiedRegion(content, 'links', ack.taskId); } catch {
+                this.syncService.markPending(ack.taskId); await this.persistSyncState(); return 'discard';
+            }
+        }
         if (ack.scopeVersion === 2 && (ack.contentMode !== this.settings.syncContentMode
             || (ack.imageMode ?? 'local') !== this.settings.imageMode
             || !ack.savedProof || !await verifySavedSyncProof(this.app.vault, ack.taskId, ack.savedProof))) {
@@ -990,6 +1215,11 @@ export default class BijiSyncPlugin extends Plugin {
         this.subsetDeleteDecisions = new Map();
 
         try {
+            if (typeof this.app.vault.getMarkdownFiles === 'function') {
+                await this.refreshSubscriptionSnapshot();
+                await this.rebuildSubscriptions();
+                for (const id of this.getSubscriptionState().excludedTaskIds) this.syncService.markPending(id);
+            }
             await this.syncAckQueue.flush();
             if (!this.settings.preventReimportAfterLocalRemoval && this.restoreMissingMappedTasksOnNextSync) {
                 const missing = await this.syncService.findMissingMappedTaskIds(this.app.vault);
@@ -1126,6 +1356,10 @@ export default class BijiSyncPlugin extends Plugin {
             this.updateRibbonState();
             this.updateViewActions();
             this.refreshSettingTab();
+            if (typeof this.app.vault.getMarkdownFiles === 'function') {
+                await this.rebuildSubscriptions();
+                await this.refreshSubscriptionSnapshot();
+            }
         }
     }
 
@@ -1221,6 +1455,8 @@ export default class BijiSyncPlugin extends Plugin {
     ) {
         for (const item of pendingTasks) {
             if (item.missing || (!item.task && restoring)) {
+                if (this.localState?.subscriptions) this.localState.subscriptions.excludedTaskIds =
+                    this.localState.subscriptions.excludedTaskIds.filter(id => id !== item.taskId);
                 this.syncService.removePending(item.taskId);
                 this.syncService.removeIgnored(item.taskId);
                 delete this.syncService.getTaskFileMap()[item.taskId];
@@ -1247,6 +1483,30 @@ export default class BijiSyncPlugin extends Plugin {
             counters.processed += 1;
             this.processedCount = counters.processed;
 
+            const existingContext = this.subscriptionNotes?.find(n => n.metadata.task_id === task.id)?.metadata;
+            if (!task.subscription_context && existingContext) task.subscription_context = existingContext;
+            if (task.subscription_context) {
+                const state = this.getSubscriptionState();
+                if (state.unverified) throw new Error('账号尚未确认，订阅同步已暂停');
+                if (state.accountId && state.accountId !== task.subscription_context.account_id) throw new Error('订阅任务账号不匹配');
+                if (this.subscriptionNotes.filter(n => n.metadata.task_id === task.id).length > 1) {
+                    state.statuses[task.id] = { status: 'conflict', message: '同一任务存在多个本地文件，已暂停更新' };
+                    this.syncService.markPending(task.id); counters.skipped += 1; continue;
+                }
+                if (isExcluded(task.subscription_context, this.getSubscriptionConfig(task.subscription_context.account_id))) {
+                    if (!state.excludedTaskIds.includes(task.id)) state.excludedTaskIds.push(task.id);
+                    state.statuses[task.id] = { status: 'excluded' };
+                    this.syncService.removePending(task.id);
+                    await this.syncAckQueue.remove(task.id);
+                    await this.persistSyncState();
+                    counters.skipped += 1;
+                    continue;
+                }
+                state.excludedTaskIds = state.excludedTaskIds.filter(id => id !== task.id);
+                if (state.keptLocalTaskIds.includes(task.id)) { counters.skipped += 1; continue; }
+                state.statuses[task.id] = { status: 'pending' };
+            }
+
             let result: SyncResult;
             try {
                 this.syncWriteInProgress = true;
@@ -1257,6 +1517,7 @@ export default class BijiSyncPlugin extends Plugin {
                     this.settings.template,
                 );
             } catch (error) {
+                if (task.subscription_context) this.getSubscriptionState().statuses[task.id] = { status: 'error', message: String(error) };
                 this.syncService.markPending(task.id);
                 counters.pending += 1;
                 this.recordBlockedAck(task, { filepath: null, skipped: false }, counters);
@@ -1274,6 +1535,14 @@ export default class BijiSyncPlugin extends Plugin {
                 counters.ignored += 1;
                 this.updateSyncProgress(counters, 'syncing');
                 continue;
+            }
+            if (task.subscription_context) {
+                this.getSubscriptionState().statuses[task.id] = {
+                    status: result.subscriptionConflict ? 'conflict' : result.pendingAssets || result.failedAssets ? 'images'
+                        : result.skipped ? 'error' : 'synced', message: result.reason,
+                };
+                // Identity lives in the note; persist path/status before any receipt can delete the cloud source.
+                await this.persistSyncState();
             }
             if (result.warning) {
                 console.warn(`Clip2MD: ${result.warning}`);
@@ -1572,6 +1841,9 @@ export default class BijiSyncPlugin extends Plugin {
         const oldNewFrontmatter = NEW_DEFAULT_FRONTMATTER_TEMPLATE.replace('{{note_title}}', '{{source_title_or_title}}');
         const knownFrontmatterDefaults = [DEFAULT_FRONTMATTER_TEMPLATE, LEGACY_TAGGED_FRONTMATTER_TEMPLATE, LEGACY_DEFAULT_FRONTMATTER_TEMPLATE, oldNewFrontmatter];
         return {
+            subscriptionAccounts: Object.fromEntries(Object.entries(
+                settings.subscriptionAccounts && typeof settings.subscriptionAccounts === 'object' ? settings.subscriptionAccounts : {},
+            ).filter(([id]) => /^[a-zA-Z0-9_-]+$/.test(id)).map(([id, config]) => [id, archiveConfig(config as Partial<ArchiveConfig>)])),
             titleMode: ['website', 'source', 'task', 'custom'].includes(String(settings.titleMode)) ? settings.titleMode as BijiSyncSettings['titleMode'] : 'website',
             customTitleTemplate: typeof settings.customTitleTemplate === 'string' && !validateCustomTitle(settings.customTitleTemplate) ? settings.customTitleTemplate : '',
             apiKey: typeof settings.apiKey === 'string' ? settings.apiKey : '',

@@ -19,6 +19,9 @@ notes, and organize files with customizable folder and filename templates.
 - Bind each device by scanning a WeChat QR code or entering an API Key.
 - Customize note titles, folders, filenames, YAML properties, and body templates.
 - Preview the resulting note or Markdown before synchronizing.
+- Archive subscribed creators into configurable folders, maintain creator indexes,
+  link comment supplements and daily reports, and preserve annotations outside
+  managed content regions. The subscription panel requires the compatible server API.
 - Optionally delete the cloud task after the selected content and local images
   have been verified. Source-only or note-only deletion requires confirmation
   and also removes the unsynchronized content from the cloud. Disabling image
@@ -43,6 +46,12 @@ from the same release and place them in `.obsidian/plugins/clipmd/`.
 ## 中文说明
 
 将网页剪藏内容转换为 Markdown，并同步到 Obsidian。Clip2MD 负责网页内容的提取与整理，Obsidian 插件负责把已完成的剪藏任务写入你的 Vault。
+
+### 博主订阅归档
+
+在设置中加载当前账号的博主订阅，或使用“打开博主订阅”命令。可配置统一目录模板、单博主目录、同步范围、索引和日报目录；保存后点击“立即同步”。分目录默认关闭，目录变更仅影响新文件。已有订阅笔记保持原路径，并保护“我的批注”和管理区域外文字。评论补充、日报和索引提供本地关联链接。
+
+受管理正文被修改时暂停覆盖，面板可比较内容、保留本地修改或确认备份后更新。旧笔记无法确认是否包含用户编辑时必须确认升级，原正文会保留；备份在知识库 `.clip2md-subscription-backups/`。仅同步现有任务，购买、续订和云端重试使用网页管理入口。此功能需要兼容后端；不提供未读、稍后读或收藏状态。
 
 ## 功能
 
@@ -166,7 +175,7 @@ from reappearing applies only to the current vault and is off by default.
 
 社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
 
-源码最低 Obsidian 版本为 `1.13.1`，依据是设置页状态提示使用的 `SettingDefinitionPage.status` API（自 1.13.1 提供）。该门槛允许 Obsidian 1.13.4 安装；鸿蒙设备上的实际运行仍需验证。历史已发布版本的最低要求保持不变，降低门槛需随新 Release 发布后才在社区市场生效。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+截至 2026-10-10，市场已发布版本为 [`1.0.16`](https://github.com/clip2md/clip2md-plugin/releases/tag/1.0.16)，最低 Obsidian 版本为 `1.13.1`，依据是设置页状态提示使用的 `SettingDefinitionPage.status` API（自 1.13.1 提供）。该门槛允许 Obsidian 1.13.4 安装；鸿蒙设备上的实际运行仍需验证。历史版本的最低要求保持不变；1.0.16 的正式 Release 附件与市场 main 已完成核验，新的安装门槛已进入市场发布源。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 
