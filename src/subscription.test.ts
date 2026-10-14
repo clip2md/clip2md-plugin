@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { webcrypto } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile, TFolder } from 'obsidian';
 import { SyncService, type SyncTask } from './sync';
@@ -194,10 +195,12 @@ describe('subscription archive integration', () => {
         const vault = new TestVault(), config = settings(), sync = new SyncService(config), t = task();
         t.note_markdown_content = '![来源图片](/api/v1/assets/8)';
         t.ack_scope!.required_assets = [{ id: 8, url: '/api/v1/assets/8', status: 'READY' }];
-        const bytes = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0]).buffer;
+        // Node WebCrypto requires a Node-realm buffer in the JSDOM test environment.
+        const png = Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
+        const bytes = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
         request.mockResolvedValue({ status: 200, arrayBuffer: bytes, headers: { 'content-type': 'image/png' } });
         const result = await sync.renderToVault(vault as never, t, config.targetFolder, config.template);
-        expect(result.verifiedAssetIds).toEqual([8]); expect(result.savedProof?.images).toHaveLength(1);
+        expect(result.imageErrors).toEqual([]); expect(result.verifiedAssetIds).toEqual([8]); expect(result.savedProof?.images).toHaveLength(1);
         vault.files.set(result.filepath!, String(vault.files.get(result.filepath!)) + '\n![我的图片](missing.png)');
         expect(await verifySavedSyncProof(vault as never, t.id, result.savedProof!)).toBe(true);
         vault.files.delete(result.savedProof!.images[0].path);
