@@ -11,7 +11,7 @@ export interface NoteContentViewState {
 }
 const VARIABLES: Record<string, string> = {
     content: '所选同步内容', note_content: '智能笔记', source_content: '原文',
-    note_title: '笔记标题', title: 'AI标题', source_title: '原始标题', source_title_or_title: '原标题（缺失时用AI标题）',
+    note_title: '笔记标题', title: '智能标题', source_title: '原始标题', source_title_or_title: '原标题（缺失时用智能标题）',
     display_title: '账号展示标题', source: '来源', source_date: '原文日期', date: '日期',
     created_at: '创建时间', created_date: '创建日期', duration: '时长', content_type: '内容类型',
     url: '原文链接', task_id: '任务 ID', tags: '标签', task_count: '任务数量', task_ids: '任务 ID 数组', tasks: '任务清单',

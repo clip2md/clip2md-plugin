@@ -44,7 +44,6 @@ function isPendingSyncAck(value: unknown): value is PendingSyncAck {
             && item.savedProof !== null && typeof item.savedProof === 'object'
             && typeof (item.savedProof as SavedSyncProof).filepath === 'string'
             && typeof (item.savedProof as SavedSyncProof).contentHash === 'string'
-            && ((item.savedProof as SavedSyncProof).scope === undefined || (item.savedProof as SavedSyncProof).scope === 'subscription-v1')
             && Array.isArray((item.savedProof as SavedSyncProof).images)
             && (item.savedProof as SavedSyncProof).images.every(image => image && typeof image.path === 'string' && typeof image.hash === 'string')));
 }

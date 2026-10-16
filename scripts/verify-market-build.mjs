@@ -60,7 +60,7 @@ if (typeof manifest.description !== 'string'
 if (packageJson.scripts?.deploy) {
   fail('package.json 仍引用不存在的 deploy.sh');
 }
-if (packageJson.scripts?.verify !== 'npm run typecheck && npm test && npm run build && node scripts/verify-market-build.mjs && node scripts/smoke-market-bundle.mjs') {
+if (packageJson.scripts?.verify !== 'npm run typecheck && npm test && npm run build && node scripts/verify-market-build.mjs') {
   fail('package.json 缺少标准 verify 命令');
 }
 if (fs.existsSync(path.join(root, 'src/updater.ts'))) {

@@ -5,8 +5,6 @@ import { DeviceBindingClient, DeviceBindingError, DeviceBindingSession } from '.
 import { NoteContentSettings, type NoteContentViewState } from './note-content-settings';
 import { validateCustomTitle, type TitleMode } from './note-title';
 import { installButtonClickGuard } from './button-guard';
-import type { ArchiveConfig } from './subscriptions';
-import { renderSubscriptionSettings } from './subscription-settings';
 
 export type SyncContentMode = 'full' | 'note' | 'source';
 export type SyncTrigger = 'manual' | 'scheduled' | 'startup' | 'onboarding';
@@ -32,7 +30,6 @@ export interface SyncRunSummary {
 }
 
 export interface BijiSyncSettings {
-    subscriptionAccounts?: Record<string, ArchiveConfig>;
     apiKey: string;
     credentialId?: number;
     credentialName?: string;
@@ -294,7 +291,6 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
         this.showingInvalidOnboarding = false;
         this.renderBasicSettings(containerEl);
-        if (typeof this.plugin.getSubscriptionState === 'function') renderSubscriptionSettings(containerEl, this.plugin);
         this.renderAdvancedSettings(containerEl);
     }
 
@@ -802,7 +798,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         custom.settingEl.hidden = this.plugin.settings.titleMode !== 'custom';
         titleSetting.addDropdown(dropdown => dropdown
             .addOption('website', '跟随网站设置').addOption('source', '原标题')
-            .addOption('task', 'AI标题').addOption('custom', '自定义标题模板')
+            .addOption('task', '智能标题').addOption('custom', '自定义标题模板')
             .setValue(this.plugin.settings.titleMode || 'website').onChange(value => {
                 this.plugin.settings.titleMode = value as TitleMode;
                 custom.settingEl.hidden = value !== 'custom';
@@ -967,7 +963,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
 }
 
-export class FolderPickerModal extends Modal {
+class FolderPickerModal extends Modal {
     private selectedPath: string = '';
     private expandedFolders: Set<string> = new Set();
     private onSelect: (path: string) => void;
