@@ -304,18 +304,23 @@ export default class BijiSyncPlugin extends Plugin {
             }
         });
 
-        this.registerView(SUBSCRIPTION_VIEW_TYPE, leaf => new SubscriptionView(leaf, this));
-        this.addCommand({ id: 'blogger-subscriptions', name: '打开博主订阅', callback: () => { void this.openSubscriptionPanel(); } });
-        this.registerEvent(this.app.vault.on('rename', file => {
-            void this.rebuildSubscriptions();
-        }));
-        this.registerEvent(this.app.vault.on('delete', file => {
-            const map = this.syncService.getTaskFileMap();
-            for (const [id, path] of Object.entries(map)) if (path === file.path && this.subscriptionNotes.some(n => n.metadata.task_id === Number(id))) {
-                if (this.settings.preventReimportAfterLocalRemoval) this.syncService.markIgnored(Number(id));
-            }
-            void this.rebuildSubscriptions();
-        }));
+        try {
+            this.registerView(SUBSCRIPTION_VIEW_TYPE, leaf => new SubscriptionView(leaf, this));
+            this.addCommand({ id: 'blogger-subscriptions', name: '打开博主订阅', callback: () => { void this.openSubscriptionPanel(); } });
+            this.registerEvent(this.app.vault.on('rename', file => {
+                void this.rebuildSubscriptions();
+            }));
+            this.registerEvent(this.app.vault.on('delete', file => {
+                const map = this.syncService.getTaskFileMap();
+                for (const [id, path] of Object.entries(map)) if (path === file.path && this.subscriptionNotes.some(n => n.metadata.task_id === Number(id))) {
+                    if (this.settings.preventReimportAfterLocalRemoval) this.syncService.markIgnored(Number(id));
+                }
+                void this.rebuildSubscriptions();
+            }));
+        } catch (error) {
+            this.subscriptionError = '订阅面板初始化失败；基础同步仍可使用';
+            console.error(`Clip2MD: ${this.subscriptionError}`, error);
+        }
 
 
         this.startSyncInterval();

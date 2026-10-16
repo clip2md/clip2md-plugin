@@ -175,7 +175,7 @@ from reappearing applies only to the current vault and is off by default.
 
 社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
 
-截至 2026-10-10，市场已发布版本为 [`1.0.16`](https://github.com/clip2md/clip2md-plugin/releases/tag/1.0.16)，最低 Obsidian 版本为 `1.13.1`，依据是设置页状态提示使用的 `SettingDefinitionPage.status` API（自 1.13.1 提供）。该门槛允许 Obsidian 1.13.4 安装；鸿蒙设备上的实际运行仍需验证。历史版本的最低要求保持不变；1.0.16 的正式 Release 附件与市场 main 已完成核验，新的安装门槛已进入市场发布源。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+截至 2026-10-16，市场已发布版本为 [`1.0.17`](https://github.com/clip2md/clip2md-plugin/releases/tag/1.0.17)，最低 Obsidian 版本为 `1.13.1`。`1.0.18` 是本地发布候选版，完成 Windows 加载验证以及 Release 三附件核验前，不应推进市场 `main` 的版本指针。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

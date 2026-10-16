@@ -1,9 +1,10 @@
 import type { App } from 'obsidian';
 import type { PendingSyncAck } from './sync-ack';
 import type { SyncRunSummary } from './settings';
-import type { SubscriptionDeviceState } from './subscriptions';
+import { newSubscriptionState, type SubscriptionDeviceState } from './subscriptions';
 
 export const LOCAL_STATE_KEY = 'clip2md-device-state-v1';
+export const LOCAL_STATE_RECOVERY_KEY = 'clip2md-device-state-recovery-v1';
 export const API_SECRET_ID = 'clip2md-api-key';
 export const PENDING_SECRET_ID = 'clip2md-pending-api-key';
 
@@ -41,15 +42,6 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
     const data: unknown = app.loadLocalStorage(LOCAL_STATE_KEY);
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const state = data as Partial<LocalDeviceState>;
-    if (state.subscriptions && (state.subscriptions.version !== 1
-        || !Array.isArray(state.subscriptions.excludedTaskIds)
-        || !Array.isArray(state.subscriptions.keptLocalTaskIds)
-        || !state.subscriptions.statuses || typeof state.subscriptions.statuses !== 'object'
-        || (state.subscriptions.keptIndexIds !== undefined && (!Array.isArray(state.subscriptions.keptIndexIds)
-            || state.subscriptions.keptIndexIds.some(id => !Number.isSafeInteger(id) || id <= 0)))
-        || [...state.subscriptions.excludedTaskIds, ...state.subscriptions.keptLocalTaskIds].some(id => !Number.isSafeInteger(id) || id <= 0))) {
-        throw new Error('本机订阅状态损坏，已暂停同步');
-    }
     if (state.version !== 1 || typeof state.installationId !== 'string') return null;
     if ((state.cursor !== null && typeof state.cursor !== 'string')
         || !state.taskFileMap || typeof state.taskFileMap !== 'object'
@@ -75,6 +67,26 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
         || !Array.isArray(state.imageOmissionDeleteConsent.modes)
         || state.imageOmissionDeleteConsent.modes.some(mode => !['full', 'note', 'source'].includes(mode)))) {
         throw new Error('本机忽略图片删除确认状态损坏，已暂停同步');
+    }
+    const subscriptions = state.subscriptions;
+    if (subscriptions !== undefined && (!subscriptions || typeof subscriptions !== 'object'
+        || subscriptions.version !== 1
+        || !Array.isArray(subscriptions.excludedTaskIds)
+        || !Array.isArray(subscriptions.keptLocalTaskIds)
+        || !subscriptions.statuses || typeof subscriptions.statuses !== 'object'
+        || (subscriptions.keptIndexIds !== undefined && (!Array.isArray(subscriptions.keptIndexIds)
+            || subscriptions.keptIndexIds.some(id => !Number.isSafeInteger(id) || id <= 0)))
+        || [...subscriptions.excludedTaskIds, ...subscriptions.keptLocalTaskIds].some(id => !Number.isSafeInteger(id) || id <= 0))) {
+        // Keep the original local state for repair, but do not let optional
+        // subscription data prevent the rest of the plugin from starting.
+        if (!app.loadLocalStorage(LOCAL_STATE_RECOVERY_KEY)) {
+            app.saveLocalStorage(LOCAL_STATE_RECOVERY_KEY, data);
+            if (JSON.stringify(app.loadLocalStorage(LOCAL_STATE_RECOVERY_KEY)) !== JSON.stringify(data)) {
+                throw new Error('本机订阅状态备份失败，已停止加载以保留原始数据');
+            }
+        }
+        console.warn('Clip2MD: 本机订阅状态无效，原始状态已备份；订阅同步等待账号重新验证');
+        return { ...state, subscriptions: { ...newSubscriptionState(), unverified: true } } as LocalDeviceState;
     }
     return state as LocalDeviceState;
 }
