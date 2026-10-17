@@ -1,4 +1,8 @@
+import { commentLocalLink, commentProperties, isCommentSource, savedCommentProperties, withCommentProperties, type CommentSource } from './comment-source';
 import { resolveNoteTitle } from './note-title';
+import { safeArchiveSegment } from './subscription-archive';
+import { archiveConfig, bloggerName, isSubscriptionContext, type SubscriptionContext } from './subscriptions';
+import { documentMetadata, managedRegion, region, verifiedRegion, withMetadata, stripFrontmatter, SubscriptionConflict, backupSubscription } from './subscription-document';
 import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
 import { BijiSyncSettings, DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, SyncContentMode } from './settings';
 import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
@@ -12,6 +16,10 @@ export interface SyncAckScope {
 }
 
 export interface SyncTask {
+    subscription_context?: SubscriptionContext | null;
+    comment_source?: CommentSource | null;
+    comment_local_link?: string | null;
+    artifact_kind?: string;
     id: number;
     ack_token?: string | null;
     ack_scope?: SyncAckScope | null;
@@ -45,6 +53,7 @@ interface TaskFileMapping {
 }
 
 export interface SyncResult {
+    subscriptionConflict?: boolean;
     filepath: string | null;
     skipped: boolean;
     reason?: string;
@@ -141,7 +150,7 @@ function isSyncTask(value: unknown): value is SyncTask {
         && (value.ack_scope == null || (isRecord(value.ack_scope)
             && value.ack_scope.version === 2
             && ['full', 'note', 'source'].includes(String(value.ack_scope.content_mode))
-            && (value.ack_scope.image_mode === undefined || ['local', 'disabled'].includes(String(value.ack_scope.image_mode)))
+            && (value.ack_scope.image_mode === undefined || value.ack_scope.image_mode === 'local' || value.ack_scope.image_mode === 'disabled')
             && Array.isArray(value.ack_scope.required_assets)
             && value.ack_scope.required_assets.every(asset => isRecord(asset)
                 && Number.isSafeInteger(asset.id) && Number(asset.id) > 0
@@ -159,6 +168,12 @@ function isSyncTask(value: unknown): value is SyncTask {
 function parseSyncTask(value: unknown): SyncTask {
     if (!isSyncTask(value)) {
         throw new Error('服务返回了格式无效的同步任务');
+    }
+    if (value.subscription_context != null && !isSubscriptionContext(value.subscription_context)) {
+        throw new Error('服务返回了格式无效的订阅身份，已暂停同步');
+    }
+    if (value.comment_source != null && !isCommentSource(value.comment_source)) {
+        throw new Error('服务返回了格式无效的评论来源，已暂停同步');
     }
     return value;
 }
@@ -265,6 +280,16 @@ export class SyncService {
     private pendingTaskIds: number[] = [];
     private ignoredTaskIds = new Set<number>();
     private warnedUnmanagedDailyPaths = new Set<string>();
+    private archiveCollisions = new Set<number>();
+    private legacyProofs: Record<string, { filepath: string; contentHash: string }> = {};
+    private subscriptionReplacement = new Map<number, string>();
+
+    authorizeSubscriptionReplacement(taskId: number, content: string) { this.subscriptionReplacement.set(taskId, content); }
+
+    configureArchive(collisions: number[], proofs: Record<string, { filepath: string; contentHash: string }> = {}) {
+        this.archiveCollisions = new Set(collisions);
+        this.legacyProofs = proofs;
+    }
 
     constructor(settings: BijiSyncSettings, fileManager?: FileManager) {
         this.settings = settings;
@@ -274,6 +299,12 @@ export class SyncService {
     updateSettings(settings: BijiSyncSettings) {
         this.settings = settings;
     }
+
+    previewTask(task: SyncTask): string {
+        return this.renderSingleTask(task, this.renderBodyTemplate(this.settings.template, task));
+    }
+
+    folderForTask(task: SyncTask): string { return this.resolveFolderPath(task, this.settings.targetFolder); }
 
     setCursor(cursor: string | null) {
         this.cursor = cursor;
@@ -498,14 +529,27 @@ export class SyncService {
         writer.ignoredTaskIds = this.ignoredTaskIds;
         writer.pendingTaskIds = this.pendingTaskIds;
         writer.warnedUnmanagedDailyPaths = this.warnedUnmanagedDailyPaths;
+        writer.archiveCollisions = this.archiveCollisions;
+        writer.legacyProofs = this.legacyProofs;
+        writer.subscriptionReplacement = this.subscriptionReplacement;
         try {
             return await writer.writeTaskToVault(vault, task, folderTemplate, template);
         } finally {
+            this.subscriptionReplacement.delete(task.id);
             this.pendingTaskIds = writer.pendingTaskIds;
         }
     }
 
     private async writeTaskToVault(vault: Vault, task: SyncTask, folderTemplate: string, template: string): Promise<SyncResult> {
+        if (task.comment_source) {
+            if (!isCommentSource(task.comment_source)) throw new Error('评论来源格式无效');
+            const prefix = task.comment_source.header_markdown;
+            task = { ...task,
+                comment_local_link: await commentLocalLink(vault, this.taskFileMap, task.comment_source.main_task_id),
+                source_markdown_content: prefix && task.source_markdown_content?.startsWith(prefix)
+                    ? task.source_markdown_content.slice(prefix.length) : task.source_markdown_content,
+            };
+        }
         const validation = this.validateTemplate(template);
         if (!validation.valid) throw new Error(validation.message);
         const mappedPath = this.taskFileMap[task.id];
@@ -520,7 +564,10 @@ export class SyncService {
             return this.ignoredResult(task.id);
         }
         const restoring = Boolean(wasIgnored || (mappedPath && !mappedFilePresent));
-        const folder = this.resolveFolderPath(task, folderTemplate);
+        let folder = this.resolveFolderPath(task, folderTemplate);
+        if (task.subscription_context && mappedFilePresent && mappedPath) {
+            folder = mappedPath.split('/').slice(0, -1).join('/');
+        }
         const selectedTask = task.ack_scope ? {
             ...task,
             note_markdown_content: this.settings.syncContentMode === 'source' ? null : task.note_markdown_content,
@@ -566,6 +613,16 @@ export class SyncService {
             return this.ignoredResult(task.id);
         }
 
+        if (localizedTask.subscription_context) {
+            try {
+                return finalize(await this.writeSubscription(vault, localizedTask, folder, body, assetResult, mappedPath));
+            } catch (error) {
+                if (error instanceof SubscriptionConflict) return {
+                    filepath: mappedPath || null, skipped: true, subscriptionConflict: true, reason: error.message,
+                };
+                throw error;
+            }
+        }
         if (this.shouldMergeDaily(localizedTask)) {
             return finalize(await this.renderMergedTask(vault, localizedTask, folder, body, assetResult, restoring));
         }
@@ -650,20 +707,100 @@ export class SyncService {
         return finalize(this.completedResult(task.id, createPath, assetResult));
     }
 
+    private async writeSubscription(vault: Vault, task: SyncTask, folder: string, body: string,
+        assets: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
+        mappedPath?: string): Promise<SyncResult> {
+        const context = task.subscription_context!;
+        const metadata = { ...context, task_id: task.id, title: this.getNoteTitle(task), url: task.url };
+        const updateMetadata = (content: string) => {
+            const next = withMetadata(content, metadata);
+            return task.comment_source ? withCommentProperties(next, task.comment_source, task.comment_local_link || null) : next;
+        };
+        const rendered = this.renderSingleTask(task, body);
+        const cloud = await managedRegion('cloud', task.id, stripFrontmatter(rendered).trim());
+        const links = await managedRegion('links', task.id, '');
+        let path = mappedPath;
+        let file = path ? vault.getFileByPath(path) : null;
+        if (!file) {
+            await this.ensureFolder(vault, folder);
+            const filename = context.kind === 'daily_report'
+                ? `${context.report_date}-博主订阅日报.md` : this.generateFilename(task);
+            path = `${folder}/${filename}`;
+            file = vault.getFileByPath(path);
+            if (file && !this.hasTaskMarker(await vault.read(file), task.id)) {
+                path = this.nextAvailableMarkdownPath(vault, path); file = null;
+            }
+            if (!file && vault.getAbstractFileByPath(path)) path = this.nextAvailableMarkdownPath(vault, path);
+        }
+        if (!file) {
+            const header = rendered.slice(0, rendered.length - stripFrontmatter(rendered).length);
+            await vault.create(path!, updateMetadata(`${header}\n${cloud}\n\n${links}\n\n## 我的批注\n\n`));
+        } else {
+            const before = await vault.read(file);
+            const prior = documentMetadata(before);
+            const authorized = this.subscriptionReplacement.get(task.id);
+            const force = authorized !== undefined;
+            if (force && before !== authorized) throw new SubscriptionConflict('确认后文件已变化，请重新查看差异');
+            if (prior && (prior.account_id !== context.account_id || prior.task_id !== task.id)) {
+                throw new SubscriptionConflict('文件身份不匹配，已保留原文件');
+            }
+            let originalCloud = '';
+            if (prior && !force) {
+                const existing = region(before, 'cloud', task.id);
+                originalCloud = existing && existing.body === region(cloud, 'cloud', task.id)!.body
+                    ? existing.full : await verifiedRegion(before, 'cloud', task.id);
+                await verifiedRegion(before, 'links', task.id);
+            } else if (!prior && !force) {
+                const proof = this.legacyProofs[task.id];
+                if (!proof || proof.filepath !== path || await sha256(before) !== proof.contentHash) {
+                    throw new SubscriptionConflict('旧笔记可能包含用户编辑，请查看差异后确认升级；原正文将保留');
+                }
+            }
+            if (force || !prior) await backupSubscription(vault, task.id, before);
+            await vault.process(file, current => {
+                if (force || !prior) {
+                    if (current !== before) throw new SubscriptionConflict('文件正在被编辑，请稍后重试');
+                    if (prior && region(current, 'cloud', task.id) && region(current, 'links', task.id)) {
+                        return updateMetadata(current.replace(region(current, 'cloud', task.id)!.full, () => cloud)
+                            .replace(region(current, 'links', task.id)!.full, () => links));
+                    }
+                    // Uncertain legacy/broken content remains outside the new managed regions.
+                    const kept = force ? stripFrontmatter(current).replace(
+                        new RegExp(`<!-- /?clip2md-(?:cloud|links)(?::v1)?:${task.id}[^>]*-->`, 'g'), '') : '';
+                    const header = current.slice(0, current.length - stripFrontmatter(current).length);
+                    return updateMetadata(`${header}\n${cloud}\n\n${links}\n\n## 我的批注\n\n${kept}`);
+                }
+                if (region(current, 'cloud', task.id)?.full !== originalCloud
+                    || region(current, 'links', task.id)?.full !== region(before, 'links', task.id)?.full) {
+                    throw new SubscriptionConflict('同步期间受管理区域已变化，已暂停覆盖');
+                }
+                return updateMetadata(current.replace(originalCloud, () => cloud));
+            });
+            this.subscriptionReplacement.delete(task.id);
+        }
+        this.taskFileMap[task.id] = path!;
+        return this.completedResult(task.id, path!, assets);
+    }
+
     private async verifyWrittenTask(vault: Vault, task: SyncTask, selectedTask: SyncTask, localized: LocalizeResult, result: SyncResult): Promise<SyncResult> {
         const filepath = result.filepath!;
         const file = vault.getAbstractFileByPath(filepath);
         if (!(file instanceof TFile)) return { ...result, selectedContentWritten: false };
-        const content = savedTaskContent(await vault.read(file), task.id);
+        const scope = task.subscription_context ? 'subscription-v1' as const : undefined;
+        const savedFile = await vault.read(file);
+        const content = savedTaskContent(savedFile, task.id, scope);
+        const commentMetadata = task.comment_source ? savedCommentProperties(savedFile) : '';
+        const commentMetadataValid = !task.comment_source || commentMetadata === JSON.stringify(Object.values(commentProperties(task.comment_source)));
+        const commentSourceHash = task.comment_source && commentMetadataValid ? await sha256(commentMetadata) : undefined;
         const selectedBodies = [selectedTask.note_markdown_content, selectedTask.source_markdown_content].filter(value => Boolean(value?.trim()));
         const localizedBodies = [localized.task.note_markdown_content, localized.task.source_markdown_content].filter(value => Boolean(value?.trim()));
-        const selectedContentWritten = selectedBodies.length > 0 && localizedBodies.length === selectedBodies.length
+        const selectedContentWritten = commentMetadataValid && selectedBodies.length > 0 && localizedBodies.length === selectedBodies.length
             && localizedBodies.every(value => content.includes(value!));
         if (task.ack_scope?.image_mode === 'disabled' && this.settings.imageMode === 'disabled') {
             return {
                 ...result, selectedContentWritten, verifiedAssetIds: [], imageErrors: [],
                 imagesOmitted: true, unlocalizedImages: false,
-                savedProof: { filepath, contentHash: await sha256(content), images: [] },
+                savedProof: { filepath, contentHash: await sha256(content), images: [], scope, commentSourceHash },
             };
         }
         const imageErrors = [...localized.imageErrors];
@@ -717,7 +854,7 @@ export class SyncService {
         return {
             ...result, selectedContentWritten, verifiedAssetIds: [...verifiedAssetIds].sort((a, b) => a - b), imageErrors,
             unlocalizedImages: imageErrors.length > 0,
-            savedProof: { filepath, contentHash: await sha256(content), images },
+            savedProof: { filepath, contentHash: await sha256(content), images, scope, commentSourceHash },
         };
     }
 
@@ -940,7 +1077,7 @@ export class SyncService {
     }
 
     private shouldMergeDaily(task: SyncTask): boolean {
-        if (this.settings.mergeMode !== 'daily') {
+        if (task.comment_source || this.settings.mergeMode !== 'daily') {
             return false;
         }
         const source = (task.content_source || '').toLowerCase();
@@ -1125,15 +1262,15 @@ export class SyncService {
         const definitions = new Set([...masked.matchAll(/^ {0,3}\[([^\]]+)\]:[^\n]*/gm)].map(match => match[1].trim().toLowerCase()));
         for (const pattern of [markdownImagePattern(), /<img\b[^>]*>/gi, /!\[\[[^\]]*\]\]/g]) {
             for (const match of masked.matchAll(pattern)) {
-                if (match.index! > 0 && masked[match.index! - 1] === '\\') continue;
-                ranges.push([match.index!, match.index! + match[0].length]);
+                if (match.index > 0 && masked[match.index - 1] === '\\') continue;
+                ranges.push([match.index, match.index + match[0].length]);
             }
         }
         for (const match of masked.matchAll(/!\[([^\]]*)\](?:\[([^\]]*)\])?/g)) {
             const label = (match[2] || match[1]).trim().toLowerCase();
-            if (!definitions.has(label) || masked[match.index! + match[0].length] === '(' || masked[match.index! - 1] === '\\') continue;
+            if (!definitions.has(label) || masked[match.index + match[0].length] === '(' || masked[match.index - 1] === '\\') continue;
             labels.add(label);
-            ranges.push([match.index!, match.index! + match[0].length]);
+            ranges.push([match.index, match.index + match[0].length]);
         }
         let result = markdown;
         const merged: Array<[number, number]> = [];
@@ -1246,7 +1383,8 @@ export class SyncService {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '');
         const frontmatter = this.generateFrontmatter(task, title);
         const marker = `<!-- biji-task-id:${task.id} -->`;
-        return [frontmatter, marker, body].filter(Boolean).join('\n\n');
+        const content = [frontmatter, marker, body].filter(Boolean).join('\n\n');
+        return task.comment_source ? withCommentProperties(content, task.comment_source, task.comment_local_link || null) : content;
     }
 
     private renderBodyTemplate(template: string, task: SyncTask): string {
@@ -1295,6 +1433,19 @@ export class SyncService {
     }
 
     private resolveFolderPath(task: SyncTask, folderTemplate: string): string {
+        const context = task.subscription_context;
+        if (context) {
+            const config = archiveConfig(this.settings.subscriptionAccounts?.[context.account_id]);
+            if (context.kind === 'daily_report') folderTemplate = config.reportFolder;
+            else if (context.kind === 'comment_supplement' && context.original_task_id && this.taskFileMap[context.original_task_id]) {
+                return this.taskFileMap[context.original_task_id].split('/').slice(0, -1).join('/');
+            } else if (config.enabled) {
+                folderTemplate = config.bloggers[String(context.subscription_id)]?.folder || config.folderTemplate;
+                if (!config.bloggers[String(context.subscription_id)]?.folder && this.archiveCollisions.has(context.subscription_id!)) {
+                    folderTemplate += '-{{subscription_id}}';
+                }
+            }
+        }
         const resolved = this.replaceTaskVariables(folderTemplate || 'Clip2MD', task);
         const normalized = this.normalizePathTemplate(resolved);
         return normalized || 'Clip2MD';
@@ -1303,6 +1454,10 @@ export class SyncService {
     private replaceTaskVariables(template: string, task: SyncTask): string {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '') || `untitled-${task.id}`;
         const replacements: Record<string, string> = {
+            '{{platform}}': task.subscription_context ? safeArchiveSegment(task.subscription_context.platform || '') : '',
+            '{{blogger_name}}': task.subscription_context ? safeArchiveSegment(bloggerName(task.subscription_context)) : '',
+            '{{blogger_id}}': task.subscription_context ? safeArchiveSegment(task.subscription_context.blogger_id || '') : '',
+            '{{subscription_id}}': String(task.subscription_context?.subscription_id || ''),
             '{{note_title}}': this.sanitizeFilenameSegment(this.getNoteTitle(task)),
             '{{title}}': title || `untitled-${task.id}`,
             '{{source_title}}': this.sanitizeFilenameSegment(task.source_title || ''),

@@ -1,8 +1,10 @@
 import type { App } from 'obsidian';
-import type { PendingSyncAck } from './sync-ack';
+import { parsePendingSyncAcks, type PendingSyncAck } from './sync-ack';
 import type { SyncRunSummary } from './settings';
+import { isSubscriptionDeviceState, positiveId, newSubscriptionState, type SubscriptionDeviceState } from './subscriptions';
 
 export const LOCAL_STATE_KEY = 'clip2md-device-state-v1';
+export const LOCAL_STATE_RECOVERY_KEY = 'clip2md-device-state-recovery-v1';
 export const API_SECRET_ID = 'clip2md-api-key';
 export const PENDING_SECRET_ID = 'clip2md-pending-api-key';
 
@@ -16,6 +18,7 @@ export interface PendingBinding {
 }
 
 export interface LocalDeviceState {
+    subscriptions?: SubscriptionDeviceState;
     version: 1;
     installationId: string;
     credentialId?: number;
@@ -41,12 +44,13 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
     const state = data as Partial<LocalDeviceState>;
     if (state.version !== 1 || typeof state.installationId !== 'string') return null;
     if ((state.cursor !== null && typeof state.cursor !== 'string')
-        || !state.taskFileMap || typeof state.taskFileMap !== 'object'
+        || !state.taskFileMap || typeof state.taskFileMap !== 'object' || Array.isArray(state.taskFileMap)
+        || Object.keys(state.taskFileMap).some(id => !positiveId(Number(id)))
         || Object.values(state.taskFileMap).some(path => typeof path !== 'string')
-        || !Array.isArray(state.pendingTaskIds)
-        || !Array.isArray(state.ignoredTaskIds)
-        || !Array.isArray(state.pendingAcks)
-        || !Array.isArray(state.unresolvedTaskIds)
+        || !Array.isArray(state.pendingTaskIds) || !state.pendingTaskIds.every(positiveId)
+        || !Array.isArray(state.ignoredTaskIds) || !state.ignoredTaskIds.every(positiveId)
+        || !Array.isArray(state.pendingAcks) || parsePendingSyncAcks(state.pendingAcks).length !== state.pendingAcks.length
+        || !Array.isArray(state.unresolvedTaskIds) || !state.unresolvedTaskIds.every(positiveId)
         || (state.credentialInvalid !== undefined && typeof state.credentialInvalid !== 'boolean')) {
         throw new Error('本机同步状态损坏，已暂停同步以避免遗漏任务或误发删除回执');
     }
@@ -64,6 +68,21 @@ export function readLocalDeviceState(app: App): LocalDeviceState | null {
         || !Array.isArray(state.imageOmissionDeleteConsent.modes)
         || state.imageOmissionDeleteConsent.modes.some(mode => !['full', 'note', 'source'].includes(mode)))) {
         throw new Error('本机忽略图片删除确认状态损坏，已暂停同步');
+    }
+    const subscriptions = state.subscriptions;
+    if (subscriptions !== undefined && !isSubscriptionDeviceState(subscriptions)) {
+        // Preserve each distinct damaged state; an older backup is not proof that
+        // the current state is recoverable. Keep the first backup for compatibility.
+        const previous: unknown = app.loadLocalStorage(LOCAL_STATE_RECOVERY_KEY);
+        const original = JSON.stringify(data);
+        const backupKey = !previous || JSON.stringify(previous) === original ? LOCAL_STATE_RECOVERY_KEY
+            : `${LOCAL_STATE_RECOVERY_KEY}-${Date.now()}-${crypto.randomUUID()}`;
+        app.saveLocalStorage(backupKey, data);
+        if (JSON.stringify(app.loadLocalStorage(backupKey)) !== original) {
+            throw new Error('本机订阅状态备份失败，已停止加载以保留原始数据');
+        }
+        console.warn('Clip2MD: 本机订阅状态无效，原始状态已备份；订阅同步等待账号重新验证');
+        return { ...state, subscriptions: { ...newSubscriptionState(), unverified: true } } as LocalDeviceState;
     }
     return state as LocalDeviceState;
 }

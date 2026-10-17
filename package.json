@@ -1,6 +1,6 @@
 {
   "name": "clipmd",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "一键剪藏全网内容为纯净 Markdown，自动同步至你的知识库，让每一次浏览都沉淀为可检索的私人知识资产.",
   "main": "main.js",
   "scripts": {
@@ -8,15 +8,24 @@
     "dev": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm test && npm run build && node scripts/verify-market-build.mjs"
+    "lint": "eslint src/ --max-warnings 0",
+    "verify": "npm run typecheck && npm test && npm run lint && npm run build && node scripts/verify-market-build.mjs && node scripts/smoke-market-bundle.mjs"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@eslint/json": "^0.14.0",
     "@types/node": "^18.0.0",
     "esbuild": "0.17.3",
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "jsdom": "^26.1.0",
     "obsidian": "latest",
     "typescript": "^5.0.2",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^2.1.9",
     "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": ">=20.19.0"
   }
 }

@@ -17,7 +17,7 @@ export class SubsetDeleteModal extends Modal {
         this.contentEl.createEl('p', { text: '此操作不可恢复。取消后仍会正常保存到 Vault，并保留云端任务。' });
         new Setting(this.contentEl)
             .addButton(button => button.setButtonText('保留云端任务').onClick(() => this.close()))
-            .addButton(button => button.setButtonText('确认按所选内容删除').setWarning().onClick(() => {
+            .addButton(button => button.setButtonText('确认按所选内容删除').setDestructive().onClick(() => {
                 this.accepted = true;
                 this.close();
             }));

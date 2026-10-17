@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import process from "process";
 
 const prod = process.argv[2] === "production";
@@ -24,6 +25,8 @@ function copyIfExists(filename) {
 esbuild.build({
   entryPoints: [path.join(sourceDir, "src/main.ts")],
   bundle: true,
+  // Fresh market mirrors can share the orchestrator's installed build dependencies.
+  nodePaths: [path.join(path.dirname(fileURLToPath(import.meta.url)), "node_modules")],
   external: ["obsidian"],
   format: "cjs",
   target: "es2018",

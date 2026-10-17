@@ -1,7 +1,6 @@
 # Clip2MD
 
-> **1.0.19** republishes the 1.0.16 feature set. Blogger subscription features introduced in 1.0.17–1.0.18 are not included.
-> **1.0.19** 基于 1.0.16 重新发布，不包含 1.0.17–1.0.18 新增的博主订阅功能。
+> **1.0.20 候选版**：独立“博主订阅”设置子页，支持按账号保存草稿、搜索博主及目录预览。当前市场正式版本仍为 1.0.19；本候选仅用于测试和分支预审。
 
 > **安装前请检查 Obsidian 版本：需要 1.13.1 或更高版本。**
 > 若安装提示 “No appropriate version found.”，请先在 **设置 → 关于** 查看 Obsidian 版本；版本低于 1.13.1 时，请升级 Obsidian 后重试。移动端请通过应用商店或官方安装渠道更新。
@@ -22,6 +21,9 @@ notes, and organize files with customizable folder and filename templates.
 - Bind each device by scanning a WeChat QR code or entering an API Key.
 - Customize note titles, folders, filenames, YAML properties, and body templates.
 - Preview the resulting note or Markdown before synchronizing.
+- Archive subscribed creators into configurable folders, maintain creator indexes,
+  link comment supplements and daily reports, and preserve annotations outside
+  managed content regions. The subscription panel requires the compatible server API.
 - Optionally delete the cloud task after the selected content and local images
   have been verified. Source-only or note-only deletion requires confirmation
   and also removes the unsynchronized content from the cloud. Disabling image
@@ -46,6 +48,12 @@ from the same release and place them in `.obsidian/plugins/clipmd/`.
 ## 中文说明
 
 将网页剪藏内容转换为 Markdown，并同步到 Obsidian。Clip2MD 负责网页内容的提取与整理，Obsidian 插件负责把已完成的剪藏任务写入你的 Vault。
+
+### 博主订阅归档
+
+在设置中加载当前账号的博主订阅，或使用“打开博主订阅”命令。可配置统一目录模板、单博主目录、同步范围、索引和日报目录；保存后点击“立即同步”。分目录默认关闭，目录变更仅影响新文件。已有订阅笔记保持原路径，并保护“我的批注”和管理区域外文字。评论补充、日报和索引提供本地关联链接。
+
+受管理正文被修改时暂停覆盖，面板可比较内容、保留本地修改或确认备份后更新。旧笔记无法确认是否包含用户编辑时必须确认升级，原正文会保留；备份在知识库 `.clip2md-subscription-backups/`。仅同步现有任务，购买、续订和云端重试使用网页管理入口。此功能需要兼容后端；不提供未读、稍后读或收藏状态。
 
 ## 功能
 
@@ -145,9 +153,9 @@ from reappearing applies only to the current vault and is off by default.
 - `https://api.clip2md.cn/api/v1`：账号绑定、API Key 认证、获取同步任务和下载任务图片。
 - `https://clip2.md`：打开 Clip2MD 网页和 API 凭据管理页面。
 
-同步时，插件使用 API Key 作为 `X-API-Key` 请求头向 Clip2MD 服务认证，并读取属于当前账号的剪藏任务内容，然后在本地 Vault 中创建或更新 Markdown 文件及图片。API Key 由 Obsidian 保存在插件设置文件 `data.json` 中；该文件仅用于本地运行，不应提交到 GitHub。
+同步时，插件使用 API Key 作为 `X-API-Key` 请求头向 Clip2MD 服务认证，并读取属于当前账号的剪藏任务内容，然后在本地 Vault 中创建或更新 Markdown 文件及图片。API Key 保存在当前设备的 Obsidian SecretStorage 中；游标、任务路径和待发回执保存在本机存储。Vault 的 `data.json` 只保存可共享偏好及按账号隔离的归档配置；升级前遗留的凭证字段需在所有设备完成迁移后清理。配置备份排除凭证，不应把旧设置文件或任何运行时凭据提交到 GitHub。
 
-插件不会读取或上传 Vault 中与同步任务无关的文件，也不包含客户端遥测。使用前请确认你信任 Clip2MD 服务及其数据处理方式。
+插件会读取带 Clip2MD 稳定身份的本地笔记以重建索引和关联链接，更新已有文件时保留用户批注；同步操作不上传这些本地笔记或批注，也不包含客户端遥测。使用前请确认你信任 Clip2MD 服务及其数据处理方式。
 
 ## 隐私与安全建议
 
@@ -169,7 +177,7 @@ from reappearing applies only to the current vault and is off by default.
 
 社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
 
-源码最低 Obsidian 版本为 `1.13.1`，依据是设置页状态提示使用的 `SettingDefinitionPage.status` API（自 1.13.1 提供）。该门槛允许 Obsidian 1.13.4 安装；鸿蒙设备上的实际运行仍需验证。历史已发布版本的最低要求保持不变，降低门槛需随新 Release 发布后才在社区市场生效。未来提高最低版本时，必须在发布前增加 `versions.json`，记录旧版本的最低版本要求。
+截至 2026-10-17，市场 `main` 仍为 1.0.19（基于 1.0.16，不含专用订阅功能）。本分支为 1.0.20 候选，尚未创建正式 Tag 或 Release。插件设置内的“博主订阅”子页集中管理同步范围、目录、索引和日报；作品面板只保留列表与笔记操作。修改后需点击“保存订阅配置”；目录变化仅影响新文件。凭证变化时隐藏旧账号数据，重新验证后才能编辑。最低 Obsidian 版本保持 1.13.1。原 Windows 故障设备、原生移动端及生产自动删除均需单独验收。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 

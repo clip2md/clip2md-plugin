@@ -1,6 +1,9 @@
+import { savedCommentProperties } from './comment-source';
 import { TFile, type Vault } from 'obsidian';
 
 export interface SavedSyncProof {
+    scope?: 'subscription-v1';
+    commentSourceHash?: string;
     filepath: string;
     contentHash: string;
     images: Array<{ path: string; hash: string }>;
@@ -12,7 +15,13 @@ export async function sha256(data: string | ArrayBuffer): Promise<string> {
     return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function savedTaskContent(content: string, taskId: number): string {
+export function savedTaskContent(content: string, taskId: number, scope?: 'subscription-v1'): string {
+    if (scope === 'subscription-v1') {
+        if ((content.match(new RegExp(`<!-- clip2md-cloud:v1:${taskId}:`, 'g')) || []).length !== 1
+            || (content.match(new RegExp(`<!-- /clip2md-cloud:${taskId} -->`, 'g')) || []).length !== 1) return '';
+        const matches = [...content.matchAll(new RegExp(`<!-- clip2md-cloud:v1:${taskId}:[a-f0-9]{64} -->\\n[\\s\\S]*?\\n<!-- /clip2md-cloud:${taskId} -->`, 'g'))];
+        return matches.length === 1 ? matches[0][0] : '';
+    }
     if (!content.includes('<!-- clip2md-task-start:')) return content;
     const start = `<!-- clip2md-task-start:${taskId} -->`;
     const end = `<!-- clip2md-task-end:${taskId} -->`;
@@ -39,7 +48,9 @@ export function resolveImagePath(notePath: string, reference: string): string | 
 export async function verifySavedSyncProof(vault: Vault, taskId: number, proof: SavedSyncProof): Promise<boolean> {
     const file = vault.getAbstractFileByPath(proof.filepath);
     if (!(file instanceof TFile)) return false;
-    const content = savedTaskContent(await vault.read(file), taskId);
+    const savedFile = await vault.read(file);
+    if (proof.commentSourceHash && await sha256(savedCommentProperties(savedFile)) !== proof.commentSourceHash) return false;
+    const content = savedTaskContent(savedFile, taskId, proof.scope);
     if (!content || await sha256(content) !== proof.contentHash) return false;
     for (const image of proof.images) {
         const imageFile = vault.getAbstractFileByPath(image.path);

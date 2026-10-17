@@ -437,3 +437,24 @@ input.clip2md-flash {
 
 /* The settings host hides headings; preview headings belong to the note. */
 .clip2md-settings .clip2md-content-preview .clip2md-note-body :is(h1, h2, h3, h4, h5, h6) { display: block; }
+/* Subscription controls use native Obsidian components on desktop and mobile. */
+.clip2md-subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 8px; }
+.clip2md-subscription-actions button { min-height: 32px; }
+.clip2md-subscription-list { padding-inline-start: 20px; }
+.clip2md-subscription-list > li { margin-block: 16px; overflow-wrap: anywhere; }
+.clip2md-subscription-diff { max-height: 35vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clip2md-subscription-error { color: var(--text-error); }
+.clip2md-subscription-settings .setting-item-description { white-space: pre-wrap; }
+@media (pointer: coarse) { .clip2md-subscription-actions button { min-height: 44px; } }
+
+.clip2md-subscription-settings details { margin-block: 1rem; padding: 0.75rem; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); }
+.clip2md-subscription-settings summary { cursor: pointer; font-weight: var(--font-semibold); }
+.clip2md-subscription-settings input[type="search"] { width: 100%; margin-block: 0.5rem; }
+.clip2md-subscription-preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+.clip2md-update-actions { display: flex; gap: 8px; margin-block-start: 16px; }
+@media (max-width: 600px) {
+    .clip2md-subscription-settings .setting-item { flex-wrap: wrap; gap: 0.5rem; }
+    .clip2md-subscription-settings .setting-item-control { width: 100%; }
+    .clip2md-subscription-settings input[type="text"] { width: 100%; min-width: 0; }
+    .clip2md-subscription-actions { flex-wrap: wrap; }
+}
