@@ -23,7 +23,7 @@ import { CLIP2MD_API_BASE_URL } from './config';
 import { sanitizeConfigForBackup } from './config-backup';
 import { TimerRegistry } from './timers';
 import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckHttpError, SyncAckQueue, type PendingSyncAck } from './sync-ack';
-import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState } from './local-state';
+import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState, type PendingBinding } from './local-state';
 import { sha256, verifySavedSyncProof } from './saved-sync-proof';
 import { SubsetDeleteModal } from './subset-delete-modal';
 import { archiveConfig, bloggerName, fetchArchiveSnapshot, isExcluded, newSubscriptionState, ArchiveRequestError, ArchiveFormatError, type ArchiveErrorKind, type ArchiveConfig, type SubscriptionContext } from './subscriptions';
@@ -180,6 +180,8 @@ export default class BijiSyncPlugin extends Plugin {
     private readonly bindingClient = new DeviceBindingClient();
     private bindingTimer: number | null = null;
     private bindingPollInFlight = false;
+    private bindingStarting = false;
+    private bindingEpoch = 0;
     private bindingMessage = '';
     private justMigratedLegacyKey = false;
 
@@ -346,6 +348,7 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     onunload() {
+        this.bindingEpoch++;
         this.settingTab?.hide();
         this.subscriptionListeners.clear();
         this.timers.clearAll();
@@ -468,36 +471,96 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     async cancelDeviceBinding(): Promise<void> {
+        if (this.bindingStarting) throw new Error('绑定请求正在保存，请稍后重试');
         if (this.localState.pendingBinding?.phase === 'prepared') {
             throw new Error('正在完成 Key 替换，请等待结果或绑定码到期');
         }
-        this.localState.pendingBinding = undefined;
-        await this.persistSyncState();
+        this.bindingEpoch = (this.bindingEpoch || 0) + 1;
+        this.bindingPollInFlight = false;
         this.timers.clearTimeout(this.bindingTimer);
         this.bindingTimer = null;
+        try {
+            await this.persistBindingState(undefined);
+        } catch (error) {
+            this.scheduleDeviceBindingPoll(5);
+            throw error;
+        }
     }
 
     async beginDeviceBinding(session: DeviceBindingSession): Promise<void> {
+        if (this.bindingStarting) throw new Error('绑定请求正在保存，请稍后重试');
         if (this.localState.pendingBinding?.phase === 'prepared') {
             throw new Error('上次绑定正在完成，请等待结果后重试');
         }
-        this.localState.pendingBinding = {
+        const pending: PendingBinding = {
             deviceCode: session.device_code,
             userCode: session.user_code,
             expiresAt: Date.now() + session.expires_in * 1000,
             interval: session.interval,
             phase: 'polling',
         };
-        this.bindingMessage = '等待手机端授权…';
-        await this.persistSyncState();
-        this.scheduleDeviceBindingPoll(session.interval);
+        this.bindingStarting = true;
+        const epoch = this.bindingEpoch = (this.bindingEpoch || 0) + 1;
+        this.bindingPollInFlight = false;
+        this.timers.clearTimeout(this.bindingTimer);
+        this.bindingTimer = null;
+        try {
+            // Publish the session only after its local write has been verified.
+            await this.persistBindingState(pending);
+            if (epoch !== this.bindingEpoch) return;
+            this.bindingMessage = '等待手机端授权…';
+        } catch (error) {
+            this.bindingMessage = error instanceof Error ? error.message : '本机绑定状态保存失败，请重试';
+            throw error;
+        } finally {
+            this.bindingStarting = false;
+            if (epoch === this.bindingEpoch) this.scheduleDeviceBindingPoll(session.interval);
+        }
+    }
+
+    resumeDeviceBinding(): void {
+        this.scheduleDeviceBindingPoll(0);
+    }
+
+    private persistBindingState(pendingBinding: PendingBinding | undefined): Promise<void> {
+        const next = this.persistenceQueue.catch(() => undefined)
+            .then(() => this.writePluginState(false, { pendingBinding }));
+        this.persistenceQueue = next;
+        return next;
+    }
+
+    private isCurrentBinding(pending: PendingBinding, epoch: number): boolean {
+        return epoch === (this.bindingEpoch || 0) && !this.bindingStarting
+            && this.localState.pendingBinding?.deviceCode === pending.deviceCode;
+    }
+
+    private async withBindingTimeout<T>(request: Promise<T>, expiresAt?: number): Promise<T> {
+        const delay = Math.min(15_000, expiresAt === undefined ? 15_000 : Math.max(1, expiresAt - Date.now()));
+        let timer: number | null = null;
+        try {
+            return await Promise.race([request, new Promise<never>((_resolve, reject) => {
+                timer = this.timers.setTimeout(() => reject(new DeviceBindingError(
+                    '绑定请求超时，正在重试', 408, 'binding_request_timeout',
+                )), delay, 'binding');
+            })]);
+        } finally {
+            this.timers.clearTimeout(timer);
+        }
     }
 
     private scheduleDeviceBindingPoll(seconds: number): void {
         this.timers.clearTimeout(this.bindingTimer);
         this.bindingTimer = null;
-        if (!this.appVisible || !this.localState?.pendingBinding) return;
-        this.bindingTimer = this.timers.setTimeout(() => void this.pollDeviceBinding(), Math.max(0, seconds) * 1000, 'binding');
+        if (!this.appVisible || this.bindingStarting || !this.localState?.pendingBinding) return;
+        const pending = this.localState.pendingBinding;
+        const delay = pending.phase === 'polling' && pending.expiresAt > Date.now()
+            ? Math.min(Math.max(0, seconds) * 1000, Math.max(0, pending.expiresAt - Date.now()))
+            : Math.max(0, seconds) * 1000;
+        const timer = this.timers.setTimeout(() => {
+            if (this.bindingTimer === timer) this.bindingTimer = null;
+            void this.pollDeviceBinding();
+        }, delay, 'binding');
+        this.bindingTimer = timer;
     }
 
     private async probeCandidateKey(apiKey: string): Promise<boolean | null> {
@@ -525,8 +588,7 @@ export default class BijiSyncPlugin extends Plugin {
         this.settings.credentialName = credentialName || this.localState.pendingBinding?.credentialName;
         this.localState.legacyKeyMigrated = false;
         this.localState.credentialInvalid = false;
-        this.localState.pendingBinding = undefined;
-        await this.persistSyncState();
+        await this.persistBindingState(undefined);
         setLocalSecret(this.app, PENDING_SECRET_ID, '');
         this.updateConnectionState('connected', '已验证连接');
         this.startSyncInterval();
@@ -539,37 +601,47 @@ export default class BijiSyncPlugin extends Plugin {
 
     private async pollDeviceBinding(): Promise<void> {
         const pending = this.localState?.pendingBinding;
-        if (!pending || !this.appVisible || this.bindingPollInFlight) return;
+        if (!pending || !this.appVisible || this.bindingStarting || this.bindingPollInFlight) return;
+        const epoch = this.bindingEpoch || 0;
         this.bindingPollInFlight = true;
         try {
             const candidate = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
             if (pending.phase === 'prepared' && candidate) {
-                const active = await this.probeCandidateKey(candidate);
+                // A completed server transaction may need recovery even after expiry.
+                const active = await this.withBindingTimeout(this.probeCandidateKey(candidate));
+                if (!this.isCurrentBinding(pending, epoch)) return;
+                if (active === null) throw new Error('暂时无法验证本机绑定草稿，稍后重试');
                 if (active === true) {
                     await this.promotePendingCredential(undefined, pending.credentialName);
                     return;
                 }
                 if (Date.now() >= pending.expiresAt) {
                     this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
-                    this.localState.pendingBinding = undefined;
-                    await this.persistSyncState();
+                    await this.persistBindingState(undefined);
                     setLocalSecret(this.app, PENDING_SECRET_ID, '');
                     this.refreshSettingTab();
                     return;
                 }
-                const completed = await this.bindingClient.complete(pending.deviceCode, candidate);
+                const completed = await this.withBindingTimeout(
+                    this.bindingClient.complete(pending.deviceCode, candidate), pending.expiresAt,
+                );
+                if (!this.isCurrentBinding(pending, epoch)) return;
                 await this.promotePendingCredential(completed.credential_id, completed.credential_name);
                 return;
             }
             if (Date.now() >= pending.expiresAt) {
                 this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
-                this.localState.pendingBinding = undefined;
-                await this.persistSyncState();
-                setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                try {
+                    await this.persistBindingState(undefined);
+                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                } catch (storageError) {
+                    this.bindingMessage = storageError instanceof Error ? storageError.message : '本机绑定状态保存失败，请重试';
+                }
                 this.refreshSettingTab();
                 return;
             }
-            const result = await this.bindingClient.credential(pending.deviceCode);
+            const result = await this.withBindingTimeout(this.bindingClient.credential(pending.deviceCode), pending.expiresAt);
+            if (!this.isCurrentBinding(pending, epoch)) return;
             if (result.status === 'prepared') {
                 setLocalSecret(this.app, PENDING_SECRET_ID, result.api_key);
                 const before = this.localState.pendingBinding;
@@ -580,14 +652,19 @@ export default class BijiSyncPlugin extends Plugin {
                     this.localState.pendingBinding = before;
                     throw error;
                 }
+                if (!this.isCurrentBinding(pending, epoch)) return;
                 this.bindingMessage = '手机已授权，正在完成本机绑定…';
                 this.scheduleDeviceBindingPoll(0);
             } else if (result.status === 'completed') {
                 const draft = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
-                if (draft && await this.probeCandidateKey(draft)) {
+                const active = draft ? await this.withBindingTimeout(this.probeCandidateKey(draft)) : false;
+                if (!this.isCurrentBinding(pending, epoch)) return;
+                if (active === null) throw new Error('暂时无法验证本机绑定草稿，稍后重试');
+                if (active) {
                     await this.promotePendingCredential(result.credential_id);
                 } else {
                     this.bindingMessage = '绑定结果无法恢复，请重新扫码。';
+                    await this.persistBindingState(undefined);
                 }
             } else if (result.status === 'pending_approval' || result.status === 'approving') {
                 this.bindingMessage = result.status === 'approving' ? '手机已授权，正在准备 Key…' : '等待手机端授权…';
@@ -597,6 +674,7 @@ export default class BijiSyncPlugin extends Plugin {
             }
             this.refreshSettingTab();
         } catch (error) {
+            if (!this.isCurrentBinding(pending, epoch)) return;
             if (error instanceof DeviceBindingError && [
                 'access_denied', 'expired_token', 'replacement_credential_unavailable',
                 'credential_limit_reached_v2', 'candidate_mismatch', 'credential_revoked',
@@ -604,16 +682,24 @@ export default class BijiSyncPlugin extends Plugin {
                 this.bindingMessage = ['replacement_credential_unavailable', 'credential_limit_reached_v2'].includes(error.code)
                     ? '所选旧 Key 已被其他操作替换或 Key 数量已满；请重新扫码并选择当前有效 Key。'
                     : '绑定已拒绝、过期或草稿不匹配，旧 Key 保持原样；请重新扫码。';
-                this.localState.pendingBinding = undefined;
-                await this.persistSyncState();
-                setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                try {
+                    await this.persistBindingState(undefined);
+                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
+                } catch (storageError) {
+                    this.bindingMessage = storageError instanceof Error ? storageError.message : '本机绑定状态保存失败，请重试';
+                }
             } else {
                 this.bindingMessage = '绑定暂未完成，网络恢复后将重试。';
-                this.scheduleDeviceBindingPoll(10);
+                this.scheduleDeviceBindingPoll(pending.phase === 'polling' && pending.expiresAt <= Date.now() ? 0 : 10);
             }
             this.refreshSettingTab();
         } finally {
-            this.bindingPollInFlight = false;
+            if (epoch === (this.bindingEpoch || 0)) {
+                this.bindingPollInFlight = false;
+                if (this.localState?.pendingBinding && this.bindingTimer === null) {
+                    this.scheduleDeviceBindingPoll(10);
+                }
+            }
         }
     }
 
@@ -628,10 +714,11 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     /** Queue tasks call the writer directly; it must never enqueue itself. */
-    private async writePluginState(includeShared: boolean): Promise<void> {
+    private async writePluginState(includeShared: boolean, stateUpdates: Partial<LocalDeviceState> = {}): Promise<void> {
         setLocalSecret(this.app, API_SECRET_ID, this.settings.apiKey);
         const nextState: LocalDeviceState = {
             ...this.localState,
+            ...stateUpdates,
             version: 1,
             installationId: this.settings.installationId,
             credentialId: this.settings.credentialId,

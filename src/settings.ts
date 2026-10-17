@@ -394,11 +394,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 
     private renderQrOnboarding(containerEl: HTMLElement): void {
         const resumed = this.plugin.getDeviceBindingSession();
-        if (resumed && !this.bindingSession) this.bindingSession = resumed;
+        if (resumed && !this.bindingSession && this.bindingState !== 'starting') this.bindingSession = resumed;
         if (!resumed && this.bindingSession) {
             this.bindingState = 'expired';
         }
-        if (resumed && !this.bindingQrDataUrl && !this.qrLoadInFlight
+        if (resumed && this.bindingState !== 'starting' && this.bindingState !== 'error'
+            && !this.bindingQrDataUrl && !this.qrLoadInFlight
             && this.qrUnavailableForCode !== resumed.device_code) {
             this.qrLoadInFlight = true;
             void this.bindingClient.qrcode(resumed.device_code).then(data => {
@@ -445,17 +446,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             }
         }
         card.createEl('p', {
-            text: this.bindingSession ? this.plugin.getDeviceBindingMessage() : (this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。'),
+            text: this.bindingState === 'error' ? this.bindingMessage
+                : this.bindingSession ? this.plugin.getDeviceBindingMessage()
+                : (this.bindingMessage || '小程序码 10 分钟内有效，请在手机端确认本次绑定。'),
             cls: this.bindingState === 'error' ? 'clip2md-error-text' : 'setting-item-description',
         });
         if (this.bindingState === 'error' || this.bindingState === 'expired') {
             const retry = card.createEl('button', { text: '重新生成', cls: 'mod-cta' });
-            retry.addEventListener('click', () => {
-                this.resetBindingSession();
-                this.refresh();
-            });
+            retry.addEventListener('click', () => void this.retryBinding());
         }
-        if (!this.bindingSession && this.bindingState !== 'starting') {
+        if (!this.bindingSession && this.bindingState === 'idle') {
             void this.startBinding();
         }
     }
@@ -515,8 +515,8 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         this.bindingMessage = '正在创建安全绑定请求…';
         try {
             const session = await this.bindingClient.start(this.plugin.getBindingClientName());
-            this.bindingSession = session;
             await this.plugin.beginDeviceBinding(session);
+            this.bindingSession = session;
             this.launchUrl = '';
             this.launchState = 'idle';
             this.launchMessage = '';
@@ -536,8 +536,32 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             }
             this.refresh();
         } catch (error) {
+            this.bindingSession = null;
+            this.bindingQrDataUrl = '';
             this.bindingState = 'error';
             this.bindingMessage = error instanceof Error ? error.message : '无法创建绑定请求。';
+            this.refresh();
+        }
+    }
+
+    private async retryBinding(): Promise<void> {
+        if (this.bindingState === 'starting') return;
+        const resumed = this.plugin.getDeviceBindingSession();
+        this.resetBindingSession();
+        if (resumed && resumed.expires_in > 0) {
+            this.bindingSession = resumed;
+            this.bindingState = 'waiting';
+            this.plugin.resumeDeviceBinding();
+            this.refresh();
+            return;
+        }
+        try {
+            if (resumed) await this.plugin.cancelDeviceBinding();
+            await this.startBinding();
+        } catch (error) {
+            this.bindingState = 'error';
+            this.bindingMessage = error instanceof Error ? error.message : '绑定重试失败，请稍后再试';
+            this.plugin.resumeDeviceBinding();
             this.refresh();
         }
     }
