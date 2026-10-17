@@ -1,6 +1,6 @@
 # Clip2MD
 
-> **1.0.20 候选版**：独立“博主订阅”设置子页，支持按账号保存草稿、搜索博主及目录预览。当前市场正式版本仍为 1.0.19；本候选仅用于测试和分支预审。
+> **1.0.20**：新增独立“博主订阅”设置子页，支持按账号保存草稿、搜索博主及目录预览；作品面板保留列表与笔记操作。
 
 > **安装前请检查 Obsidian 版本：需要 1.13.1 或更高版本。**
 > 若安装提示 “No appropriate version found.”，请先在 **设置 → 关于** 查看 Obsidian 版本；版本低于 1.13.1 时，请升级 Obsidian 后重试。移动端请通过应用商店或官方安装渠道更新。
@@ -177,7 +177,7 @@ from reappearing applies only to the current vault and is off by default.
 
 社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
 
-截至 2026-10-17，市场 `main` 仍为 1.0.19（基于 1.0.16，不含专用订阅功能）。本分支为 1.0.20 候选，尚未创建正式 Tag 或 Release。插件设置内的“博主订阅”子页集中管理同步范围、目录、索引和日报；作品面板只保留列表与笔记操作。修改后需点击“保存订阅配置”；目录变化仅影响新文件。凭证变化时隐藏旧账号数据，重新验证后才能编辑。最低 Obsidian 版本保持 1.13.1。原 Windows 故障设备、原生移动端及生产自动删除均需单独验收。
+1.0.20 恢复并重做博主订阅功能。插件设置内的“博主订阅”子页集中管理同步范围、目录、索引和日报；作品面板保留列表与笔记操作。修改后需点击“保存订阅配置”；目录变化仅影响新文件。凭证变化时隐藏旧账号数据，重新验证后才能编辑。最低 Obsidian 版本保持 1.13.1。原 Windows 故障设备、原生移动端及生产自动删除均需单独验收。
 
 提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
 
