@@ -1,0 +1,50 @@
+/** Website build compatibility subset used to preserve legacy local properties in existing notes. */
+export const LOCAL_PLATFORM_LABELS = {
+  csdn: "CSDN",
+  zhihu: "知乎",
+  douban: "豆瓣",
+  weibo: "新浪微博",
+  youtube: "YouTube",
+  twitter: "推特 / X",
+  kuaishou: "快手",
+  toutiao: "今日头条",
+  bilibili: "B站",
+  douyin: "抖音",
+  xiaohongshu: "小红书",
+  wechat: "微信公众号",
+  "wechat-channel": "微信视频号",
+  web: "通用网页",
+  xiaoyuzhou: "小宇宙",
+  lizhi: "荔枝FM",
+  applepodcasts: "苹果播客",
+} as const;
+export const LOCAL_FIELDS = [
+  "source_title",
+  "author",
+  "source_date",
+  "duration_seconds",
+  "views",
+  "likes",
+  "collects",
+  "comments",
+  "shares",
+  "coins",
+  "captured_at",
+  "assets",
+] as const;
+export type LocalField = (typeof LOCAL_FIELDS)[number];
+export type LocalProperties = Partial<Record<LocalField, string | number | string[]>>;
+export const LOCAL_PROPERTY_NAMES: Record<LocalField, string> = {
+  source_title: "来源标题",
+  author: "作者",
+  source_date: "发布时间",
+  duration_seconds: "时长（秒）",
+  views: "播放或阅读数",
+  likes: "点赞数",
+  collects: "收藏数",
+  comments: "评论数",
+  shares: "分享数",
+  coins: "投币数",
+  captured_at: "属性采集时间",
+  assets: "本地素材",
+};

@@ -6,9 +6,17 @@ import { isInvalidApiKeyError, SyncRequestError, SyncService, validateMarkdownBo
 import { DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FILENAME_TEMPLATE, type BijiSyncSettings } from './settings';
 import { buildSyncAck } from './sync-ack';
 import { verifySavedSyncProof } from './saved-sync-proof';
+import { applySourceProperties } from './property-template';
+import type { CommentSource } from './comment-source';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
+const buildChannel = vi.hoisted(() => ({ website: false }));
 
+vi.mock('./build-channel', () => ({
+    get BUILD_CHANNEL() {
+        return buildChannel.website ? 'website' : 'market';
+    },
+}));
 vi.mock('obsidian', () => {
     class Stub {}
     return {
@@ -116,6 +124,10 @@ class FakeVault {
         return bytes;
     }
 
+    async process(file: TFile, updater: (content: string) => string) {
+        this.files.set(file.path, updater(await this.read(file)));
+    }
+
     async modify(file: TFile, content: string) {
         this.files.set(file.path, content);
     }
@@ -138,7 +150,14 @@ class FakeVault {
 }
 
 describe('SyncService', () => {
+    it('resolves local comments with the same directory variables as cloud comments',()=>{
+        const service=new SyncService(makeSettings({commentFolder:'评论/{{created_date}}/{{source_title}}'}));
+        expect(service.folderForLocalComments(makeTask({source_title:'来源标题'}),'移动目录/正文.md')).toBe('评论/2026-08-08/来源标题');
+        service.updateSettings(makeSettings({commentFolder:''}));
+        expect(service.folderForLocalComments(makeTask(),'移动目录/正文.md')).toBe('移动目录');
+    });
     beforeEach(() => {
+    buildChannel.website = false;
         vi.restoreAllMocks();
         requestUrlMock.mockReset();
         vi.stubGlobal('crypto', webcrypto);
@@ -146,6 +165,21 @@ describe('SyncService', () => {
 
     const scopedTask = (mode: 'full' | 'note' | 'source', overrides: Partial<SyncTask> = {}): SyncTask => makeTask({
         ack_token: 'v2-token', ack_scope: { version: 2, content_mode: mode, required_assets: [] }, ...overrides,
+    });
+    it('protects cloud text in receipts while allowing editable template source properties',async()=>{
+        const settings=makeSettings({frontmatterTemplate:'---\ntitle: "{{title}}"\n作者: {{local_author}}\n点赞数: {{local_likes}}\n---'});
+        const service=new SyncService(settings),vault=new FakeVault(),task=scopedTask('full',{local_values:{local_author:'原作者',local_likes:0}});
+        const result=await service.renderToVault(vault as never,task,'Clippings','{{content}}');
+        expect(result.savedProof?.localPropertyKeys).toEqual(['作者','点赞数']);
+        const before=String(vault.content(result.filepath!));
+        const edited=applySourceProperties(before,settings.frontmatterTemplate,{author:'新作者',likes:2},{author:'原作者',likes:0}).content;
+        await vault.modify(vault.getFileByPath(result.filepath!)!,edited);
+        expect(await verifySavedSyncProof(vault as never,task.id,result.savedProof!)).toBe(true);
+        const reformatted=edited.replace('title: "Test Title"','title: Test Title');
+        await vault.modify(vault.getFileByPath(result.filepath!)!,reformatted);
+        expect(await verifySavedSyncProof(vault as never,task.id,result.savedProof!)).toBe(true);
+        await vault.modify(vault.getFileByPath(result.filepath!)!,edited.replace('hello','被改写的云端正文'));
+        expect(await verifySavedSyncProof(vault as never,task.id,result.savedProof!)).toBe(false);
     });
 
     it.each(['full', 'note', 'source'] as const)('verifies and acknowledges actual selected text in %s mode', async mode => {
@@ -377,6 +411,16 @@ describe('SyncService', () => {
         expect(buildSyncAck(task, result, { ...settings, template })).toBeNull();
     });
 
+    it('writes an HTML task marker when the properties template omits task_id', async () => {
+        const settings = makeSettings({ imageMode: 'disabled', frontmatterTemplate: '---\ntitle: "{{title}}"\n---' });
+        const service = new SyncService(settings);
+        const vault = new FakeVault();
+        const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
+        const markdown = String(vault.content(result.filepath!));
+        expect(markdown).not.toContain('task_id:');
+        expect(markdown).toContain('<!-- biji-task-id:101 -->');
+    });
+
     it('keeps frontmatter when a full-mode task has only one content source', async () => {
         const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
         const vault = new FakeVault();
@@ -384,18 +428,6 @@ describe('SyncService', () => {
             makeTask({ note_markdown_content: null }), 'Clippings', '{{content}}');
         expect(String(vault.content(result.filepath!))).toMatch(/^---\ntitle: /);
         expect(String(vault.content(result.filepath!))).toContain('# Source');
-    });
-
-    it('updates an old single note that has a task ID only in frontmatter', async () => {
-        const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
-        const vault = new FakeVault();
-        const filepath = 'Clippings/2026-08-08-Test Title.md';
-        await vault.create(filepath, '---\ntask_id: 101\n---\n\n旧正文');
-        service.loadTaskFileMap({ 101: filepath });
-        const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
-        expect(result.filepath).toBe(filepath);
-        expect(String(vault.content(filepath))).toContain('<!-- biji-task-id:101 -->');
-        expect(String(vault.content(filepath))).not.toContain('旧正文');
     });
 
     it('uses the same composed output for preview and Vault writes', async () => {
@@ -471,9 +503,14 @@ describe('SyncService', () => {
         await expect(service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).rejects.toThrow('disk full');
         expect(service.getIgnoredTaskIds()).toEqual([101]);
         const restored = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
-        expect(restored.filepath).toBe('Clippings/2026-08-08-Test Title 2.md');
+        expect(restored.filepath).toBe('Clippings/2026-08-08-Test Title (任务 101).md');
         expect(vault.content(first.filepath!)).toBe('personal content');
         expect(service.getIgnoredTaskIds()).toEqual([]);
+        const updated = { ...task, note_markdown_content: 'updated after restoration' };
+        const refreshed = await service.renderToVault(vault as never, updated, 'Clippings', '{{content}}');
+        expect(refreshed.filepath).toBe(restored.filepath);
+        expect(vault.content(restored.filepath!)).toContain('updated after restoration');
+        expect(vault.content(first.filepath!)).toBe('personal content');
     });
 
     it('does not permanently ignore a temporary Vault read failure', async () => {
@@ -524,6 +561,18 @@ describe('SyncService', () => {
         expect((await service.renderToVault(vault as never, task, 'Clippings', '{{content}}')).filepath).toBe(first.filepath);
     });
 
+    it('keeps a same-title task separate instead of overwriting another task marker', async () => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        const question = await service.renderToVault(vault as never, makeTask({ id: 15987 }), 'Clippings', '{{content}}');
+        const answer = await service.renderToVault(vault as never, makeTask({ id: 15988 }), 'Clippings', '{{content}}');
+        expect(answer.filepath).toBe('Clippings/2026-08-08-Test Title (任务 15988).md');
+        expect(vault.content(question.filepath!)).toContain('task_id: 15987');
+        expect(vault.content(answer.filepath!)).toContain('task_id: 15988');
+        expect((await service.renderToVault(vault as never, makeTask({ id: 15988 }), 'Clippings', '{{content}}')).filepath).toBe(answer.filepath);
+        expect(service.getTaskFileMap()[15988]).toBe(answer.filepath);
+    });
+
     it('restores a daily task beside an unrelated file without overwriting it', async () => {
         const settings = makeSettings({ mergeMode: 'daily' });
         const service = new SyncService(settings);
@@ -531,7 +580,7 @@ describe('SyncService', () => {
         service.markIgnored(101);
         await vault.create('Clippings/2026-08-08-微信公众号.md', 'personal daily journal');
         const result = await service.renderToVault(vault as never, makeTask(), 'Clippings', '{{content}}');
-        expect(result.filepath).toBe('Clippings/2026-08-08-微信公众号 2.md');
+        expect(result.filepath).toBe('Clippings/2026-08-08-微信公众号 (任务 101).md');
         expect(vault.content('Clippings/2026-08-08-微信公众号.md')).toBe('personal daily journal');
     });
 
@@ -646,9 +695,11 @@ describe('SyncService', () => {
         const emptyTask = makeTask({ source_date: null, tags: [], url: '' });
         const empty = parse(service['generateFrontmatter'](emptyTask, emptyTask.title!).split('---')[1]);
         expect(empty).toMatchObject({ title: emptyTask.title, date: '', tags: [], url: '' });
+        expect(empty).not.toHaveProperty('source');
         const task = makeTask({ source_date: '2026-10-08', tags: [{ id: 1, name: '标签 "A"\\B' }], url: 'https://example.com/?q="A"' });
         const filled = parse(service['generateFrontmatter'](task, task.title!).split('---')[1]);
         expect(filled).toMatchObject({ title: task.title, date: '2026-10-08', tags: ['标签 "A"\\B'], url: task.url });
+        expect(filled).not.toHaveProperty('source');
     });
 
     it('uses the website title and escaped URL in the new default template', async () => {
@@ -668,6 +719,117 @@ describe('SyncService', () => {
         const noSource = makeTask({ id: 102, title: 'AI 标题', source_title: null, display_title: 'AI 标题' });
         const fallback = await service.renderToVault(new FakeVault() as never, noSource, 'Clippings', '{{content}}');
         expect(fallback.filepath).toContain('AI 标题.md');
+    });
+
+    it('embeds cover, audio/video and gallery as native Obsidian media', () => {
+        const service = new SyncService(makeSettings());
+        const content = service.previewTask(makeTask());
+        expect(content).not.toContain('undefined');
+        const render = service['renderBodyTemplate'].bind(service);
+        const task = makeTask({ local_values: {
+            local_cover: '素材/封面.png', local_media: ['素材/视频.mp4', '素材/音频.m4a'],
+            local_gallery: ['素材/封面.png', '素材/原图.webp', '素材/封面.png'],
+        } });
+        const body = decodeURI(render('{{local_cover}}\n{{local_media}}\n{{local_gallery}}', task));
+        expect(body).toContain('![](</素材/封面.png>)');
+        expect(body).toContain('![[素材/视频.mp4]]\n\n![[素材/音频.m4a]]');
+        expect(body).toContain('![](</素材/封面.png>)\n\n![](</素材/原图.webp>)');
+        expect(body).not.toContain('[本地素材]');
+        expect(render('{{local_cover}}\n{{local_media}}\n{{local_gallery}}', makeTask())).not.toContain('{{');
+    });
+
+    it('keeps local runtime fields and markers in website builds', async () => {
+        buildChannel.website = true;
+        const settings = makeSettings({
+            imageMode: 'disabled',
+            template: '{{content}}\n{{local_author}}\n{{local_media}}\n{{local_transcript}}',
+            frontmatterTemplate: '---\ntitle: "{{title}}"\nauthor: {{local_author}}\nlikes: {{local_likes}}\n---',
+        });
+        const vault = new FakeVault();
+        const task = makeTask({
+            ai_title: 'Test Title',
+            desktop_input: {
+                id: 'd'.repeat(64),
+                sha256: 'a'.repeat(64),
+                source_version: 1,
+                update_policy: 'ai-only',
+            },
+            local_values: { local_author: '旧作者', local_likes: 9, local_media: ['旧素材.mp4'] },
+        });
+        const service = new SyncService(settings);
+        const rendered = service.previewTask(task);
+        expect(rendered).toContain('旧作者');
+        expect(rendered).toContain('旧素材');
+        expect(rendered).not.toMatch(/\{\{local_|\{\{desktop_/);
+
+        const result = await service.renderToVault(
+            vault as never,
+            task,
+            'Clippings',
+            settings.template,
+        );
+        const content = String(vault.content(result.filepath!));
+        expect(content).toContain('title: "Test Title"');
+        expect(content).toContain('author: 旧作者');
+        expect(content).toContain('likes: 9');
+        expect(content).toContain('旧作者');
+        expect(content).toContain('旧素材');
+        expect(content).toContain('clip2md-desktop:v1');
+    });
+
+    it('keeps cloud and local comment properties in website builds', async () => {
+        buildChannel.website = true;
+        const commentSource: CommentSource = {
+            platform: 'youtube',
+            title: '示例作品',
+            author: '示例作者',
+            url: 'https://example.com/work',
+            work_id: 'work-1',
+            collected_at: '2026-10-27T08:00:00Z',
+            main_task_id: 12,
+            main_task_title: '主笔记',
+            work_record_id: 34,
+            header_markdown: '',
+        };
+        const vault = new FakeVault();
+        const service = new SyncService(makeSettings({ mergeMode: 'none' }));
+        await vault.create(
+            'Clippings/主笔记.md',
+            '---\ntitle: 主笔记\n---\n\n<!-- biji-task-id:12 -->\n',
+        );
+        service.loadTaskFileMap({ 12: 'Clippings/主笔记.md' });
+        const comment = makeTask({
+            id: 13,
+            title: '评论',
+            content_source: 'comment_supplement',
+            note_markdown_content: null,
+            source_markdown_content: '## 评论原文\n\n> 示例评论',
+            comment_source: commentSource,
+            comment_local_link: '[[主笔记]]',
+        });
+        const result = await service.renderToVault(
+            vault as never,
+            comment,
+            'Clippings',
+            '{{content}}',
+        );
+        const content = String(vault.content(result.filepath!));
+        const yaml = parse(/^---\n([\s\S]*?)\n---/.exec(content)![1]) as Record<string, unknown>;
+        expect(yaml['原帖标题']).toBe(commentSource.title);
+        expect(yaml['原帖作者']).toBe(commentSource.author);
+        expect(yaml['主笔记']).toBe('[[Clippings/主笔记]]');
+        expect(content).toContain('> 示例评论');
+    });
+
+    it('keeps downloaded media embeds when a later sync has no desktop values', async () => {
+        const service = new SyncService(makeSettings({ imageMode: 'disabled', template: '{{content}}\n\n{{local_media}}' }));
+        const vault = new FakeVault();
+        const original = makeTask({ local_values: { local_media: ['素材/音频.wav'] } });
+        const first = await service.renderToVault(vault as never, original, 'Clippings', '{{content}}\n\n{{local_media}}');
+        expect(decodeURI(String(vault.content(first.filepath!)))).toContain('\n\n![[素材/音频.wav]]\n\n');
+        const next = await service.renderToVault(vault as never, { ...original, local_values: undefined, note_markdown_content: '新智能笔记' }, 'Clippings', '{{content}}\n\n{{local_media}}');
+        expect(String(vault.content(next.filepath!))).toContain('新智能笔记');
+        expect(decodeURI(String(vault.content(next.filepath!)))).toContain('![[素材/音频.wav]]');
     });
 
     it('keeps template variable meanings separate from the account display choice', () => {
@@ -794,7 +956,7 @@ describe('SyncService', () => {
         const service = new SyncService(makeSettings({ imageMode: 'disabled' }));
         const vault = new FakeVault();
         const task = makeTask({ source_title: null });
-        const expectedContent = '---\ntitle: "Test Title"\ndate: "2026-08-07T10:00:00Z"\nsource: "微信公众号"\ntags: []\nurl: "https://example.com/post"\ntask_id: 101\n---\n\n<!-- biji-task-id:101 -->\n\n## Note\n\nhello\n\n# 原文\n\n# Source\n\nworld';
+        const expectedContent = '---\ntitle: "Test Title"\ndate: "2026-08-07T10:00:00Z"\ntags: []\nurl: "https://example.com/post"\ntask_id: 101\n---\n\n<!-- biji-task-id:101 -->\n\n## Note\n\nhello\n\n# 原文\n\n# Source\n\nworld';
 
         const first = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
         expect(first.filepath).toBe('Clippings/2026-08-08-Test Title.md');
@@ -851,8 +1013,23 @@ describe('SyncService', () => {
         });
         expect(requestUrlMock).toHaveBeenCalledWith(expect.objectContaining({
             url: 'https://api.clip2md.cn/api/v1/sync/tasks?limit=100&sync_content_mode=full&sync_image_mode=local&cursor=cursor-1',
-            headers: { 'X-API-Key': 'clip2md_test' },
+            headers: { 'X-API-Key': 'clip2md_test', Accept: 'application/json, application/vnd.clip2md.desktop-local-ai-v1+json' },
             throw: false,
+        }));
+    });
+
+    it('uses the desktop-aware JSON API in website builds', async () => {
+        buildChannel.website = true;
+        const service = new SyncService(makeSettings());
+        requestUrlMock.mockResolvedValue({
+            status: 200,
+            headers: {},
+            arrayBuffer: new ArrayBuffer(0),
+            json: { items: [], total: 0, next_cursor: null, has_more: false },
+        });
+        await service.fetchNextPage(null);
+        expect(requestUrlMock).toHaveBeenCalledWith(expect.objectContaining({
+            headers: { 'X-API-Key': 'clip2md_test', Accept: 'application/json, application/vnd.clip2md.desktop-local-ai-v1+json' },
         }));
     });
 
@@ -1030,6 +1207,90 @@ describe('SyncService', () => {
             throw: false,
         });
         expect(vault.content('Clippings/_assets/task-101')).toBe('');
+    });
+
+    it.each(['weibo', 'csdn', 'zhihu', 'douban', 'douyin-article', 'future-platform'])('localizes signed %s CDN images in both bodies without sending API credentials', async platform => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        const url = `https://media.clip2md.cn/${platform}/14947/images/01.jpg?sign=valid-signature`;
+        requestUrlMock.mockResolvedValue({ status: 200, headers: { 'content-type': 'application/octet-stream' }, arrayBuffer: pngBytes() });
+        const task = scopedTask('full', { note_markdown_content: `![笔记图](${url})`, source_markdown_content: `![原图](${url} "图片标题")` });
+        const result = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(result).toMatchObject({ pendingAssets: false, localizedAssetCount: 1, unlocalizedImages: false, selectedContentWritten: true });
+        expect(requestUrlMock).toHaveBeenCalledTimes(1);
+        expect(requestUrlMock).toHaveBeenCalledWith({ url, method: 'GET', headers: {}, throw: false });
+        expect(buildSyncAck(task, result, makeSettings(), true)).not.toBeNull();
+        expect(await verifySavedSyncProof(vault as never, task.id, result.savedProof!)).toBe(true);
+        const content = String(vault.content(result.filepath!));
+        expect(content).not.toContain('media.clip2md.cn');
+        expect(content).toContain('![笔记图](./_assets/task-101/');
+        expect(content).toContain(' "图片标题")');
+        expect(vault.paths().filter(path => path.endsWith('.png'))).toHaveLength(1);
+    });
+
+    it('reuses the same local CDN file after its signature rotates', async () => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        requestUrlMock.mockResolvedValue({ status: 200, headers: {}, arrayBuffer: pngBytes() });
+        for (const signature of ['first', 'renewed']) {
+            const result = await service.renderToVault(vault as never, makeTask({
+                note_markdown_content: `![图](https://media.clip2md.cn/weibo/14947/images/01.jpg?sign=${signature})`, source_markdown_content: null,
+            }), 'Clippings', '{{content}}');
+            expect(result.pendingAssets).toBe(false);
+        }
+        expect(vault.paths().filter(path => path.endsWith('.png'))).toHaveLength(1);
+    });
+
+    it('withholds cloud cleanup when a platform CDN attachment remains as a text link', async () => {
+        const task = scopedTask('full', { note_markdown_content: '[下载图片](https://media.clip2md.cn/weibo/14947/images/01.jpg?sign=valid)', source_markdown_content: null });
+        const result = await new SyncService(makeSettings()).renderToVault(new FakeVault() as never, task, 'Clippings', '{{content}}');
+        expect(result.unlocalizedImages).toBe(true);
+        expect(result.imageErrors).toContain('正文仍包含未保存到本地的托管素材引用');
+        expect(buildSyncAck(task, result, makeSettings(), true)).toBeNull();
+    });
+
+    it('retains a failed CDN download for retry and repairs the same note on retry', async () => {
+        const service = new SyncService(makeSettings());
+        const vault = new FakeVault();
+        const task = scopedTask('full', { note_markdown_content: '![图](https://media.clip2md.cn/weibo/14947/images/01.jpg?sign=expired)', source_markdown_content: null });
+        requestUrlMock.mockResolvedValueOnce({ status: 403, headers: {}, arrayBuffer: new ArrayBuffer(0) });
+        const failed = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(failed).toMatchObject({ pendingAssets: true, localizedAssetCount: 0 });
+        expect(buildSyncAck(task, failed, makeSettings(), true)).toBeNull();
+        requestUrlMock.mockResolvedValueOnce({ status: 200, headers: {}, arrayBuffer: pngBytes() });
+        const retried = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+        expect(retried).toMatchObject({ filepath: failed.filepath, pendingAssets: false, localizedAssetCount: 1, selectedContentWritten: true });
+        expect(String(vault.content(retried.filepath!))).not.toContain('稍后会自动重试');
+        expect(buildSyncAck(task, retried, makeSettings(), true)).not.toBeNull();
+    });
+
+    it.each(['https://media.clip2md.cn.evil.example/weibo/1.jpg', 'https://user:password@media.clip2md.cn/weibo/1.jpg', 'http://media.clip2md.cn/weibo/1.jpg', 'https://media.clip2md.cn:444/weibo/1.jpg'])('does not trust a different CDN origin or credentials: %s', async url => {
+        const result = await new SyncService(makeSettings()).renderToVault(new FakeVault() as never, makeTask({
+            note_markdown_content: `![图](${url})`, source_markdown_content: null,
+        }), 'Clippings', '{{content}}');
+        expect(requestUrlMock).not.toHaveBeenCalled();
+        expect(result.unlocalizedImages).toBe(true);
+    });
+
+    it('downloads protocol-relative CDN image URLs over HTTPS', async () => {
+        requestUrlMock.mockResolvedValue({ status: 200, headers: {}, arrayBuffer: pngBytes() });
+        const result = await new SyncService(makeSettings()).renderToVault(new FakeVault() as never, makeTask({
+            note_markdown_content: '![图](//media.clip2md.cn/weibo/14947/images/01.jpg?sign=valid)', source_markdown_content: null,
+        }), 'Clippings', '{{content}}');
+        expect(result).toMatchObject({ localizedAssetCount: 1, unlocalizedImages: false });
+        expect(requestUrlMock).toHaveBeenCalledWith({ url: 'https://media.clip2md.cn/weibo/14947/images/01.jpg?sign=valid', method: 'GET', headers: {}, throw: false });
+    });
+
+    it.each(['https://wx1.sinaimg.cn/large/a.jpg', '//mmbiz.qpic.cn/mmbiz_png/a/0', 'https://pic1.zhimg.com/a.jpg', 'https://i0.hdslb.com/bfs/a.jpg', 'https://sns-img.xhscdn.com/a.jpg', 'https://p3.douyinpic.com/a.jpg', 'https://img1.doubanio.com/a.jpg', 'https://i-blog.csdnimg.cn/a.jpg'])('localizes known source CDN fallback images: %s', async url => {
+        requestUrlMock.mockResolvedValue({ status: 200, headers: {}, arrayBuffer: pngBytes() });
+        const result = await new SyncService(makeSettings()).renderToVault(new FakeVault() as never, makeTask({
+            note_markdown_content: `![图](${url})`, source_markdown_content: null,
+        }), 'Clippings', '{{content}}');
+        expect(result).toMatchObject({ pendingAssets: false, localizedAssetCount: 1, unlocalizedImages: false });
+        const request = requestUrlMock.mock.calls[0][0];
+        expect(request.headers.Referer).toMatch(/^https:\/\//);
+        expect(request.headers).not.toHaveProperty('X-API-Key');
+        expect(request.url).toMatch(/^https:\/\//);
     });
 
     it('does not classify unresolved hosted HTML images as localized assets', async () => {

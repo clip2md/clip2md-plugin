@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
+import path from 'node:path';
 import { webcrypto } from 'node:crypto';
 
 const bundlePath = process.argv[2] || 'main.js';
 const bundle = fs.readFileSync(bundlePath, 'utf8');
+const pluginManifest = JSON.parse(fs.readFileSync(path.join(path.dirname(bundlePath), 'manifest.json'), 'utf8'));
 
 async function loadWith(localState, rejectSubscriptionView = false, noCrypto = false) {
   const registrations = [];
@@ -19,16 +21,26 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
       registrations.push(type);
     }
     registerEvent() {}
+    registerObsidianProtocolHandler(action) { registrations.push(`protocol:${action}`); }
   }
   class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
   const obsidian = {
     Plugin, PluginSettingTab, ItemView: class {}, Modal: class {}, Notice: class {},
     MarkdownView: class {}, TFile: class {}, TFolder: class {}, Setting: class {}, SettingPage: class {},
-    Platform: { isMobileApp: false }, addIcon() {},
+    Platform: { isMobileApp: false, isDesktopApp: false }, addIcon() {},
     requestUrl() { throw new Error('startup attempted a network request'); },
   };
   const storage = new Map([['clip2md-device-state-v1', localState]]);
   const secrets = new Map();
+  const files = new Map(), folders = new Set();
+  const adapter = {
+    exists: async p => files.has(p) || folders.has(p),
+    read: async p => { if (!files.has(p)) throw new Error('missing'); return files.get(p); },
+    write: async (p, text) => files.set(p, text),
+    rename: async (a, b) => { files.set(b, files.get(a)); files.delete(a); },
+    mkdir: async p => folders.add(p), remove: async p => files.delete(p),
+    list: async () => ({ files: [], folders: [] }),
+  };
   const app = {
     loadLocalStorage: key => storage.get(key) ?? null,
     saveLocalStorage: (key, value) => storage.set(key, structuredClone(value)),
@@ -36,7 +48,7 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
       getSecret: key => secrets.get(key) ?? null,
       setSecret: (key, value) => secrets.set(key, value),
     },
-    fileManager: {}, vault: { on: () => ({}) },
+    fileManager: {}, vault: { configDir: ".obsidian", adapter, on: () => ({}) },
     workspace: { iterateAllLeaves() {}, on: () => ({}), onLayoutReady() {} },
   };
   const context = {
@@ -51,10 +63,10 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
   vm.runInNewContext(bundle, context, { filename: bundlePath, timeout: 5000 });
   const PluginClass = context.module.exports.default;
   if (typeof PluginClass !== 'function') throw new Error('bundle has no plugin entry class');
-  const plugin = new PluginClass(app, { id: 'clipmd' });
+  const plugin = new PluginClass(app, pluginManifest);
   await plugin.onload();
-  const requiredRegistrations = rejectSubscriptionView ? ['settings', 'sync-now']
-    : ['settings', 'sync-now', 'blogger-subscriptions', 'clip2md-blogger-subscriptions'];
+  const requiredRegistrations = rejectSubscriptionView ? ['settings', 'sync-now', 'protocol:clipmd-desktop']
+    : ['settings', 'sync-now', 'blogger-subscriptions', 'clip2md-blogger-subscriptions', 'protocol:clipmd-desktop'];
   for (const required of requiredRegistrations) {
     if (!registrations.includes(required)) throw new Error(`startup missed ${required}`);
   }
@@ -70,7 +82,19 @@ const coreState = {
   pendingAcks: [], restoreMissingMappedTasksOnNextSync: false,
   unresolvedTaskIds: [], legacyKeyMigrated: false,
 };
-await loadWith(coreState);
+const desktopCheck = await loadWith(coreState);
+const desktopPlugin = desktopCheck.plugin;
+if (await desktopPlugin.ensureDesktopRuntime() !== false) {
+  throw new Error('missing desktop companion was accepted');
+}
+desktopPlugin.companion = { snapshot: () => ({}) };
+if (await desktopPlugin.ensureDesktopRuntime() !== false) {
+  throw new Error('incompatible desktop companion was accepted');
+}
+desktopPlugin.companion = { snapshot: () => ({ setEnabled() {} }) };
+if (await desktopPlugin.ensureDesktopRuntime() !== true) {
+  throw new Error('compatible desktop companion was rejected');
+}
 await loadWith(coreState, false, true);
 await loadWith(coreState, true);
 const original = { ...coreState, subscriptions: { version: 1, statuses: {}, excludedTaskIds: [], keptLocalTaskIds: [0] } };

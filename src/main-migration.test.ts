@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import BijiSyncPlugin from './main';
 
 function migrate(files: Record<string, string>, legacy: Record<string, unknown>, localKey?: string) {
@@ -26,8 +26,14 @@ function migrate(files: Record<string, string>, legacy: Record<string, unknown>,
 }
 
 describe('legacy shared data migration', () => {
+    it('defaults the comment folder to following the main note and retains a configured path', () => {
+        const plugin = Object.create(BijiSyncPlugin.prototype) as BijiSyncPlugin;
+        expect(plugin['normalizeSettings']({}).commentFolder).toBe('');
+        expect(plugin['normalizeSettings']({ commentFolder: '  评论/{{created_date}}  ' }).commentFolder).toBe('评论/{{created_date}}');
+        expect(plugin.isConfigCorrupted({ commentFolder: 123 })).toBe(true);
+    });
     it('rescans this Vault and pauses ambiguous missing notes before any receipt', async () => {
-        const { state, secrets } = await migrate({ 'moved/43.md': '---\ntask_id: 43\n---\n' }, {
+        const { state, secrets } = await migrate({ 'moved/43.md': '<!-- biji-task-id:43 -->\n正文' }, {
             apiKey: 'old-shared-key', cursor: 'other-device-cursor',
             taskFileMap: { 42: 'other-device/42.md', 43: 'old/43.md' },
             ignoredTaskIds: [44], pendingAcks: [{ taskId: 42, ackToken: 'old-receipt' }],

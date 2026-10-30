@@ -1,5 +1,6 @@
 import { parseDocument } from 'yaml';
 import { TFile, type Vault } from 'obsidian';
+import { hasTaskId } from './task-id';
 
 export interface CommentSource {
     platform: string; title: string; author: string; url: string | null;
@@ -55,7 +56,7 @@ export async function commentLocalLink(vault: Vault, map: Record<number, string>
     const content = await vault.read(file);
     // Daily merged notes need an anchored task link, not the entire daily file.
     if (content.includes(`<!-- clip2md-task-start:${id} -->`)) return null;
-    if (!content.includes(`<!-- biji-task-id:${id} -->`)) return null;
+    if (id === null || !hasTaskId(content, id) || content.includes(`<!-- clip2md-task-start:`)) return null;
     return `[[${file.path.replace(/\.md$/, '')}]]`;
 }
 
@@ -64,7 +65,8 @@ export async function refreshCommentLinks(vault: Vault, map: Record<number, stri
         const file = vault.getFileByPath(path);
         if (!file) continue;
         const before = await vault.read(file);
-        if (!before.includes(`<!-- biji-task-id:${id} -->`) || !savedCommentProperties(before)) continue;
+        const taskId = Number(id);
+        if (!Number.isSafeInteger(taskId) || !hasTaskId(before, taskId) || before.includes(`<!-- clip2md-task-start:`) || !savedCommentProperties(before)) continue;
         const match = header.exec(before)!;
         const yaml = parseDocument(match[1]);
         const targetId = yaml.get('主笔记任务ID');

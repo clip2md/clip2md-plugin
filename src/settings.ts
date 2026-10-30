@@ -6,7 +6,9 @@ import { NoteContentSettings, type NoteContentViewState } from './note-content-s
 import { validateCustomTitle, type TitleMode } from './note-title';
 import { installButtonClickGuard } from './button-guard';
 import type { ArchiveConfig } from './subscriptions';
+import { DesktopSettingsPage } from './desktop-settings-page';
 import { SubscriptionSettingsPage } from './subscription-settings-page';
+import { CLIP2MD_USAGE_DOC_URL } from './config';
 
 export type SyncContentMode = 'full' | 'note' | 'source';
 export type SyncTrigger = 'manual' | 'scheduled' | 'startup' | 'onboarding';
@@ -42,6 +44,8 @@ export interface BijiSyncSettings {
     syncOnStart: boolean;
     preventReimportAfterLocalRemoval: boolean;
     targetFolder: string;
+    commentFolder?: string;
+    sourcePropertiesTemplateInitialized?: boolean;
     filenameTemplate: string;
     filenameDateFormat: string;
     titleMode?: TitleMode;
@@ -90,7 +94,6 @@ task_id: {{task_id}}
 export const DEFAULT_FRONTMATTER_TEMPLATE = `---
 title: "{{title}}"
 date: "{{source_date}}"
-source: "{{source}}"
 tags: {{tags}}
 url: "{{url}}"
 task_id: {{task_id}}
@@ -99,17 +102,16 @@ task_id: {{task_id}}
 export const NEW_DEFAULT_FRONTMATTER_TEMPLATE = `---
 title: "{{note_title}}"
 date: "{{source_date}}"
-source: "{{source}}"
 tags: {{tags}}
 url: "{{url}}"
 task_id: {{task_id}}
 ---`;
 export const NEW_DEFAULT_FILENAME_TEMPLATE = '{{created_date}}-{{note_title}}';
+export const IMAGE_FOLDER_PLACEHOLDER = '默认：主笔记目录/_assets';
 
 export const DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE = `---
 title: "{{title}}"
 date: "{{date}}"
-source: "{{source}}"
 tags: {{tags}}
 task_count: {{task_count}}
 task_ids: {{task_ids}}
@@ -163,12 +165,14 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private bindingMessage = '';
     private testingConnection = false;
     private advancedOpen = false;
+    private settingsSectionsOpen = new Set<string>(['同步规则', '保存位置']);
     private bindingRenderKey = '';
     private launchUrl = '';
     private launchState: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
     private launchMessage = '';
     private showingInvalidOnboarding = false;
     private activeContainerEl: HTMLElement | null = null;
+    private accountCleanup?: () => void;
 
     constructor(app: App, plugin: BijiSyncPlugin) {
         super(app, plugin);
@@ -214,7 +218,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         return [{
             type: 'page',
             name: 'Clip2MD 设置',
-            desc: '扫码绑定、API Key、同步目录、文件模板和自动同步选项',
+            desc: '网页剪藏、评论补充、图片本地化与自动同步',
             status: () => {
                 const kind = this.plugin.getStatusSnapshot().kind;
                 return kind === 'invalid' || kind === 'error' ? 'warning' : null;
@@ -227,7 +231,12 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             type: 'page', name: '博主订阅', desc: '订阅概况、同步范围、归档目录和日报',
             status: () => this.plugin.subscriptionError ? 'warning' : null,
             page: () => new SubscriptionSettingsPage(this.plugin),
-        }];
+        }, ...(Platform.isDesktopApp ? [{
+            type: 'page' as const,
+            name: '本地剪藏扩展',
+            desc: '平台登录、素材能力、工具准备和本地重试',
+            page: () => new DesktopSettingsPage(this.plugin),
+        }] : [])];
     }
 
     refresh(): void {
@@ -253,21 +262,17 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
     }
 
+
     private renderInto(containerEl: HTMLElement): void {
         this.activeContainerEl = containerEl;
         installButtonClickGuard(containerEl);
         containerEl.addClass('clip2md-settings');
         containerEl.toggleClass('clip2md-platform-mobile', Platform.isMobileApp);
+        this.accountCleanup?.();
         containerEl.empty();
-
         this.noteContent?.dispose();
         this.noteContent = null;
         this.folderSettingEl = null;
-
-        containerEl.createEl('p', {
-            text: 'Clip2MD 会自动将网页剪藏同步到 Obsidian。同一任务会更新同一个文件，不会覆盖你手动创建的笔记。',
-            cls: 'setting-item-description',
-        });
 
         const status = this.plugin.getStatusSnapshot();
         this.renderStatusBar(containerEl, status);
@@ -306,6 +311,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private releaseActivePage(): void {
+        this.accountCleanup?.();this.accountCleanup=undefined;
         this.plugin.timers.clearGroup('settings-ui');
         this.noteContent?.dispose();
         this.noteContent = null;
@@ -323,12 +329,15 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
     private renderStatusBar(containerEl: HTMLElement, status = this.plugin.getStatusSnapshot()) {
         const wrap = containerEl.createDiv({ cls: 'clip2md-status-bar' });
-        wrap.createDiv({
+        const summary = wrap.createDiv({ cls: 'clip2md-status-main' });
+        const account = summary.createDiv({ cls: 'clip2md-status-account' });
+        this.accountCleanup = this.plugin.renderCloudAccount?.(account);
+        const state = summary.createDiv({ cls: 'clip2md-status-line' });
+        state.createSpan({
             cls: `clip2md-status-indicator is-${status.kind}`,
             text: status.label,
         });
-
-        wrap.createDiv({
+        state.createSpan({
             cls: 'clip2md-status-summary',
             text: status.description,
         });
@@ -348,15 +357,32 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             });
         });
 
-        const testButton = actions.createEl('button', {
-            text: '测试连接',
+    }
+
+    private renderHelpActions(containerEl: HTMLElement): void {
+        const actions = containerEl.createDiv({ cls: 'clip2md-help-actions' });
+        actions.createEl('a', {
+            text: '使用说明',
+            href: CLIP2MD_USAGE_DOC_URL,
+        });
+        const copyButton = actions.createEl('button', {
+            text: '复制给 AI Agent',
             cls: 'clip2md-inline-button',
         });
-        testButton.dataset.clip2mdAction = 'test';
-        testButton.disabled = !this.plugin.settings.apiKey || status.runtimeState === 'syncing';
-        testButton.addEventListener('click', () => {
-            this.runAsync(() => this.testConnection(testButton));
-        });
+        copyButton.addEventListener('click', () => void this.copyUsageDocForAgent(copyButton));
+    }
+
+    private async copyUsageDocForAgent(button: HTMLButtonElement): Promise<void> {
+        const prompt = `请先阅读 Clip2MD 产品使用说明，再根据说明回答我的问题：\n${CLIP2MD_USAGE_DOC_URL}`;
+        try {
+            if (!navigator.clipboard) throw new Error('clipboard_unavailable');
+            await navigator.clipboard.writeText(prompt);
+            new Notice('Clip2MD: AI Agent 使用说明链接已复制。', 3000);
+            button.setText('已复制');
+            this.plugin.timers.setTimeout(() => button.setText('复制给 AI Agent'), 2000, 'settings-ui');
+        } catch {
+            new Notice(`Clip2MD 使用说明：${CLIP2MD_USAGE_DOC_URL}`, 6000);
+        }
     }
 
     private renderOnboarding(containerEl: HTMLElement, apiKeyInvalid = false) {
@@ -635,20 +661,18 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderBasicSettings(containerEl: HTMLElement) {
-        new Setting(containerEl)
-            .setName('基本设置')
-            .setHeading();
+        const account = this.createSettingsSection(containerEl, '账号与设备');
 
-        new Setting(containerEl)
+        new Setting(account)
             .setName('重新扫码绑定此设备')
-            .setDesc('每台设备应分别绑定自己的 Key；旧 Key 会保留至新绑定完成。')
+            .setDesc('新绑定完成前保留当前连接')
             .addButton(btn => btn.setButtonText('生成绑定码').onClick(() => {
                 this.showBindingForExistingKey = true;
                 this.refreshDisplay();
             }));
 
         for (const taskId of this.plugin.getMigrationUnresolvedTasks()) {
-            new Setting(containerEl)
+            new Setting(account)
                 .setName(`迁移待确认任务 #${taskId}`)
                 .setDesc('旧配置指向的笔记在本机不存在。请选择保留忽略或重新导入，选择前不提交该任务的删除回执。')
                 .addButton(btn => btn.setButtonText('保留忽略').onClick(() => {
@@ -660,7 +684,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
         }
 
         if (this.plugin.hasLegacySharedState()) {
-            new Setting(containerEl)
+            new Setting(account)
                 .setName('清理旧共享状态')
                 .setDesc('确认所有设备均已升级并分别绑定后，清除 Vault 配置中的旧 Key 和进度。旧版插件将无法再从共享配置恢复。')
                 .addButton(btn => btn
@@ -676,9 +700,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     }));
         }
 
-        new Setting(containerEl)
+        new Setting(account)
             .setName('API Key')
-            .setDesc('从 clip2md 网站获取的 API Key')
+            .setDesc('使用独立 Key 连接当前设备')
             .addText(text => {
                 text.setPlaceholder('clip2md_...')
                     .setValue(this.plugin.settings.apiKey)
@@ -695,10 +719,19 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 .setTooltip('获取 API Key')
                 .onClick(() => this.plugin.openCredentialPage()));
 
-        // 目标文件夹 - 放在基本设置中，与高级设置联动
-        const folderSetting = new Setting(containerEl)
+        new Setting(account)
+            .setName('连接诊断')
+            .setDesc('仅检查账号与 API 连接，不同步内容')
+            .addButton(btn => btn.setButtonText('测试连接').onClick(() => {
+                this.runAsync(() => this.testConnection(btn.buttonEl));
+            }));
+
+        const location = this.createSettingsSection(containerEl, '保存位置', true);
+
+        // 目标文件夹 - 放在保存位置中，与高级设置联动
+        const folderSetting = new Setting(location)
             .setName('目标文件夹')
-            .setDesc('剪藏文件保存的 Obsidian 文件夹路径，可使用 {{title}}、{{source_title}} 等变量。{{source_title}} 是来源标题，其中的 / 等非法路径字符会被清理。留空则不进行同步。')
+            .setDesc('可使用 {{title}}、{{source_title}} 等变量；留空停止同步')
             .addText(text => text
                 .setPlaceholder('留空则不同步')
                 .setValue(this.plugin.settings.targetFolder)
@@ -748,7 +781,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     private openImageFolderPicker(containerEl: HTMLElement): void {
         const current = this.plugin.settings.imageFolder;
         const modal = new FolderPickerModal(this.app, current === '/' ? '' : current, (folder) => {
-            const input = containerEl.querySelector<HTMLInputElement>('input[placeholder="默认：目标文件夹/_assets"]');
+            const input = containerEl.querySelector<HTMLInputElement>(`input[placeholder="${IMAGE_FOLDER_PLACEHOLDER}"]`);
             if (input) {
                 input.value = folder || '/';
                 input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -758,25 +791,20 @@ export class BijiSyncSettingTab extends PluginSettingTab {
     }
 
     private renderAdvancedSettings(containerEl: HTMLElement, hideHeader = false) {
-        // 使用 <details> 实现可折叠的高级设置
         if (hideHeader) {
-            // 在 onboarding 中被调用，直接渲染内容
             this.renderAdvancedContent(containerEl);
             return;
         }
 
-        const details = containerEl.createEl('details', { cls: 'clip2md-advanced-settings' });
-        details.open = this.advancedOpen;
-        details.addEventListener('toggle', () => { this.advancedOpen = details.open; });
-        details.createEl('summary', { text: '高级设置（点击展开）', cls: 'clip2md-advanced-summary' });
-        this.renderAdvancedContent(details);
+        this.renderAdvancedContent(containerEl);
     }
 
     private renderAdvancedContent(containerEl: HTMLElement) {
+        const sync = this.createSettingsSection(containerEl, '同步规则');
 
-        new Setting(containerEl)
+        new Setting(sync)
             .setName('启动后自动同步')
-            .setDesc('Obsidian 完成加载 3 秒后自动执行一次同步')
+            .setDesc('启动 Obsidian 后自动同步一次')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.syncOnStart)
                 .onChange((value) => {
@@ -786,9 +814,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
                 }));
 
-        new Setting(containerEl)
+        new Setting(sync)
             .setName('同步间隔')
-            .setDesc('自动同步的时间间隔，最低 5 分钟')
+            .setDesc('后台自动同步频率')
             .addDropdown(dropdown => {
                 for (const option of SYNC_INTERVAL_OPTIONS) {
                     dropdown.addOption(option.value, option.label);
@@ -803,9 +831,9 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
             });
 
-        new Setting(containerEl)
+        new Setting(sync)
             .setName('本地删除或改名后不再补回')
-            .setDesc('开启后，已同步任务的原文件被删除、改名或移动时不再创建第二份；关闭后下次同步尝试恢复。仅对当前 Vault 生效。')
+            .setDesc('本地删除、改名或移动后，下次同步不再恢复文件；仅对当前 Vault 生效。')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.preventReimportAfterLocalRemoval)
                 .onChange((value) => {
@@ -814,9 +842,29 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
                 }));
 
-        const titleSetting = new Setting(containerEl).setName('笔记标题')
-            .setDesc('默认跟随网站标题偏好。自定义模板中的明确标题字段优先；{{note_title}} 使用这里选择的标题。');
-        const custom = new Setting(containerEl).setName('自定义标题模板')
+        const organization = this.createSettingsSection(containerEl, '命名与目录');
+        new Setting(organization)
+            .setName('评论存放目录')
+            .setDesc('留空跟随主笔记目录；仅影响新建评论笔记。')
+            .addText(text => {
+                text.setPlaceholder('默认：主笔记目录')
+                    .setValue(this.plugin.settings.commentFolder || '')
+                    .onChange(value => this.runAsync(async () => {
+                        this.plugin.settings.commentFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    }));
+                text.inputEl.dataset.control = 'comment-folder';
+            })
+            .addExtraButton(button => button.setIcon('folder').setTooltip('选择评论存放目录').onClick(() => {
+                new FolderPickerModal(this.app, this.plugin.settings.commentFolder || '', folder => {
+                    const input = Array.from(containerEl.querySelectorAll<HTMLInputElement>('[data-control="comment-folder"]')).find(el => el.type !== 'hidden');
+                    if (input) { input.value = folder; input.dispatchEvent(new Event('input', { bubbles: true })); }
+                }, '选择评论存放目录').open();
+            }));
+
+        const titleSetting = new Setting(organization).setName('笔记标题')
+            .setDesc('默认跟随网站设置；{{note_title}} 跟随标题选择。');
+        const custom = new Setting(organization).setName('自定义标题模板')
             .setDesc('支持 {{title}}、{{source_title}}、{{display_title}}、{{source}}、{{created_date}}、{{task_id}}；空结果使用网站标题。');
         custom.addText(text => text.setValue(this.plugin.settings.customTitleTemplate || '').onChange(value => {
             const error = validateCustomTitle(value);
@@ -836,7 +884,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 this.runAsync(async () => { await this.plugin.saveSettings(); this.updatePreview(containerEl); this.noteContent?.refreshPreview(); });
             }));
 
-        new Setting(containerEl)
+        new Setting(organization)
             .setName('文件夹/文件名预设')
             .setDesc('快速应用推荐的输出组织方式')
             .addDropdown(dropdown => {
@@ -872,7 +920,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 });
             });
 
-        new Setting(containerEl)
+        new Setting(organization)
             .setName('文件名模板')
             .setDesc('默认日期加笔记标题；{{note_title}} 跟随标题选择，其他变量保留各自含义。')
             .addText(text => text
@@ -886,7 +934,7 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
                 }));
 
-        new Setting(containerEl)
+        new Setting(organization)
             .setName('日期格式')
             .setDesc('用于 {{created_date}}，默认 yyyy-MM-dd')
             .addText(text => text
@@ -901,16 +949,16 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                 }));
 
         const preview = this.plugin.getTemplatePreview();
-        containerEl.createDiv({
+        organization.createDiv({
             cls: 'setting-item-description clip2md-preview-block clip2md-path-preview',
             text: `示例目录：${preview.folder}\n示例文件：${preview.filename}`,
         });
-
-        this.renderNoteContent(containerEl);
-
-        new Setting(containerEl)
+        const content = this.createSettingsSection(containerEl, '笔记内容');
+        this.renderNoteContent(content);
+        const images = this.createSettingsSection(containerEl, '图片');
+        new Setting(images)
             .setName('图片处理')
-            .setDesc('下载图片到本地，或完全不保存图片')
+            .setDesc('将正文图片保存到知识库，或完全不保存图片')
             .addDropdown(dropdown => dropdown
                 .addOption('local', '下载到本地')
                 .addOption('disabled', '不保存图片')
@@ -922,11 +970,11 @@ export class BijiSyncSettingTab extends PluginSettingTab {
                     });
                 }));
 
-        new Setting(containerEl)
+        new Setting(images)
             .setName('图片存放目录')
-            .setDesc('留空时保持默认：每篇笔记所在目录的 _assets/task-任务ID；可填写或选择 Vault 内目录。选择根目录会显示为 /。')
+            .setDesc('留空保存到每篇笔记旁的 _assets/task-任务ID')
             .addText(text => text
-                .setPlaceholder('默认：目标文件夹/_assets')
+                .setPlaceholder(IMAGE_FOLDER_PLACEHOLDER)
                 .setValue(this.plugin.settings.imageFolder)
                 .onChange((value) => {
                     this.runAsync(async () => {
@@ -937,8 +985,24 @@ export class BijiSyncSettingTab extends PluginSettingTab {
             .addExtraButton(btn => btn
                 .setIcon('folder')
                 .setTooltip('浏览图片存放目录')
-                .onClick(() => this.openImageFolderPicker(containerEl)));
+                .onClick(() => this.openImageFolderPicker(images)));
+        const maintenance = this.createSettingsSection(containerEl, '维护与帮助');
+        this.plugin.renderDiagnostics?.(maintenance);
+        this.renderHelpActions(maintenance);
+    }
 
+    private createSettingsSection(containerEl: HTMLElement, name: string, defaultOpen = false): HTMLDetailsElement {
+        this.settingsSectionsOpen ??= new Set<string>(['同步规则', '保存位置']);
+        const details = containerEl.createEl('details', { cls: 'clip2md-settings-section' });
+        details.createEl('summary', { text: name });
+        details.open = this.settingsSectionsOpen.has(name) || defaultOpen && !Array.from(containerEl.querySelectorAll('details.clip2md-settings-section')).length;
+        details.addEventListener('toggle', () => {
+            this.advancedOpen = Array.from(containerEl.querySelectorAll('details.clip2md-settings-section'))
+                .some(item => (item as HTMLDetailsElement).open);
+            if (details.open) this.settingsSectionsOpen.add(name);
+            else this.settingsSectionsOpen.delete(name);
+        });
+        return details;
     }
 
     private renderNoteContent(containerEl: HTMLElement) {
@@ -995,14 +1059,21 @@ export class BijiSyncSettingTab extends PluginSettingTab {
 }
 
 export class FolderPickerModal extends Modal {
+    private newFolderOpen = false;
+    private newFolderName = '';
+    private newFolderError = '';
+    private creatingFolder = false;
+    private closed = false;
     private selectedPath: string = '';
+    private filterQuery = '';
     private expandedFolders: Set<string> = new Set();
     private onSelect: (path: string) => void;
     private root: TFolder;
 
     constructor(app: App, initialPath: string, onSelect: (path: string) => void, private readonly title = '选择目标文件夹') {
         super(app);
-        this.selectedPath = initialPath || '';
+        const initial = initialPath && initialPath !== '/' ? app.vault.getAbstractFileByPath(initialPath) : null;
+        this.selectedPath = initial instanceof TFolder ? initial.path : '';
         this.onSelect = onSelect;
 
         // 获取根目录
@@ -1022,6 +1093,7 @@ export class FolderPickerModal extends Modal {
     }
 
     onOpen() {
+        this.closed = false;
         const { contentEl } = this;
         contentEl.empty();
         installButtonClickGuard(contentEl);
@@ -1031,21 +1103,80 @@ export class FolderPickerModal extends Modal {
         // 显示当前选择
         const currentEl = contentEl.createDiv({
             cls: 'clip2md-folder-picker-current',
+            attr: { 'aria-live': 'polite' },
         });
-        currentEl.createSpan({ text: '当前选择：' });
+        currentEl.createSpan({ text: '当前目录', cls: 'clip2md-folder-picker-current-label' });
         currentEl.createEl('code', { text: this.selectedPath || '(根目录)' });
+
+        const searchWrap = contentEl.createDiv({ cls: 'clip2md-folder-picker-search' });
+        const search = searchWrap.createEl('input', {
+            attr: {
+                type: 'search',
+                placeholder: '搜索文件夹…',
+                'aria-label': '搜索文件夹',
+                'data-control': 'folder-picker-search',
+            },
+        });
+        search.value = this.filterQuery;
+        search.disabled = this.creatingFolder;
+        search.addEventListener('input', () => {
+            this.filterQuery = search.value;
+            this.onOpen();
+            const again = this.contentEl.querySelector<HTMLInputElement>('[data-control="folder-picker-search"]');
+            again?.focus();
+            again?.setSelectionRange(again.value.length, again.value.length);
+        });
+        if (this.filterQuery) {
+            const clear = searchWrap.createEl('button', { text: '清除', cls: 'clip2md-folder-picker-search-clear' });
+            clear.type = 'button';
+            clear.addEventListener('click', () => {
+                this.filterQuery = '';
+                this.onOpen();
+                this.contentEl.querySelector<HTMLInputElement>('[data-control="folder-picker-search"]')?.focus();
+            });
+        }
 
         // 文件夹树
         const treeEl = contentEl.createDiv({ cls: 'clip2md-folder-picker-tree' });
-        this.renderFolderTree(treeEl, this.root, 0);
+        const rendered = this.renderFolderTree(treeEl, this.root, 0, Boolean(this.filterQuery.trim()));
+        if (!rendered) {
+            const empty = treeEl.createDiv({ cls: 'clip2md-folder-picker-empty', attr: { role: 'status' } });
+            empty.createEl('strong', { text: this.filterQuery.trim() ? '没有匹配的文件夹' : '暂无可选文件夹' });
+            empty.createEl('p', { text: this.filterQuery.trim() ? '调整搜索词，或在下方新建文件夹。' : '可在下方新建文件夹。' });
+        }
+
+        const createArea = contentEl.createDiv({ cls: 'clip2md-folder-picker-create' });
+        const openCreate = createArea.createEl('button', { text: '新建文件夹', cls: 'clip2md-folder-picker-new-toggle' });
+        openCreate.type = 'button'; openCreate.disabled = this.creatingFolder;
+        openCreate.addEventListener('click', () => { this.newFolderOpen = true; this.newFolderError = ''; this.onOpen(); this.contentEl.querySelector<HTMLInputElement>('[data-control="new-folder-name"]')?.focus(); });
+        if (this.newFolderOpen) {
+            const location = createArea.createEl('p', { cls: 'setting-item-description' });
+            location.textContent = `新建位置：${this.selectedPath || '(根目录)'}`;
+            const input = createArea.createEl('input', { attr: { type: 'text', placeholder: '文件夹名称', 'aria-label': '新文件夹名称', 'data-control': 'new-folder-name' } });
+            input.value = this.newFolderName; input.disabled = this.creatingFolder;
+            input.addEventListener('input', () => { this.newFolderName = input.value; });
+            input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); void this.createFolder(); } });
+            const create = createArea.createEl('button', { text: this.creatingFolder ? '创建中…' : '创建', cls: 'mod-cta' });
+            create.type = 'button'; create.disabled = this.creatingFolder;
+            create.addEventListener('click', () => { void this.createFolder(); });
+            const cancel = createArea.createEl('button', { text: '取消新建' });
+            cancel.type = 'button'; cancel.disabled = this.creatingFolder;
+            cancel.addEventListener('click', () => { this.newFolderOpen = false; this.newFolderName = ''; this.newFolderError = ''; this.onOpen(); });
+            if (this.newFolderError) {
+                const error = createArea.createEl('p', { cls: 'clip2md-error-text', attr: { role: 'alert' } });
+                error.textContent = this.newFolderError;
+            }
+        }
 
         // 按钮
         const buttonContainer = contentEl.createDiv({ cls: 'clip2md-folder-picker-buttons' });
 
-        buttonContainer.createEl('button', {
+        const select = buttonContainer.createEl('button', {
             text: '选择此文件夹',
             cls: 'mod-cta',
-        }).addEventListener('click', () => {
+        });
+        select.disabled = this.creatingFolder;
+        select.addEventListener('click', () => {
             this.onSelect(this.selectedPath);
             this.close();
         });
@@ -1057,62 +1188,92 @@ export class FolderPickerModal extends Modal {
         });
     }
 
-    private renderFolderTree(containerEl: HTMLElement, folder: TFolder, depth: number) {
-        const isRoot = depth === 0;
-        const isExpanded = this.expandedFolders.has(folder.path);
-        const isSelected = this.selectedPath === folder.path;
-
-        // 渲染当前文件夹
-        const itemEl = containerEl.createEl('button', {
-            cls: `clip2md-tree-item ${isSelected ? 'selected' : ''}`,
-        });
-        itemEl.type = 'button';
-        itemEl.dataset.path = folder.path;
-        itemEl.setCssProps({ '--clip2md-tree-item-padding-left': `${depth * 16 + 8}px` });
-
-        // 展开/折叠图标
-        const hasSubfolders = folder.children.some(child => child instanceof TFolder);
-        itemEl.createSpan({
-            text: hasSubfolders ? (isExpanded ? '▼' : '▶') : ' ',
-            cls: 'clip2md-tree-toggle',
-        });
-
-        // 文件夹图标
-        itemEl.createSpan({ text: '📁', cls: 'clip2md-tree-icon' });
-
-        // 文件夹名称
-        const name = isRoot ? '(根目录)' : folder.name;
-        itemEl.createSpan({ text: name });
-
-        // 点击事件
-        itemEl.addEventListener('click', () => {
-            this.selectedPath = folder.path;
-            if (hasSubfolders) {
-                // 切换展开/折叠
-                if (isExpanded) {
-                    this.expandedFolders.delete(folder.path);
-                } else {
-                    this.expandedFolders.add(folder.path);
+    private async createFolder(): Promise<void> {
+        if (this.creatingFolder || this.closed) return;
+        const name = this.newFolderName.trim();
+        if (!name || name === '.' || name === '..' || /[/\\<>:"|?*]/.test(name) || Array.from(name).some(c => c.charCodeAt(0) < 32)) {
+            this.newFolderError = '请输入有效的单个文件夹名称，不能包含 /、\\ 或系统保留字符。'; this.renderCreationError(); return;
+        }
+        const parent = this.selectedPath;
+        const path = parent ? `${parent}/${name}` : name;
+        if (this.app.vault.getAbstractFileByPath(path)) { this.newFolderError = '该名称已存在，请使用其他名称。'; this.renderCreationError(); return; }
+        if (parent && !(this.app.vault.getAbstractFileByPath(parent) instanceof TFolder)) { this.newFolderError = '选中目录已不存在，请重新选择。'; this.renderCreationError(); return; }
+        this.creatingFolder = true; this.newFolderError = ''; this.onOpen();
+        try {
+            await this.app.vault.createFolder(path);
+            this.selectedPath = path;
+            this.expandedFolders.add(this.root.path); this.expandedFolders.add(parent);
+            this.newFolderOpen = false; this.newFolderName = '';
+        } catch (error) { this.newFolderError = error instanceof Error ? error.message : '创建失败，请重试。'; }
+        finally {
+            this.creatingFolder = false;
+            if (!this.closed) {
+                if (this.newFolderError) this.renderCreationError();
+                else {
+            this.onOpen();
+                    Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>('.clip2md-tree-item')).find(button => button.dataset.path === this.selectedPath)?.focus();
                 }
             }
-            this.onOpen();
-            Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>('.clip2md-tree-item'))
-                .find(button => button.dataset.path === folder.path)?.focus();
-        });
-
-        // 递归渲染子文件夹
-        if (hasSubfolders && isExpanded) {
-            const subfolders = folder.children
-                .filter((child): child is TFolder => child instanceof TFolder)
-                .sort((a, b) => a.name.localeCompare(b.name));
-
-            subfolders.forEach(subfolder => {
-                this.renderFolderTree(containerEl, subfolder, depth + 1);
-            });
         }
     }
 
+    private renderCreationError(): void {
+        this.onOpen();
+        this.contentEl.querySelector<HTMLInputElement>('[data-control="new-folder-name"]')?.focus();
+    }
+
+    private renderFolderTree(containerEl: HTMLElement, folder: TFolder, depth: number, filtering: boolean): boolean {
+        const isRoot = depth === 0;
+        const path = isRoot ? '' : folder.path;
+        const isExpanded = this.expandedFolders.has(path);
+        const isSelected = this.selectedPath === path;
+        const query = this.filterQuery.trim().toLocaleLowerCase();
+        const matches = !query || (!isRoot && (path.toLocaleLowerCase().includes(query) || folder.name.toLocaleLowerCase().includes(query)));
+        const children = folder.children.filter((child): child is TFolder => child instanceof TFolder).sort((a, b) => a.name.localeCompare(b.name));
+        const renderedChildren: HTMLElement[] = [];
+        for (const child of children) {
+            const childWrap = containerEl.createDiv();
+            if (this.renderFolderTree(childWrap, child, depth + 1, filtering)) renderedChildren.push(childWrap);
+        }
+        const shouldRender = matches || renderedChildren.length > 0;
+        if (!shouldRender) return false;
+
+        const hasSubfolders = children.length > 0;
+        const itemEl = containerEl.createEl('button', {
+            cls: `clip2md-tree-item ${isSelected ? 'selected' : ''}`,
+        });
+        containerEl.insertBefore(itemEl, containerEl.firstChild);
+        itemEl.type = 'button';
+        itemEl.dataset.path = path;
+        itemEl.setAttribute('aria-pressed', String(isSelected));
+        if (hasSubfolders) itemEl.setAttribute('aria-expanded', String(filtering || isExpanded));
+        itemEl.disabled = this.creatingFolder;
+        itemEl.setCssProps({ '--clip2md-tree-item-padding-left': `${depth * 16 + 8}px` });
+
+        itemEl.createSpan({
+            text: hasSubfolders ? (filtering || isExpanded ? '▼' : '▶') : ' ',
+            cls: 'clip2md-tree-toggle',
+        });
+        itemEl.createSpan({ text: '📁', cls: 'clip2md-tree-icon' });
+        itemEl.createSpan({ text: isRoot ? '(根目录)' : folder.name, cls: 'clip2md-tree-name' });
+
+        itemEl.addEventListener('click', () => {
+            this.selectedPath = path;
+            if (hasSubfolders && !filtering) {
+                if (isExpanded) this.expandedFolders.delete(path);
+                else this.expandedFolders.add(path);
+            }
+            this.onOpen();
+            Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>('.clip2md-tree-item'))
+                .find(button => button.dataset.path === path)?.focus();
+        });
+
+        if (!filtering && hasSubfolders && !isExpanded) renderedChildren.forEach(element => element.remove());
+        return true;
+    }
+
     onClose() {
+        this.closed = true;
         this.contentEl.empty();
     }
 }

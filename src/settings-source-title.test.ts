@@ -5,7 +5,9 @@ import { BijiSyncSettingTab, DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, DEFAULT_F
 import { SyncService } from './sync';
 import { NoteContentSettings } from './note-content-settings';
 import { parse } from 'yaml';
-import { MarkdownRenderer } from 'obsidian';
+import { MarkdownRenderer, Platform } from 'obsidian';
+import { LOCAL_VARIABLES, LOCAL_VARIABLE_DESCRIPTIONS } from './desktop-variables';
+import { BUILD_CHANNEL } from './build-channel';
 
 vi.mock('obsidian', async importOriginal => {
     const original = await importOriginal<Record<string, unknown>>();
@@ -173,6 +175,43 @@ function input(editor: HTMLTextAreaElement, value: string) {
 }
 
 describe('unified note content settings', () => {
+    it('saves a separate comment folder and allows clearing it to follow the main note', async () => {
+        const { tab, plugin, container } = settingsPage();
+        tab['renderAdvancedContent'](container);
+        const field = container.querySelector<HTMLInputElement>('[data-control="comment-folder"]')!;
+        expect(field.value).toBe('');
+        input(field, ' 评论/{{created_date}} ');
+        await Promise.resolve();
+        expect(plugin.settings.commentFolder).toBe('评论/{{created_date}}');
+        input(field, '');
+        await Promise.resolve();
+        expect(plugin.settings.commentFolder).toBe('');
+        expect(plugin.saveSettings).toHaveBeenCalledTimes(2);
+    });
+
+    it('explains every local variable beside its insertion button and in its tooltip', () => {
+        const descriptor = Object.getOwnPropertyDescriptor(Platform, 'isDesktopApp');
+        Object.defineProperty(Platform, 'isDesktopApp', { configurable: true, value: true });
+        try {
+            const p = setup('{{content}}');
+            const editor = p.body.closest('.clip2md-content-editor')!;
+            for (const name of ['local_cover', 'local_media', 'local_gallery']) {
+                expect(p.properties.closest('.clip2md-content-editor')!.textContent).not.toContain(`{{${name}}}`);
+                expect(p.daily.closest('.clip2md-content-editor')!.textContent).not.toContain(`{{${name}}}`);
+            }
+            for (const [name, label] of Object.entries(LOCAL_VARIABLES)) {
+                const button = [...editor.querySelectorAll('button')].find(b => b.textContent === `${label} {{${name}}}`)!;
+                expect(button).toBeDefined();
+                expect(button.title).toBe(LOCAL_VARIABLE_DESCRIPTIONS[name]);
+                expect(button.parentElement?.querySelector('small')?.textContent).toBe(LOCAL_VARIABLE_DESCRIPTIONS[name]);
+                expect(button.title).not.toContain('undefined');
+            }
+            p.view.dispose();
+        } finally {
+            if (descriptor) Object.defineProperty(Platform, 'isDesktopApp', descriptor);
+            else Reflect.deleteProperty(Platform, 'isDesktopApp');
+        }
+    });
     it('preserves layouts and properties for all content choices', () => {
         const p = setup('# {{title}}\n{{content}}\n{{url}}');
         const mode = p.container.querySelector('select')!;
@@ -217,6 +256,16 @@ describe('unified note content settings', () => {
         expect(p.body.value).toBe('# {{title}}');
         expect(p.daily.value).toBe(DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE);
         p.view.dispose();
+    });
+    it.runIf(BUILD_CHANNEL !== 'website')('restores source property fields while the local extension is enabled and keeps the template editable',()=>{
+        const p=setup('# {{title}}');
+        Object.assign(p.plugin,{companion:{enabled:()=>true}});
+        click(p.properties.closest('.clip2md-content-editor')!,'恢复默认属性');
+        expect(p.properties.value).toContain('{{local_author}}');expect(p.properties.value).toContain('{{local_likes}}');
+        expect(p.properties.value).not.toContain('clip2md_');
+        const customized=p.properties.value.replace('"作者":','"我的作者名":');input(p.properties,customized);
+        expect(p.plugin.settings.frontmatterTemplate).toBe(customized);
+        expect(p.body.value).toBe('# {{title}}');p.view.dispose();
     });
     it('shows body YAML migration and focuses the relevant editor', () => {
         const p = setup('---\ntitle: duplicate\n---\n{{content}}');
@@ -271,7 +320,8 @@ describe('unified note content settings', () => {
         tab['activeContainerEl'] = container;
         tab['renderStatusBar'](container);
         tab['renderAdvancedSettings'](container);
-        const advanced = container.querySelector('details')!;
+        const advanced = [...container.querySelectorAll<HTMLDetailsElement>('details')]
+            .find(details => details.querySelector('summary')?.textContent === '笔记内容')!;
         advanced.open = true;
         const body = container.querySelectorAll('textarea')[2];
         body.focus(); body.setSelectionRange(1, 4);

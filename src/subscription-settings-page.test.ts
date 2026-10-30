@@ -181,6 +181,7 @@ describe('subscription settings page', () => {
     it('does not show stale save feedback after a credential switch', async () => {
         const f = pageFixture(); let fail!: (error: Error) => void;
         vi.mocked(f.plugin.updateSubscriptionConfig).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+        f.field().value = '旧账号草稿'; f.field().dispatchEvent(new Event('input'));
         f.button('保存订阅配置').click(); await vi.waitFor(() => expect(f.plugin.updateSubscriptionConfig).toHaveBeenCalledOnce());
         f.changeCredential(); fail(new Error('旧账号保存失败'));
         await vi.waitFor(() => expect(f.page.containerEl.getAttribute('aria-busy')).toBe('false'));

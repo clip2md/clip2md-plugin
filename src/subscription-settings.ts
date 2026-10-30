@@ -13,10 +13,10 @@ export function action(parent: HTMLElement, label: string, run: () => void | Pro
     return button;
 }
 export function folderSetting(container: HTMLElement, plugin: BijiSyncPlugin, title: string, value: string,
-    set: (value: string) => void, canEdit: () => boolean) {
+    set: (value: string) => void, canEdit: () => boolean, ariaLabel = title) {
     const setting = new Setting(container).setName(title).addText(text => {
-        text.setValue(value).setDisabled(!canEdit()).onChange(next => { if (canEdit()) set(next); });
-        text.inputEl.setAttribute('aria-label', title);
+        text.setPlaceholder('默认：主笔记目录').setValue(value).setDisabled(!canEdit()).onChange(next => { if (canEdit()) set(next); });
+        text.inputEl.setAttribute('aria-label', ariaLabel);
         text.inputEl.setAttribute('data-control', title);
         text.inputEl.spellcheck = false;
     });
@@ -32,6 +32,6 @@ export function folderSetting(container: HTMLElement, plugin: BijiSyncPlugin, ti
 }
 export function validateConfig(plugin: BijiSyncPlugin, config: ArchiveConfig) {
     for (const path of [config.folderTemplate, config.reportFolder, ...Object.values(config.bloggers).map(r => r.folder).filter((v): v is string => !!v)]) {
-        if (!plugin.validateTargetFolder(path)) throw new Error('目录不能包含越界路径，且不能为空');
+        if (path.trim() && !plugin.validateTargetFolder(path)) throw new Error('目录不能包含越界路径，且不能为空');
     }
 }

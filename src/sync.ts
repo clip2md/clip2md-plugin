@@ -1,12 +1,20 @@
+import { slot, identifyLocalAI, updateLocalAI, localSourceChanged, LocalAIConflict } from './local-ai-document';
+import { desktopTokens, LOCAL_VARIABLES, renderLocalToken, renderLocalMedia, renderLocalTranscript, preserveLocalTemplateValues } from './desktop-variables';
+import { parseDocument, isMap, isScalar } from 'yaml';
+import { preserveLocalProperties, projectLocalProperties } from './local-properties';
 import { commentLocalLink, commentProperties, isCommentSource, savedCommentProperties, withCommentProperties, type CommentSource } from './comment-source';
 import { resolveNoteTitle } from './note-title';
+import { renderLocalPropertyValues, sourcePropertyKeys } from './property-template';
+import { sourceImageRequest } from './image-sources';
 import { safeArchiveSegment } from './subscription-archive';
-import { archiveConfig, bloggerName, isSubscriptionContext, type SubscriptionContext } from './subscriptions';
+import { archiveConfig, resolvedArchiveConfig, bloggerName, isSubscriptionContext, type SubscriptionContext } from './subscriptions';
 import { documentMetadata, managedRegion, region, verifiedRegion, withMetadata, stripFrontmatter, SubscriptionConflict, backupSubscription } from './subscription-document';
 import { FileManager, requestUrl, TFile, Vault } from 'obsidian';
 import { BijiSyncSettings, DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, SyncContentMode } from './settings';
 import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
-import { resolveImagePath, savedTaskContent, sha256, type SavedSyncProof } from './saved-sync-proof';
+import { resolveImagePath, projectProofContent, savedTaskContent, sha256, type SavedSyncProof } from './saved-sync-proof';
+import { formatBeijingDateTime } from './date-format';
+import { hasTaskId } from './task-id';
 
 export interface SyncAckScope {
     version: 2;
@@ -16,6 +24,10 @@ export interface SyncAckScope {
 }
 
 export interface SyncTask {
+    upgrade_required?: boolean;
+    ai_title?: string | null;
+    desktop_input?: {id: string; sha256: string; source_version: number; update_policy: "ai-only"} | null;
+    local_values?: Record<string,string|number|string[]>;
     subscription_context?: SubscriptionContext | null;
     comment_source?: CommentSource | null;
     comment_local_link?: string | null;
@@ -53,6 +65,7 @@ interface TaskFileMapping {
 }
 
 export interface SyncResult {
+    desktopConflict?: boolean;
     subscriptionConflict?: boolean;
     filepath: string | null;
     skipped: boolean;
@@ -144,6 +157,8 @@ function isSyncTask(value: unknown): value is SyncTask {
     return numberFields.every(field => typeof value[field] === 'number')
         && stringFields.every(field => typeof value[field] === 'string')
         && nullableStringFields.every(field => isNullableString(value[field]))
+        && (value.desktop_input == null || (isRecord(value.desktop_input) && typeof value.desktop_input.id === 'string' && /^[a-f0-9]{64}$/.test(String(value.desktop_input.sha256)) && value.desktop_input.update_policy === 'ai-only' && Number.isSafeInteger(value.desktop_input.source_version)))
+        && (value.ai_title === undefined || isNullableString(value.ai_title))
         && (value.display_title === undefined || isNullableString(value.display_title))
         && (value.duration_seconds === null || typeof value.duration_seconds === 'number')
         && (value.ack_token === undefined || isNullableString(value.ack_token))
@@ -211,11 +226,15 @@ function isManagedImageUrl(remoteUrl: string): boolean {
     }
 
     try {
-        const parsed = new URL(remoteUrl);
+        const parsed = new URL(remoteUrl, CLIP2MD_MEDIA_CDN_BASE_URL);
         const mediaCdn = new URL(CLIP2MD_MEDIA_CDN_BASE_URL);
+        // Platform captures use /weibo/, /csdn/, /zhihu/, etc. rather
+        // than /assets/. Trust the exact CDN origin, then verify image bytes.
         return parsed.protocol === mediaCdn.protocol
             && parsed.host === mediaCdn.host
-            && parsed.pathname.startsWith('/assets/');
+            && !parsed.username && !parsed.password
+            && parsed.pathname !== '/'
+            && /^(?:https:\/\/|\/\/)/i.test(remoteUrl);
     } catch {
         return false;
     }
@@ -239,6 +258,10 @@ function apiAssetId(remoteUrl: string): number | null {
     } catch { return null; }
 }
 
+function hasHostedMediaReference(markdown: string): boolean {
+    return [...markdown.matchAll(/(?:https?:)?\/\/[^\s<>"')\]]+/gi)].some(match => isManagedImageUrl(match[0]));
+}
+
 function hasUnlocalizedImages(markdown: string | null): boolean {
     if (!markdown) return false;
     // These syntaxes are not handled by localizeTaskImages. A false positive
@@ -247,7 +270,7 @@ function hasUnlocalizedImages(markdown: string | null): boolean {
         || /!\[[^\]]*\]\[[^\]]*\]/.test(markdown)
         || /!\[[^\]]*\]\(\s*<?(?:https?:\/\/|\/\/|\/api\/v1\/assets\/)/i.test(markdown)
         || markdown.includes('/api/v1/assets/')
-        || markdown.includes(`${CLIP2MD_MEDIA_CDN_BASE_URL}/assets/`);
+        || hasHostedMediaReference(markdown);
 }
 
 function imageExtension(bytes: ArrayBuffer): 'png' | 'jpg' | 'gif' | 'webp' | 'avif' | null {
@@ -277,11 +300,30 @@ export class SyncService {
     private fileManager: FileManager | null;
     private cursor: string | null = null;
     private taskFileMap: TaskFileMapping = {};
+    private collisionTaskIds = new Set<number>();
     private pendingTaskIds: number[] = [];
     private ignoredTaskIds = new Set<number>();
     private warnedUnmanagedDailyPaths = new Set<string>();
     private archiveCollisions = new Set<number>();
     private legacyProofs: Record<string, { filepath: string; contentHash: string }> = {};
+    private desktopCatchupDone = false;
+    async refreshLocalRetryTasks(): Promise<void> {
+        if(this.desktopCatchupDone || !this.settings.apiKey)return;
+        let before:number|null=null;
+        do {
+            const response=await requestUrl({url:`${CLIP2MD_API_BASE_URL}/tasks/local-retries/results${before?`?before_id=${before}`:""}`,headers:{"X-API-Key":this.settings.apiKey},throw:false});
+            if(response.status!==200)return;
+            const data:unknown=response.json;
+            if(!isRecord(data)||!Array.isArray(data.ids)||!data.ids.every(id=>Number.isSafeInteger(id)&&Number(id)>0))return;
+            for(const id of data.ids as number[])this.markPending(id);
+            before=typeof data.next==="number"&&data.next>0&&data.next!==before?data.next:null;
+        }while(before);
+        this.desktopCatchupDone=true;
+    }
+    private desktopMigrations = new Map<number, {before: string; rendered: string; path: string}>();
+    private authorizedDesktopMigrations = new Map<number,string>();
+    desktopMigration(id: number) { return this.desktopMigrations.get(id); }
+    authorizeDesktopMigration(id: number, before: string) { this.authorizedDesktopMigrations.set(id,before); }
     private subscriptionReplacement = new Map<number, string>();
 
     authorizeSubscriptionReplacement(taskId: number, content: string) { this.subscriptionReplacement.set(taskId, content); }
@@ -297,6 +339,7 @@ export class SyncService {
     }
 
     updateSettings(settings: BijiSyncSettings) {
+        if(this.settings.apiKey!==settings.apiKey)this.desktopCatchupDone=false;
         this.settings = settings;
     }
 
@@ -305,6 +348,10 @@ export class SyncService {
     }
 
     folderForTask(task: SyncTask): string { return this.resolveFolderPath(task, this.settings.targetFolder); }
+    folderForLocalComments(task:SyncTask,mainNotePath:string):string {
+        if(!this.settings.commentFolder?.trim())return mainNotePath.split('/').slice(0,-1).join('/');
+        return this.resolveFolderPath({...task,content_source:'comment_supplement',comment_source:undefined},this.settings.targetFolder);
+    }
 
     setCursor(cursor: string | null) {
         this.cursor = cursor;
@@ -407,7 +454,7 @@ export class SyncService {
                     const response = await requestUrl({
                         url: `${CLIP2MD_API_BASE_URL}/sync/tasks/${taskId}?sync_content_mode=${this.settings.syncContentMode}&sync_image_mode=${this.settings.imageMode}`,
                         method: 'GET',
-                        headers: { 'X-API-Key': this.settings.apiKey },
+                        headers: { 'X-API-Key': this.settings.apiKey, Accept: 'application/json, application/vnd.clip2md.desktop-local-ai-v1+json' },
                         throw: false,
                     });
                     if (response.status === 404) {
@@ -516,7 +563,28 @@ export class SyncService {
         return resolved.length > 0 && !resolved.split('/').some(segment => segment === '..');
     }
 
-    async renderToVault(
+    private vaultWrites: Promise<unknown> = Promise.resolve();
+
+    runExclusive<T>(action: () => Promise<T>): Promise<T> {
+        const next = this.vaultWrites.catch(() => undefined).then(action);
+        this.vaultWrites = next;
+        return next;
+    }
+
+    renderToVault(vault: Vault, task: SyncTask, folderTemplate: string, template: string): Promise<SyncResult> {
+        return this.runExclusive(() => this.renderToVaultUnlocked(vault, task, folderTemplate, template));
+    }
+
+    private async modifyPreservingLocal(vault: Vault, file: TFile, content: string, task?:SyncTask): Promise<void> {
+        const before = await vault.read(file);
+        const next = preserveLocalProperties(before, task ? preserveLocalTemplateValues(before,content,task.id,task.local_values,this.settings.frontmatterTemplate) : content);
+        await vault.process(file, current => {
+            if (current !== before) throw new Error('写入期间笔记已变化，请重试');
+            return next;
+        });
+    }
+
+    private async renderToVaultUnlocked(
         vault: Vault,
         task: SyncTask,
         folderTemplate: string,
@@ -526,6 +594,7 @@ export class SyncService {
         const settings = { ...this.settings };
         const writer = new SyncService(settings, this.fileManager ?? undefined);
         writer.taskFileMap = this.taskFileMap;
+        writer.collisionTaskIds = this.collisionTaskIds;
         writer.ignoredTaskIds = this.ignoredTaskIds;
         writer.pendingTaskIds = this.pendingTaskIds;
         writer.warnedUnmanagedDailyPaths = this.warnedUnmanagedDailyPaths;
@@ -536,6 +605,7 @@ export class SyncService {
             return await writer.writeTaskToVault(vault, task, folderTemplate, template);
         } finally {
             this.subscriptionReplacement.delete(task.id);
+            this.collisionTaskIds = writer.collisionTaskIds;
             this.pendingTaskIds = writer.pendingTaskIds;
         }
     }
@@ -554,6 +624,7 @@ export class SyncService {
         if (!validation.valid) throw new Error(validation.message);
         const mappedPath = this.taskFileMap[task.id];
         const wasIgnored = this.ignoredTaskIds.has(task.id);
+        const collisionTask = this.collisionTaskIds.has(task.id);
         const protectLocalRemoval = this.settings.preventReimportAfterLocalRemoval;
         if (protectLocalRemoval && wasIgnored) {
             return this.ignoredResult(task.id);
@@ -565,7 +636,7 @@ export class SyncService {
         }
         const restoring = Boolean(wasIgnored || (mappedPath && !mappedFilePresent));
         let folder = this.resolveFolderPath(task, folderTemplate);
-        if (task.subscription_context && mappedFilePresent && mappedPath) {
+        if ((task.subscription_context || this.isCommentTask(task)) && mappedFilePresent && mappedPath) {
             folder = mappedPath.split('/').slice(0, -1).join('/');
         }
         const selectedTask = task.ack_scope ? {
@@ -594,6 +665,9 @@ export class SyncService {
                     && [selectedTask.note_markdown_content, selectedTask.source_markdown_content]
                         .some(markdown => Boolean(markdown && (markdown.includes('![') || /<img\b/i.test(markdown))))),
         };
+        if (localizedTask.desktop_input) {
+            localizedTask.title = localizedTask.ai_title || null;
+        }
         let body = this.renderBodyTemplate(template, localizedTask);
         if (task.ack_scope?.image_mode === 'disabled' && this.settings.imageMode === 'disabled') body = this.stripImages(body) || '';
         const finalize = async (result: SyncResult): Promise<SyncResult> => {
@@ -613,6 +687,10 @@ export class SyncService {
             return this.ignoredResult(task.id);
         }
 
+        if (localizedTask.desktop_input) {
+            const result = await this.writeDesktopAI(vault,localizedTask,folder,body,assetResult,mappedPath);
+            return finalize(result);
+        }
         if (localizedTask.subscription_context) {
             try {
                 return finalize(await this.writeSubscription(vault, localizedTask, folder, body, assetResult, mappedPath));
@@ -630,7 +708,7 @@ export class SyncService {
         const content = this.renderSingleTask(localizedTask, body);
 
         const filename = this.generateFilename(localizedTask);
-        const filepath = `${folder}/${filename}`;
+        const filepath = [folder, filename].filter(Boolean).join('/');
 
         await this.ensureFolder(vault, folder);
 
@@ -640,6 +718,12 @@ export class SyncService {
                 const fileContent = await vault.read(mappedFile);
                 if (this.hasTaskMarker(fileContent, task.id)) {
                     if (mappedPath !== filepath) {
+                        if (this.isTaskCollisionPath(mappedPath, task.id)) {
+                            await this.modifyPreservingLocal(vault, mappedFile, content, task);
+                            this.taskFileMap[task.id] = mappedPath;
+                            this.collisionTaskIds.add(task.id);
+                            return finalize(this.completedResult(task.id, mappedPath, assetResult));
+                        }
                         const existingTarget = vault.getAbstractFileByPath(filepath);
                         if (existingTarget) {
                             if (!(existingTarget instanceof TFile)) {
@@ -651,7 +735,7 @@ export class SyncService {
                             }
                             const targetContent = await vault.read(existingTarget);
                             if (this.hasTaskMarker(targetContent, task.id)) {
-                                await vault.modify(existingTarget, content);
+                                await this.modifyPreservingLocal(vault, existingTarget, content, task);
                                 try {
                                     if (!this.fileManager) {
                                         throw new Error('FileManager unavailable');
@@ -675,7 +759,7 @@ export class SyncService {
                     if (!targetFile) {
                         throw new Error(`无法定位同步文件 ${filepath}`);
                     }
-                    await vault.modify(targetFile, content);
+                    await this.modifyPreservingLocal(vault, targetFile, content, task);
                     this.taskFileMap[task.id] = filepath;
                     return finalize(this.completedResult(task.id, filepath, assetResult));
                 }
@@ -687,17 +771,42 @@ export class SyncService {
         if (existingFile) {
             const fileContent = await vault.read(existingFile);
             if (this.hasTaskMarker(fileContent, task.id)) {
-                await vault.modify(existingFile, content);
+                await this.modifyPreservingLocal(vault, existingFile, content, task);
                 this.taskFileMap[task.id] = filepath;
                 return finalize(this.completedResult(task.id, filepath, assetResult));
             }
-            if (!restoring) {
-                return {
-                    filepath: null,
-                    skipped: true,
-                    reason: `文件 ${filename} 已存在且不含任务标记，已跳过`,
-                };
+            // A restored task has already been recognized as a safe collision.
+            // Preserve the established numbered-file behavior in that case.
+            const collisionPath = this.taskCollisionPath(filepath, task.id);
+            const collisionTarget = vault.getAbstractFileByPath(collisionPath);
+            if (collisionTask || restoring && !collisionTarget)
+                return this.createCollisionTaskAtAvailablePath(vault, filepath, task, content, assetResult, finalize);
+            if (collisionTarget) {
+                if (!(collisionTarget instanceof TFile)) {
+                    return {
+                        filepath: null,
+                        skipped: true,
+                        reason: `目标路径 ${collisionPath} 已被文件夹占用，已跳过`,
+                    };
+                }
+                const collisionContent = await vault.read(collisionTarget);
+                if (!this.hasTaskMarker(collisionContent, task.id)) {
+                    return {
+                        filepath: null,
+                        skipped: true,
+                        reason: `目标文件 ${collisionPath} 已存在且不含任务标记，已跳过`,
+                    };
+                }
+                await this.modifyPreservingLocal(vault, collisionTarget, content, task);
+                this.taskFileMap[task.id] = collisionPath;
+                this.collisionTaskIds.add(task.id);
+                return finalize(this.completedResult(task.id, collisionPath, assetResult));
             }
+            const createPath = this.nextAvailableMarkdownPath(vault, collisionPath);
+            await vault.create(createPath, content);
+            this.taskFileMap[task.id] = createPath;
+            this.collisionTaskIds.add(task.id);
+            return finalize(this.completedResult(task.id, createPath, assetResult));
         }
 
         const createPath = this.nextAvailableMarkdownPath(vault, filepath);
@@ -707,6 +816,46 @@ export class SyncService {
         return finalize(this.completedResult(task.id, createPath, assetResult));
     }
 
+    private async writeDesktopAI(vault: Vault, task: SyncTask, folder: string, body: string,
+        assets: Pick<SyncResult, 'pendingAssets'|'failedAssets'|'localizedAssetCount'|'unlocalizedImages'>, mappedPath?: string): Promise<SyncResult> {
+        const template=parseDocument(this.settings.frontmatterTemplate.replace(/^---\r?\n/, '').replace(/\r?\n---[ \t]*$/, ''));
+        const fields:string[]=['clip2md_ai_title'];
+        if(isMap(template.contents))for(const pair of template.contents.items)if(isScalar(pair.key)&&isScalar(pair.value)&&typeof pair.value.value==='string'&&(/\{\{(?:title|note_content)\}\}/.test(pair.value.value)||pair.value.value.includes('{{note_title}}')&&this.getNoteTitle(task)===task.ai_title))fields.push(String(pair.key.value));
+        let rendered=this.renderSingleTask(task,body);
+        if(task.subscription_context)rendered=withMetadata(rendered,{...task.subscription_context,task_id:task.id,title:this.getNoteTitle(task),url:task.url});
+        const front=/^(---\r?\n)([\s\S]*?)(\r?\n---)/.exec(rendered);
+        if(front) {const doc=parseDocument(front[2]); if(doc.errors.length)throw new LocalAIConflict("笔记属性无效");doc.set('clip2md_ai_title',task.ai_title||'');rendered=front[1]+doc.toString().trimEnd()+front[3]+rendered.slice(front[0].length);}
+        await this.ensureFolder(vault,folder);
+        const path=mappedPath || this.nextAvailableMarkdownPath(vault,`${folder}/${this.generateFilename(task)}`);
+        const file=vault.getFileByPath(path);
+        let next:string, warning:string|undefined;
+        if(file) {
+            const before=await vault.read(file);
+            try {
+                if(await localSourceChanged(before,task.id))warning="本地原文已修改或原文区缺失，已保留；智能笔记基于回传时的原文快照。";
+                next=await updateLocalAI(before,rendered,task.id,task.desktop_input!.id,fields,{ai:task.note_markdown_content||"",title:task.ai_title||""});
+            } catch(error) {
+                if(!(error instanceof LocalAIConflict))throw error;
+                if(this.authorizedDesktopMigrations.get(task.id)!==before) {
+                    this.desktopMigrations.set(task.id,{before,rendered,path});
+                    return {filepath:path,skipped:true,desktopConflict:true,reason:error.message,...assets};
+                }
+                // Explicit migration appends a fresh AI region, preserving every original byte.
+                const title=slot('title',task.id,999,task.ai_title||'');
+                next=await identifyLocalAI(before.replace(/<!-- clip2md-desktop:v1:[^\n]+ -->/g,'').replace(/<!-- \/?clip2md-(?:ai|source|title)(?::v1)?:[^>]+ -->/g,'')+`\n\n## 智能笔记 ${title}\n\n`+slot('ai',task.id,999,task.note_markdown_content||''),task.id,task.desktop_input!.id,[]);
+                this.authorizedDesktopMigrations.delete(task.id);
+                // Keep the migration layout stable on subsequent updates.
+                this.desktopMigrations.delete(task.id);
+            }
+            await vault.process(file,current=>{if(current!==before)throw new LocalAIConflict('写入期间笔记已变化');return next;});
+        } else {
+            next=await identifyLocalAI(rendered,task.id,task.desktop_input!.id,fields);
+            await vault.create(path,next);
+        }
+        this.taskFileMap[task.id]=path;
+        return {...this.completedResult(task.id,path,assets),warning};
+    }
+
     private async writeSubscription(vault: Vault, task: SyncTask, folder: string, body: string,
         assets: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
         mappedPath?: string): Promise<SyncResult> {
@@ -714,10 +863,16 @@ export class SyncService {
         const metadata = { ...context, task_id: task.id, title: this.getNoteTitle(task), url: task.url };
         const updateMetadata = (content: string) => {
             const next = withMetadata(content, metadata);
-            return task.comment_source ? withCommentProperties(next, task.comment_source, task.comment_local_link || null) : next;
+            return task.comment_source
+                ? withCommentProperties(
+                      next,
+                      task.comment_source,
+                      task.comment_local_link || null,
+                  )
+                : next;
         };
         const rendered = this.renderSingleTask(task, body);
-        const cloud = await managedRegion('cloud', task.id, stripFrontmatter(rendered).trim());
+        let cloud = await managedRegion('cloud', task.id, stripFrontmatter(rendered).trim());
         const links = await managedRegion('links', task.id, '');
         let path = mappedPath;
         let file = path ? vault.getFileByPath(path) : null;
@@ -725,7 +880,7 @@ export class SyncService {
             await this.ensureFolder(vault, folder);
             const filename = context.kind === 'daily_report'
                 ? `${context.report_date}-博主订阅日报.md` : this.generateFilename(task);
-            path = `${folder}/${filename}`;
+            path = [folder, filename].filter(Boolean).join('/');
             file = vault.getFileByPath(path);
             if (file && !this.hasTaskMarker(await vault.read(file), task.id)) {
                 path = this.nextAvailableMarkdownPath(vault, path); file = null;
@@ -737,6 +892,7 @@ export class SyncService {
             await vault.create(path!, updateMetadata(`${header}\n${cloud}\n\n${links}\n\n## 我的批注\n\n`));
         } else {
             const before = await vault.read(file);
+            cloud=await managedRegion("cloud",task.id,stripFrontmatter(preserveLocalTemplateValues(before,rendered,task.id,task.local_values,this.settings.frontmatterTemplate)).trim());
             const prior = documentMetadata(before);
             const authorized = this.subscriptionReplacement.get(task.id);
             const force = authorized !== undefined;
@@ -786,9 +942,12 @@ export class SyncService {
         const filepath = result.filepath!;
         const file = vault.getAbstractFileByPath(filepath);
         if (!(file instanceof TFile)) return { ...result, selectedContentWritten: false };
-        const scope = task.subscription_context ? 'subscription-v1' as const : undefined;
+        const scope = task.subscription_context && !task.desktop_input ? 'subscription-v1' as const : undefined;
         const savedFile = await vault.read(file);
-        const content = savedTaskContent(savedFile, task.id, scope);
+        const rawContent = savedTaskContent(savedFile, task.id, scope);
+        const content = !scope && !savedFile.includes('<!-- clip2md-task-start:') ? projectLocalProperties(rawContent,sourcePropertyKeys(this.settings.frontmatterTemplate)) : rawContent;
+        const projection = 'local-properties-v1' as const;
+        const localPropertyKeys=sourcePropertyKeys(this.settings.frontmatterTemplate);
         const commentMetadata = task.comment_source ? savedCommentProperties(savedFile) : '';
         const commentMetadataValid = !task.comment_source || commentMetadata === JSON.stringify(Object.values(commentProperties(task.comment_source)));
         const commentSourceHash = task.comment_source && commentMetadataValid ? await sha256(commentMetadata) : undefined;
@@ -800,7 +959,7 @@ export class SyncService {
             return {
                 ...result, selectedContentWritten, verifiedAssetIds: [], imageErrors: [],
                 imagesOmitted: true, unlocalizedImages: false,
-                savedProof: { filepath, contentHash: await sha256(content), images: [], scope, commentSourceHash },
+                savedProof: { filepath, contentHash: await sha256(projectProofContent(content,localPropertyKeys)), images: [], scope, commentSourceHash, projection, localPropertyKeys },
             };
         }
         const imageErrors = [...localized.imageErrors];
@@ -848,13 +1007,13 @@ export class SyncService {
             }
         }
         // A text link to a hosted attachment would also break after cleanup.
-        if (content.includes('/api/v1/assets/') || content.includes(`${CLIP2MD_MEDIA_CDN_BASE_URL}/assets/`)) {
+        if (content.includes('/api/v1/assets/') || hasHostedMediaReference(content)) {
             imageErrors.push('正文仍包含未保存到本地的托管素材引用');
         }
         return {
             ...result, selectedContentWritten, verifiedAssetIds: [...verifiedAssetIds].sort((a, b) => a - b), imageErrors,
             unlocalizedImages: imageErrors.length > 0,
-            savedProof: { filepath, contentHash: await sha256(content), images, scope, commentSourceHash },
+            savedProof: { filepath, contentHash: await sha256(projectProofContent(content,localPropertyKeys)), images, scope, commentSourceHash, projection, localPropertyKeys },
         };
     }
 
@@ -888,6 +1047,35 @@ export class SyncService {
         return candidate;
     }
 
+    private taskCollisionPath(filepath: string, taskId: number): string {
+        return `${filepath.slice(0, -3)} (任务 ${taskId}).md`;
+    }
+
+    private isTaskCollisionPath(filepath: string, taskId: number): boolean {
+        return filepath.endsWith(` (任务 ${taskId}).md`);
+    }
+
+    private async createCollisionTaskAtAvailablePath(
+        vault: Vault,
+        filepath: string,
+        task: SyncTask,
+        content: string,
+        assetResult: Pick<SyncResult, 'pendingAssets' | 'failedAssets' | 'localizedAssetCount' | 'unlocalizedImages'>,
+        finalize: (result: SyncResult) => Promise<SyncResult>,
+    ): Promise<SyncResult> {
+        // Restored tasks must keep the task-specific collision identity. A
+        // plain numbered path (for example "Note 2.md") is indistinguishable
+        // from an unmanaged user file on the next sync and can become stale.
+        const createPath = this.nextAvailableMarkdownPath(
+            vault,
+            this.taskCollisionPath(filepath, task.id),
+        );
+        await vault.create(createPath, content);
+        this.taskFileMap[task.id] = createPath;
+        this.collisionTaskIds.add(task.id);
+        return finalize(this.completedResult(task.id, createPath, assetResult));
+    }
+
     private async fetchTasksPage(cursor: string | null, limit: number): Promise<SyncBatch> {
         const params = new URLSearchParams({ limit: String(limit), sync_content_mode: this.settings.syncContentMode, sync_image_mode: this.settings.imageMode });
         if (cursor) {
@@ -896,7 +1084,10 @@ export class SyncService {
         const response = await requestUrl({
             url: `${CLIP2MD_API_BASE_URL}/sync/tasks?${params.toString()}`,
             method: 'GET',
-            headers: { 'X-API-Key': this.settings.apiKey },
+            headers: {
+                'X-API-Key': this.settings.apiKey,
+                Accept: 'application/json, application/vnd.clip2md.desktop-local-ai-v1+json',
+            },
             throw: false,
         });
         if (response.status < 200 || response.status >= 300) {
@@ -937,7 +1128,7 @@ export class SyncService {
         if (mappedFile) {
             const mappedContent = await vault.read(mappedFile);
             if (this.hasMergeBlock(mappedContent, task.id)) {
-                const next = this.applyDailyFrontmatter(this.upsertMergeBlock(mappedContent, task.id, block), task);
+                const next = this.applyDailyFrontmatter(this.upsertMergeBlock(mappedContent, task.id, preserveLocalTemplateValues(mappedContent,block,task.id,task.local_values)), task);
                 await vault.modify(mappedFile, next.content);
                 return { ...this.completedResult(task.id, mappedPath, assetResult), warning: this.dailyWarning(mappedPath, next.warning) };
             }
@@ -948,7 +1139,11 @@ export class SyncService {
         if (restoring && vault.getAbstractFileByPath(filepath)) {
             const existingContent = existing ? await vault.read(existing) : '';
             if (!this.isManagedDailyFile(existingContent)) {
-                filepath = this.nextAvailableMarkdownPath(vault, filepath);
+                filepath = this.nextAvailableMarkdownPath(
+                    vault,
+                    this.taskCollisionPath(filepath, task.id),
+                );
+                this.collisionTaskIds.add(task.id);
                 existing = null;
             }
         }
@@ -961,7 +1156,7 @@ export class SyncService {
         }
 
         const existingContent = await vault.read(existing);
-        const next = this.applyDailyFrontmatter(this.upsertMergeBlock(existingContent, task.id, block), task);
+        const next = this.applyDailyFrontmatter(this.upsertMergeBlock(existingContent, task.id, preserveLocalTemplateValues(existingContent,block,task.id,task.local_values)), task);
         await vault.modify(existing, next.content);
         this.taskFileMap[task.id] = filepath;
         return { ...this.completedResult(task.id, filepath, assetResult), warning: this.dailyWarning(filepath, next.warning) };
@@ -977,7 +1172,7 @@ export class SyncService {
         const frontmatter = this.renderDailyFrontmatter(content, task);
         const managed = /^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n<!-- clip2md-daily-frontmatter:v1 -->/;
         if (managed.test(content)) {
-            return { content: content.replace(managed, () => `${frontmatter}\n${DAILY_FRONTMATTER_MARKER}`) };
+            return { content: preserveLocalProperties(content, content.replace(managed, () => `${frontmatter}\n${DAILY_FRONTMATTER_MARKER}`)) };
         }
         if (/^\uFEFF?---[ \t]*(?:\r?\n|$)/.test(content)) {
             return { content, warning: '文件顶部已有手写 frontmatter，已保留；请手动迁移后使用按日合并元数据模板。' };
@@ -1107,7 +1302,7 @@ export class SyncService {
         const configuredImageFolder = this.settings.imageFolder?.trim() || '';
         const imageBaseFolder = configuredImageFolder
             ? configuredImageFolder === '/' ? '' : this.normalizePathTemplate(configuredImageFolder)
-            : `${folder}/_assets`;
+            : [folder, '_assets'].filter(Boolean).join('/');
         const imageFolder = imageBaseFolder
             ? `${imageBaseFolder}/task-${task.id}`
             : `task-${task.id}`;
@@ -1137,7 +1332,8 @@ export class SyncService {
                 const asset = task.ack_scope?.required_assets.find(item => stableImageIdentity(item.url) === stableImageIdentity(remoteUrl)
                     || item.original_url === remoteUrl
                     || apiAssetId(remoteUrl) === item.id);
-                if (!isManagedImageUrl(remoteUrl) && !asset) {
+                const external = sourceImageRequest(remoteUrl);
+                if (!isManagedImageUrl(remoteUrl) && !asset && !external) {
                     continue;
                 }
                 if (replacements.has(remoteUrl)) {
@@ -1145,20 +1341,20 @@ export class SyncService {
                 }
 
                 try {
-                    const identity = asset ? `asset:${asset.id}` : stableImageIdentity(remoteUrl);
+                    const identity = asset ? `asset:${asset.id}` : external?.url || stableImageIdentity(remoteUrl);
                     const cachedPath = downloaded.get(identity);
                     if (cachedPath) {
                         replacements.set(remoteUrl, this.relativeImageUrl(referenceFolder, cachedPath));
                         continue;
                     }
-                    const downloadUrl = asset?.url || remoteUrl;
+                    const downloadUrl = asset?.url || external?.url || remoteUrl;
                     const parsedDownload = new URL(downloadUrl, CLIP2MD_API_BASE_URL);
                     const isApiAsset = parsedDownload.origin === new URL(CLIP2MD_API_BASE_URL).origin
                         && parsedDownload.pathname.startsWith('/api/v1/assets/');
                     const response = await requestUrl({
                         url: parsedDownload.toString(),
                         method: 'GET',
-                        headers: isApiAsset ? { 'X-API-Key': this.settings.apiKey } : {},
+                        headers: isApiAsset ? { 'X-API-Key': this.settings.apiKey } : sourceImageRequest(downloadUrl)?.headers || {},
                         throw: false,
                     });
                     if (response.status < 200 || response.status >= 300) {
@@ -1168,8 +1364,10 @@ export class SyncService {
                         continue;
                     }
                     const responseType = this.getResponseHeader(response.headers, 'content-type');
+                    const bytes = response.arrayBuffer;
+                    const extension = imageExtension(bytes);
                     const assetStatus = this.getResponseHeader(response.headers, 'x-asset-status')
-                        || (responseType.startsWith('image/') && !responseType.includes('svg') ? 'READY' : 'PENDING');
+                        || (extension || responseType.startsWith('image/') && !responseType.includes('svg') ? 'READY' : 'PENDING');
                     if (assetStatus === 'PENDING' || assetStatus === 'PROCESSING') {
                         pendingAssets = true;
                         imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：仍在处理中 (${assetStatus})`);
@@ -1183,8 +1381,6 @@ export class SyncService {
                         continue;
                     }
 
-                    const bytes = response.arrayBuffer;
-                    const extension = imageExtension(bytes);
                     if (!extension) {
                         pendingAssets = true;
                         imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：图片为空或格式无效`);
@@ -1325,34 +1521,39 @@ export class SyncService {
 
     private generateFrontmatter(task: SyncTask, title: string): string {
         const template = this.settings.frontmatterTemplate;
+        const createdAt = formatBeijingDateTime(task.created_at);
         const tagsValue = task.tags && task.tags.length > 0
             ? `[${task.tags.map(tag => JSON.stringify(tag.name)).join(', ')}]`
             : '[]';
 
         if (template && template.trim()) {
-            return this.replaceTemplateVariables(template, {
+            const replacements = {
                 '{{note_title}}': JSON.stringify(this.getNoteTitle(task)).slice(1, -1),
                 '{{title}}': title.replace(/"/g, '\\"'),
                 '{{source_title}}': JSON.stringify(task.source_title || '').slice(1, -1),
                 '{{source_title_or_title}}': JSON.stringify(task.source_title || task.title || `untitled-${task.id}`).slice(1, -1),
                 '{{display_title}}': JSON.stringify(task.display_title || task.title || task.source_title || `untitled-${task.id}`).slice(1, -1),
                 '{{source_date}}': task.source_date || '',
-                '{{created_at}}': task.created_at,
+                '{{created_at}}': createdAt,
                 '{{source}}': this.getSourceLabel(task).replace(/"/g, '\\"'),
                 '{{duration}}': task.duration_seconds ? this.formatDuration(task.duration_seconds) : '',
                 '{{content_type}}': task.content_type || '',
                 '{{task_id}}': String(task.id),
                 '{{tags}}': tagsValue,
                 '{{url}}': JSON.stringify(task.url || '').slice(1, -1),
-            });
+            };
+            return renderLocalPropertyValues(
+                template,
+                task.local_values || {},
+                masked => this.replaceTemplateVariables(masked, replacements),
+            );
         }
 
         // 默认格式
         const lines: string[] = ['---'];
         lines.push(`title: ${JSON.stringify(this.getNoteTitle(task))}`);
         lines.push(`date: ${JSON.stringify(task.source_date || '')}`);
-        lines.push(`created_at: "${task.created_at}"`);
-        lines.push(`source: "${this.getSourceLabel(task).replace(/"/g, '\\"')}"`);
+        lines.push(`created_at: "${createdAt}"`);
         if (task.duration_seconds) {
             lines.push(`duration: "${this.formatDuration(task.duration_seconds)}"`);
         }
@@ -1384,7 +1585,13 @@ export class SyncService {
         const frontmatter = this.generateFrontmatter(task, title);
         const marker = `<!-- biji-task-id:${task.id} -->`;
         const content = [frontmatter, marker, body].filter(Boolean).join('\n\n');
-        return task.comment_source ? withCommentProperties(content, task.comment_source, task.comment_local_link || null) : content;
+        return task.comment_source
+            ? withCommentProperties(
+                  content,
+                  task.comment_source,
+                  task.comment_local_link || null,
+              )
+            : content;
     }
 
     private renderBodyTemplate(template: string, task: SyncTask): string {
@@ -1393,8 +1600,9 @@ export class SyncService {
         const sourceContent = task.source_markdown_content || '';
         const content = this.getContentByMode(task);
         const tagsStr = task.tags && task.tags.length > 0 ? task.tags.map(t => t.name).join(', ') : '';
+        const createdAt = formatBeijingDateTime(task.created_at);
 
-        return this.replaceTemplateVariables(template, {
+        const replacements: Record<string,string> = {
             '{{note_title}}': this.getNoteTitle(task),
             '{{title}}': title,
             '{{source_title}}': task.source_title || '',
@@ -1405,13 +1613,43 @@ export class SyncService {
             '{{source_content}}': sourceContent,
             '{{url}}': task.url,
             '{{date}}': task.source_date || '',
-            '{{created_at}}': task.created_at,
+            '{{created_at}}': createdAt,
             '{{created_date}}': this.formatDateForFilename(task.created_at),
             '{{source}}': this.getSourceLabel(task),
             '{{duration}}': task.duration_seconds ? this.formatDuration(task.duration_seconds) : '',
             '{{content_type}}': task.content_type || '',
             '{{task_id}}': String(task.id),
             '{{tags}}': tagsStr,
+        };
+        for(const name of Object.keys(LOCAL_VARIABLES)) {
+            const value = task.local_values?.[name];
+            replacements[`{{${name}}}`] = value === undefined ? ''
+                : ['local_cover', 'local_media', 'local_gallery'].includes(name) ? renderLocalMedia(name, value)
+                : name === 'local_transcript' ? renderLocalTranscript(value, task.local_values?.local_media || [])
+                : name === 'local_assets' && Array.isArray(value) ? value.map(file=>`[本地素材](/${encodeURI(file)})`).join('\n\n')
+                : name === 'local_transcript_link' ? `[本地转写](/${encodeURI(String(value))})` : String(value);
+        }
+        if(task.desktop_input) {
+            let index=0;
+            return template.replace(/\{\{[a-z_]+\}\}/g,token=>{
+                const occurrence=index++;
+                if(token==='{{content}}') {
+                    const ai=this.settings.syncContentMode==='source'?'':slot('ai',task.id,occurrence,noteContent);
+                    const source=this.settings.syncContentMode==='note'?'':slot('source',task.id,occurrence,sourceContent);
+                    return [ai,source].filter(Boolean).join('\n\n');
+                }
+                if(token==='{{note_content}}')return slot('ai',task.id,occurrence,noteContent);
+                if(token==='{{source_content}}')return slot('source',task.id,occurrence,sourceContent);
+                if(token==='{{title}}' || token==='{{note_title}}' && this.getNoteTitle(task)===task.ai_title)return slot('title',task.id,occurrence,task.ai_title||'');
+                return replacements[token] ?? token;
+            });
+        }
+        let occurrence=0;
+        return template.replace(/\{\{([a-z_]+)\}\}/g,(token,name:string)=>{
+            if (!(name in LOCAL_VARIABLES)) return replacements[token] ?? token;
+            const value = replacements[token] || '';
+            // Keep embeds outside HTML-comment blocks so Markdown renders them.
+            return renderLocalToken(name, task.id, occurrence++, value && ['local_cover', 'local_media', 'local_gallery'].includes(name) ? `\n\n${value}\n\n` : value);
         });
     }
 
@@ -1432,10 +1670,26 @@ export class SyncService {
         return safeBase.endsWith('.md') ? safeBase : `${safeBase}.md`;
     }
 
+    private isCommentTask(task: SyncTask): boolean {
+        return !!task.comment_source || task.content_source === 'comment_supplement'
+            || task.subscription_context?.kind === 'comment_supplement';
+    }
+
     private resolveFolderPath(task: SyncTask, folderTemplate: string): string {
         const context = task.subscription_context;
+        if (this.isCommentTask(task)) {
+            const configured = this.settings.commentFolder?.trim();
+            if (configured) {
+                const resolved = this.normalizePathTemplate(this.replaceTaskVariables(configured, task));
+                return resolved || 'Clip2MD';
+            }
+            const mainId = task.comment_source?.main_task_id || context?.original_task_id;
+            if (mainId && this.taskFileMap[mainId]) {
+                return this.taskFileMap[mainId].split('/').slice(0, -1).join('/');
+            }
+        }
         if (context) {
-            const config = archiveConfig(this.settings.subscriptionAccounts?.[context.account_id]);
+            const config = resolvedArchiveConfig(archiveConfig(this.settings.subscriptionAccounts?.[context.account_id]), this.settings.targetFolder);
             if (context.kind === 'daily_report') folderTemplate = config.reportFolder;
             else if (context.kind === 'comment_supplement' && context.original_task_id && this.taskFileMap[context.original_task_id]) {
                 return this.taskFileMap[context.original_task_id].split('/').slice(0, -1).join('/');
@@ -1453,6 +1707,7 @@ export class SyncService {
 
     private replaceTaskVariables(template: string, task: SyncTask): string {
         const title = task.title || this.extractTitle(task.note_markdown_content || task.source_markdown_content || '') || `untitled-${task.id}`;
+        const createdAt = formatBeijingDateTime(task.created_at);
         const replacements: Record<string, string> = {
             '{{platform}}': task.subscription_context ? safeArchiveSegment(task.subscription_context.platform || '') : '',
             '{{blogger_name}}': task.subscription_context ? safeArchiveSegment(bloggerName(task.subscription_context)) : '',
@@ -1464,7 +1719,7 @@ export class SyncService {
             '{{source_title_or_title}}': this.sanitizeFilenameSegment(task.source_title || task.title || '') || `untitled-${task.id}`,
             '{{display_title}}': this.sanitizeFilenameSegment(task.display_title || task.title || task.source_title || '') || `untitled-${task.id}`,
             '{{date}}': task.source_date || '',
-            '{{created_at}}': task.created_at,
+            '{{created_at}}': createdAt,
             '{{created_date}}': this.formatDateForFilename(task.created_at),
             '{{source}}': this.getSourceLabel(task),
             '{{tags}}': task.tags?.map(tag => tag.name).join(', ') || '',
@@ -1478,8 +1733,10 @@ export class SyncService {
 
     private replaceTemplateVariables(template: string, replacements: Record<string, string>): string {
         // Replace only the original template's tokens, keeping values literal.
+        for (const name of desktopTokens(template)) if (!("{{"+name+"}}" in replacements)) replacements["{{"+name+"}}"] = "";
         return template.replace(/\{\{[a-z_]+\}\}/g, token => (
-            Object.prototype.hasOwnProperty.call(replacements, token) ? replacements[token] : token
+            Object.prototype.hasOwnProperty.call(replacements, token)
+                ? replacements[token] : token
         ));
     }
 
@@ -1556,10 +1813,7 @@ export class SyncService {
     }
 
     private hasTaskMarker(content: string, taskId: number): boolean {
-        const hasFrontmatter = new RegExp(`task_id:\\s*${taskId}\\b`).test(content);
-        const hasComment = new RegExp(`biji-task-id:${taskId}\\b`).test(content);
-        const hasMerge = new RegExp(`clip2md-task-start:${taskId}\\b`).test(content);
-        return hasFrontmatter || hasComment || hasMerge;
+        return hasTaskId(content, taskId);
     }
 
     private hasMappedTaskMarker(content: string, taskId: number): boolean {

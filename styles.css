@@ -36,9 +36,9 @@
 .clip2md-status-bar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
     padding: 12px 14px;
-    margin: 12px 0 18px;
+    margin: 14px 0 22px;
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-m);
     background: var(--background-secondary);
@@ -80,13 +80,160 @@
 
 .clip2md-status-summary {
     color: var(--text-muted);
-    flex: 1 1 280px;
+    flex: 1 1 260px;
+    min-width: 0;
+    line-height: 1.45;
 }
 
 .clip2md-status-actions {
     display: flex;
     gap: 8px;
+    flex: 0 0 auto;
 }
+
+.clip2md-settings-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    min-height: 42px;
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+}
+
+.clip2md-cloud-account {
+    margin: 0;
+    min-width: 0;
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.clip2md-help-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+}
+
+.clip2md-help-actions a,
+.clip2md-help-actions button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+}
+
+.clip2md-help-actions a {
+    line-height: 1.2;
+}
+
+.clip2md-update-panel {
+    margin-top: 24px;
+    padding: 4px 14px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+}
+
+.clip2md-update-panel > .setting-item-heading {
+    margin-top: 4px;
+}
+
+.clip2md-update-meta {
+    display: grid;
+    gap: 3px;
+    margin: 2px 0 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius-s);
+    background: var(--background-primary);
+}
+
+.clip2md-update-meta .setting-item-description {
+    margin: 0;
+    line-height: 1.4;
+}
+
+.clip2md-update-version {
+    color: var(--text-normal);
+}
+
+.clip2md-update-action {
+    margin-bottom: 0;
+}
+
+@media (max-width: 600px) {
+    .clip2md-settings-topbar {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+
+    .clip2md-help-actions {
+        justify-content: flex-start;
+    }
+
+    .clip2md-status-bar {
+        align-items: stretch;
+    }
+
+    .clip2md-status-actions {
+        width: 100%;
+    }
+
+    .clip2md-status-actions button {
+        flex: 1 1 0;
+    }
+}
+
+.clip2md-subscription-overview,
+.clip2md-desktop-overview {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+}
+.clip2md-subscription-overview-title { font-size: var(--font-ui-medium); }
+.clip2md-subscription-status { color: var(--text-muted); }
+.clip2md-subscription-status.is-ready { color: var(--color-green); }
+.clip2md-subscription-status.is-pending { color: var(--text-warning); }
+.clip2md-subscription-metrics { display: flex; flex-wrap: wrap; gap: 16px; color: var(--text-muted); }
+.clip2md-subscription-metrics > div { display: inline-flex; align-items: baseline; gap: 4px; }
+.clip2md-subscription-metrics strong { color: var(--text-normal); font-variant-numeric: tabular-nums; }
+.clip2md-subscription-metrics small { font-size: var(--font-ui-smaller); }
+.clip2md-settings-group,
+.clip2md-queue-group {
+    margin: 14px 0;
+    padding: 0 12px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary-alt);
+}
+.clip2md-settings-group > summary,
+.clip2md-queue-group > summary { cursor: pointer; padding: 12px 4px; font-weight: 600; }
+.clip2md-subscription-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.clip2md-subscription-filter-panel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 8px; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); }
+.clip2md-filter-count { margin-left: auto; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.clip2md-subscription-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; margin: 8px 0; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-primary-alt); list-style: none; }
+.clip2md-subscription-item-body { min-width: 0; flex: 1; }
+.clip2md-subscription-item-status, .clip2md-subscription-item-message { margin: 4px 0 0; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.clip2md-subscription-item-actions { justify-content: flex-end; }
+.clip2md-empty-state { padding: 20px 12px; color: var(--text-muted); text-align: center; }
+.clip2md-local-guide { margin: 8px 0 14px; color: var(--text-muted); }
+.clip2md-local-platform { margin: 10px 0; }
+.clip2md-local-platform-header { margin-bottom: 0; }
+.clip2md-local-platform-options { padding: 0 12px 8px; border-top: 1px solid var(--background-modifier-border); }
+.clip2md-queue-item { margin: 6px 0; }
+.clip2md-queue-item .setting-item { border-top: 0; padding-block: 8px; }
 
 .clip2md-guide-card {
     border: 1px solid var(--background-modifier-border);
@@ -192,6 +339,15 @@
     margin: 10px 0;
 }
 
+.clip2md-local-variable-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    width: 100%;
+}
+.clip2md-local-variable-row small { flex: 1 1 220px; }
+
 .clip2md-chip-button {
     padding: 4px 10px;
     border: 1px solid var(--background-modifier-border);
@@ -249,6 +405,9 @@
     .clip2md-platform-mobile .clip2md-binding-tabs {
         padding: 2px;
     }
+    .clip2md-subscription-item { flex-direction: column; }
+    .clip2md-subscription-item-actions { width: 100%; justify-content: flex-start; }
+    .clip2md-filter-count { width: 100%; margin-left: 0; }
 }
 
 @media (pointer: coarse) {
@@ -334,6 +493,38 @@
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+}
+
+.clip2md-folder-picker-create {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.clip2md-folder-picker-create p {
+    flex-basis: 100%;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.clip2md-folder-picker-create input {
+    flex: 1 1 180px;
+    min-width: 0;
+}
+
+.clip2md-folder-picker-create button:focus-visible,
+.clip2md-folder-picker-create input:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+    .clip2md-folder-picker-create input { flex-basis: 100%; }
+    .clip2md-folder-picker-create button,
+    .clip2md-folder-picker-buttons button,
+    .clip2md-tree-item { min-height: 40px; }
 }
 
 .clip2md-folder-picker-buttons button {
@@ -429,6 +620,9 @@ input.clip2md-flash {
 .clip2md-note-properties dt { color: var(--text-muted); }
 .clip2md-note-properties dd { margin: 0; white-space: pre-wrap; }
 .clip2md-settings .clip2md-note-content [hidden], .clip2md-settings .setting-item[hidden] { display: none; }
+.clip2md-settings button:focus-visible, .clip2md-settings input:focus-visible { outline: 2px solid var(--text-accent); outline-offset: 2px; }
+.clip2md-settings .clip2md-advanced-summary:focus-visible { outline: 2px solid var(--text-accent); outline-offset: 2px; border-radius: var(--radius-s); }
+.clip2md-settings .setting-item-description[role="alert"], .clip2md-settings [role="alert"] { color: var(--text-error); }
 @media (pointer: coarse) {
     .clip2md-note-content button, .clip2md-note-content select, .clip2md-note-content summary { min-height: 48px; }
 }
@@ -439,6 +633,22 @@ input.clip2md-flash {
 .clip2md-settings .clip2md-content-preview .clip2md-note-body :is(h1, h2, h3, h4, h5, h6) { display: block; }
 /* Subscription controls use native Obsidian components on desktop and mobile. */
 .clip2md-subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 8px; }
+.clip2md-subscription-primary-actions, .clip2md-subscription-secondary-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.clip2md-subscription-primary-actions button { background:var(--interactive-accent); color:var(--text-on-accent); }
+.clip2md-subscription-secondary-actions { margin-left:auto; }
+.clip2md-subscription-filter-panel { padding:12px; border:1px solid var(--background-modifier-border); border-radius:var(--radius-m); background:var(--background-secondary); }
+.clip2md-filter-count { display:block; margin-top:6px; color:var(--text-muted); font-size:var(--font-ui-small); }
+.clip2md-subscription-item { padding:14px 0; border-bottom:1px solid var(--background-modifier-border); }
+.clip2md-subscription-item-body { display:grid; gap:6px; }
+.clip2md-subscription-item-body > strong { font-size:var(--font-ui-medium); }
+.clip2md-subscription-item-status { display:flex; flex-wrap:wrap; gap:6px; }
+.clip2md-status-badge { display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px; font-size:var(--font-ui-smaller); background:var(--background-modifier-border); color:var(--text-muted); }
+.clip2md-status-badge.is-error { color:var(--text-error); background:color-mix(in srgb, var(--text-error) 12%, transparent); }
+.clip2md-status-badge.is-local { color:var(--text-accent); }
+.clip2md-status-badge.is-cloud { color:var(--text-success); }
+.clip2md-status-badge.is-muted { color:var(--text-muted); }
+.clip2md-subscription-item-actions { justify-content:flex-start; }
+.clip2md-empty-state { padding:24px 12px; text-align:center; color:var(--text-muted); }
 .clip2md-subscription-actions button { min-height: 32px; }
 .clip2md-subscription-list { padding-inline-start: 20px; }
 .clip2md-subscription-list > li { margin-block: 16px; overflow-wrap: anywhere; }
@@ -458,3 +668,1807 @@ input.clip2md-flash {
     .clip2md-subscription-settings input[type="text"] { width: 100%; min-width: 0; }
     .clip2md-subscription-actions { flex-wrap: wrap; }
 }
+
+.clip2md-local-retry-preview { width: 100%; }
+.clip2md-local-platform { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); padding: 0 12px; margin-block: 8px; }
+.clip2md-local-platform-options { padding-left: 12px; border-left: 2px solid var(--background-modifier-border); margin-bottom: 12px; }
+.clip2md-local-platform-options[hidden] { display: none; }
+
+.clip2md-local-domain-editor { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 10px; }
+.clip2md-local-domain-editor input { flex: 1 1 180px; min-width: 0; }
+.clip2md-local-domain { border-top: 1px solid var(--background-modifier-border); padding-top: 12px; margin-top: 12px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    .clip2md-local-domain-editor input { flex-basis: 100%; }
+    .clip2md-local-domain-editor button, .clip2md-local-domain button { min-height: 40px; }
+}
+
+/* Local clipping settings use the same type scale and spacing on integrated builds. */
+.clip2md-desktop-settings { --clip2md-desktop-space: 18px; }
+.clip2md-desktop-settings > .setting-item-heading { margin-top: 28px; margin-bottom: 10px; }
+.clip2md-desktop-settings > .setting-item-heading:first-of-type { margin-top: 8px; }
+.clip2md-desktop-settings .setting-item { gap: 18px; padding-block: 12px; }
+.clip2md-desktop-settings .setting-item-name { font-size: var(--font-ui-small); font-weight: 600; line-height: 1.4; }
+.clip2md-desktop-settings .setting-item-description { font-size: var(--font-ui-smaller); line-height: 1.55; }
+.clip2md-desktop-primary-setting { margin: 0 0 14px; padding: 14px 16px !important; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); }
+.clip2md-desktop-status { margin: 12px 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: var(--radius-s); background: var(--background-secondary); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; }
+.clip2md-desktop-channel { margin: -6px 0 18px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.clip2md-desktop-overview { display:grid; gap:8px; margin:0 0 22px; padding:16px 18px; border:1px solid var(--background-modifier-border); border-radius:var(--radius-m); background:var(--background-secondary); }
+.clip2md-desktop-overview strong { font-size: var(--font-ui-medium); line-height: 1.35; }
+.clip2md-desktop-overview .setting-item-description { line-height: 1.45; }
+.clip2md-desktop-settings .clip2md-settings-group { margin:18px 0; padding:0 14px 12px; }
+.clip2md-desktop-settings .clip2md-settings-group > summary { padding:15px 4px; font-size: var(--font-ui-small); }
+.clip2md-desktop-settings .clip2md-settings-group-content { padding: 2px 4px 8px; }
+.clip2md-desktop-settings .clip2md-queue-summary { margin:12px 0; padding:11px 13px; font-size: var(--font-ui-smaller); line-height: 1.45; }
+.clip2md-desktop-settings .clip2md-tool-setup-error { margin: 10px 0; font-size: var(--font-ui-smaller); line-height: 1.5; }
+.clip2md-desktop-settings .clip2md-local-guide { margin: 0 0 16px; font-size: var(--font-ui-smaller); line-height: 1.6; }
+.clip2md-desktop-settings .clip2md-queue-group { margin:10px 0; padding:0 12px 8px; }
+.clip2md-desktop-settings .clip2md-queue-group > summary { padding:12px 2px; font-size: var(--font-ui-smaller); }
+.clip2md-desktop-settings .clip2md-queue-item .setting-item { padding-block:10px; }
+.clip2md-desktop-settings .clip2md-local-platform { padding: 0 14px 8px; margin-block: 12px; background: var(--background-primary); }
+.clip2md-desktop-settings .clip2md-local-platform-header { margin-inline: -14px; padding-inline: 14px !important; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-secondary); border-radius: var(--radius-m) var(--radius-m) 0 0; }
+.clip2md-desktop-settings .clip2md-local-platform-options { padding: 8px 2px 4px 14px; margin: 10px 0 8px; }
+.clip2md-desktop-settings .clip2md-local-platform-details > summary { padding:12px 4px 8px; font-size: var(--font-ui-smaller); }
+.clip2md-desktop-settings .clip2md-local-platform .setting-item { padding-block: 10px; }
+.clip2md-desktop-settings .clip2md-local-platform .setting-item-control { gap: 8px; }
+.clip2md-desktop-settings .clip2md-local-platform .setting-item-control button { min-height: 32px; }
+.clip2md-desktop-settings .clip2md-local-domain { padding: 12px 0 4px; }
+.clip2md-desktop-settings .clip2md-local-domain > strong { display: block; margin-bottom: 4px; font-size: var(--font-ui-small); }
+.clip2md-desktop-settings .clip2md-local-domain > p { margin: 4px 0 8px; font-size: var(--font-ui-smaller); line-height: 1.5; }
+@media (max-width: 600px) {
+    .clip2md-desktop-settings .setting-item { gap: 8px; padding-block: 11px; }
+    .clip2md-desktop-settings .clip2md-desktop-primary-setting { padding: 12px !important; }
+    .clip2md-desktop-settings .clip2md-desktop-overview { padding: 14px; }
+    .clip2md-desktop-settings .clip2md-settings-group { padding-inline: 10px; }
+    .clip2md-desktop-settings .clip2md-local-platform .setting-item-control { width: 100%; justify-content: stretch; }
+    .clip2md-desktop-settings .clip2md-local-platform .setting-item-control button { min-height: 44px; flex: 1 1 100%; }
+}
+
+/* Native Obsidian controls and theme colors; type follows the user's UI scale. */
+.clip2md-settings,
+.clip2md-subscription-settings,
+.clip2md-subscription-view,
+.clip2md-desktop-settings {
+    font-size: var(--font-ui-small, 13px);
+    line-height: 1.4;
+}
+.clip2md-settings :is(.setting-item-description, .clip2md-preview-block),
+.clip2md-subscription-settings :is(.setting-item-description, .clip2md-filter-count),
+.clip2md-subscription-view :is(.setting-item-description, .clip2md-filter-count),
+.clip2md-desktop-settings :is(.setting-item-description, .clip2md-filter-count) {
+    font-size: var(--font-ui-smaller, 12px);
+    line-height: 1.5;
+}
+.clip2md-settings :is(.setting-item-description, .clip2md-error-text),
+.clip2md-subscription-settings .setting-item-description,
+.clip2md-subscription-view :is(.clip2md-subscription-item-message, .clip2md-subscription-error),
+.clip2md-desktop-settings :is(.setting-item-description, .clip2md-tool-setup-error, .clip2md-desktop-status) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.clip2md-status-bar { align-items: center; gap: 16px; margin: 0 0 18px; padding: 14px 16px; }
+.clip2md-status-main { flex: 1 1 320px; min-width: 0; }
+.clip2md-status-account { margin-bottom: 5px; }
+.clip2md-status-account .clip2md-cloud-account { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.clip2md-account-name { color: var(--text-normal); font-size: var(--font-ui-medium, 15px); font-weight: var(--font-semibold); }
+.clip2md-account-id { color: var(--text-muted); font-size: var(--font-ui-smaller, 12px); overflow-wrap: anywhere; }
+.clip2md-status-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.clip2md-status-line .clip2md-status-summary { flex: 1 1 200px; }
+.clip2md-status-actions { flex: 0 0 auto; }
+.clip2md-settings-section { margin: 0; padding: 0; border-bottom: 1px solid var(--background-modifier-border); }
+.clip2md-settings-section > summary { min-height: 44px; padding: 12px 2px; cursor: pointer; color: var(--text-normal); font-size: var(--font-ui-medium, 15px); font-weight: var(--font-semibold); line-height: 1.4; }
+.clip2md-settings-section > :not(summary) { margin-inline: 2px; }
+.clip2md-settings-section > .setting-item:last-child { border-bottom: 0; }
+.clip2md-settings-section > .setting-item-heading { margin: 10px 0 0; font-size: var(--font-ui-small, 13px); }
+
+/* Keep the main settings page rhythm consistent between headings, groups and
+   the maintenance actions at the bottom of the page. */
+.clip2md-settings > :is(.setting-item, .setting-item-heading),
+.clip2md-settings-section > :is(.setting-item, .setting-item-heading) {
+    margin-block: 0;
+}
+.clip2md-settings > .setting-item-heading + .setting-item {
+    margin-top: 12px;
+}
+.clip2md-settings > .setting-item-heading {
+    margin-top: 16px;
+    padding: 0 2px 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    font-size: var(--font-ui-medium, 15px);
+    line-height: 1.4;
+}
+.clip2md-settings-section:not([open]) + .setting-item-heading {
+    margin-top: 12px;
+}
+.clip2md-settings > .setting-item + .clip2md-settings-section > summary {
+    padding-top: 16px;
+}
+.clip2md-settings .clip2md-update-panel {
+    margin-top: 16px;
+}
+.clip2md-settings .clip2md-update-panel > .setting-item,
+.clip2md-settings .clip2md-update-panel > .setting-item-heading {
+    margin-block: 0;
+}
+.clip2md-settings .clip2md-update-panel > .setting-item-heading {
+    margin-top: 4px;
+}
+.clip2md-settings .clip2md-update-action {
+    padding-bottom: 4px;
+}
+.clip2md-settings .clip2md-help-actions {
+    margin-top: 8px;
+    padding: 12px 14px 0;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.clip2md-subscription-overview-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; }
+.clip2md-subscription-overview-header > strong { font-size: var(--font-ui-medium, 15px); }
+.clip2md-subscription-overview-header .clip2md-cloud-account { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.clip2md-subscription-status { font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-view { container-type: inline-size; }
+.clip2md-subscription-scope-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 8px 0; }
+.clip2md-subscription-scope-tools .clip2md-filter-count { margin: 0; }
+.clip2md-subscription-settings > details { margin: 10px 0; padding: 0 12px 10px; }
+.clip2md-subscription-settings > details > summary { min-height: 44px; padding: 12px 0; font-size: var(--font-ui-medium, 15px); }
+.clip2md-subscription-settings :is(button, input, select, summary):focus-visible,
+.clip2md-subscription-view :is(button, input, select, summary):focus-visible,
+.clip2md-desktop-settings :is(button, input, select, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.clip2md-subscription-header { align-items: center; gap: 8px 12px; margin-bottom: 8px; }
+.clip2md-subscription-header h2 { margin: 0; font-size: var(--font-ui-larger, 17px); line-height: 1.35; }
+.clip2md-subscription-header p { margin: 3px 0 0; }
+.clip2md-subscription-panel-actions { margin: 0; }
+.clip2md-subscription-more { position: relative; flex: 0 0 auto; }
+.clip2md-subscription-more > summary,
+.clip2md-filter-disclosure > summary,
+.clip2md-subscription-item-more > summary,
+.clip2md-queue-actions > summary { min-height: 32px; padding: 6px 8px; cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-more-actions,
+.clip2md-subscription-item-more-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+.clip2md-subscription-view-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.clip2md-segmented-control { display: inline-flex; padding: 2px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); background: var(--background-secondary); }
+.clip2md-segmented-control button { min-height: 30px; padding: 3px 12px; border: 0; box-shadow: none; background: transparent; color: var(--text-muted); }
+.clip2md-segmented-control button.is-active { background: var(--background-primary); color: var(--text-normal); box-shadow: var(--shadow-s); }
+.clip2md-filter-disclosure > summary { display: inline-flex; align-items: center; }
+.clip2md-subscription-filter-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; margin: 6px 0 10px; padding: 4px 12px; }
+.clip2md-subscription-filter-panel .setting-item { min-width: 0; padding: 8px 0; }
+.clip2md-subscription-filter-panel .setting-item-name { font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-filter-panel select { width: 100%; min-width: 0; }
+.clip2md-subscription-directory { margin: 6px 0 10px; }
+.clip2md-subscription-directory > summary { min-height: 32px; cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-directory-item { padding: 8px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.clip2md-subscription-directory-item p { margin: 3px 0 0; color: var(--text-muted); font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-list-tools { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.clip2md-subscription-list-tools input[type="search"] { flex: 1 1 140px; width: auto; min-width: 0; margin: 0; }
+.clip2md-subscription-list-tools .clip2md-filter-count { flex: 0 0 auto; margin: 0; font-size: var(--font-ui-smaller, 12px); }
+.clip2md-clear-filters { flex: 0 0 auto; }
+.clip2md-subscription-view .clip2md-subscription-list { margin: 0; padding: 0; list-style: none; }
+.clip2md-subscription-view .clip2md-subscription-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 0; padding: 12px 0; border: 0; border-bottom: 1px solid var(--background-modifier-border); border-radius: 0; background: transparent; }
+.clip2md-subscription-item-body { grid-column: 1 / -1; min-width: 0; gap: 5px; grid-template-columns: minmax(0, 1fr); }
+.clip2md-subscription-item-title { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 0; padding: 0; border: 0; box-shadow: none; background: transparent; color: var(--text-normal); text-align: left; }
+.clip2md-subscription-item-title:hover { background: transparent; color: var(--text-normal); }
+.clip2md-subscription-item-title strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: var(--font-ui-small, 13px); font-weight: var(--font-semibold); line-height: 1.45; overflow-wrap: anywhere; }
+.clip2md-subscription-item-title[aria-expanded="true"] strong { display: block; overflow: visible; }
+.clip2md-subscription-item-meta { display: flex; align-items: center; min-width: 0; flex-wrap: wrap; gap: 3px 8px; color: var(--text-muted); font-size: var(--font-ui-smaller, 12px); }
+.clip2md-subscription-item-meta > span { min-width: 0; overflow-wrap: anywhere; }
+.clip2md-subscription-item-meta .clip2md-status-badge { margin-left: auto; }
+.clip2md-status-badge.is-success { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 10%, transparent); }
+.clip2md-status-badge.is-pending { color: var(--text-warning); background: color-mix(in srgb, var(--text-warning) 10%, transparent); }
+.clip2md-subscription-item-actions { margin: 0; }
+.clip2md-subscription-item-actions:empty::before { content: ''; display: block; width: 1px; }
+.clip2md-subscription-item-more { justify-self: end; }
+.clip2md-subscription-item-more[open] { grid-column: 1 / -1; justify-self: stretch; }
+.clip2md-subscription-item-more[open] > summary { text-align: right; }
+.clip2md-load-more { display: flex; justify-content: center; padding: 14px 0; }
+
+.clip2md-desktop-overview { gap: 5px; margin: 10px 0 16px; padding: 12px 14px; }
+.clip2md-desktop-overview strong { font-size: var(--font-ui-medium, 15px); }
+.clip2md-desktop-overview p { margin: 0; color: var(--text-muted); }
+.clip2md-desktop-overview .clip2md-desktop-status { margin: 6px 0 0; padding: 0; background: transparent; }
+.clip2md-desktop-settings > .setting-item-heading,
+.clip2md-desktop-settings .clip2md-settings-group > summary { font-size: var(--font-ui-medium, 15px); }
+.clip2md-desktop-settings .clip2md-settings-group { margin: 10px 0; padding: 0 12px 8px; background: transparent; }
+.clip2md-desktop-settings .clip2md-settings-group > summary { min-height: 44px; padding: 12px 2px; }
+.clip2md-desktop-settings .clip2md-local-platform { padding: 0 10px 6px; background: transparent; }
+.clip2md-desktop-settings .clip2md-local-platform-header { margin-inline: -10px; padding-inline: 10px !important; }
+.clip2md-desktop-settings .clip2md-local-platform-status { margin: 0; padding: 8px 2px; border-bottom: 0; font-size: var(--font-ui-smaller, 12px); }
+.clip2md-local-platform-details[hidden] { display: none; }
+.clip2md-desktop-settings .clip2md-local-platform-options { margin: 0; padding: 4px 0 8px 10px; }
+.clip2md-desktop-settings .clip2md-local-platform-details > summary { min-height: 36px; padding: 8px 2px; }
+.clip2md-local-feature-guide { margin: 8px 0; }
+.clip2md-queue-tools { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.clip2md-desktop-settings .clip2md-queue-tools .clip2md-queue-summary { flex: 1; margin: 0; padding: 0; border: 0; background: transparent; }
+.clip2md-material-queue > select { max-width: 100%; margin-bottom: 8px; }
+.clip2md-desktop-settings .clip2md-queue-item { margin: 0; border-bottom: 1px solid var(--background-modifier-border); }
+.clip2md-queue-item .setting-item-name { overflow-wrap: anywhere; }
+.clip2md-queue-item .setting-item-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.clip2md-desktop-disabled-overview { margin-top: 16px; }
+.clip2md-local-retry-record { padding: 12px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.clip2md-local-retry-record :is(p, .setting-item-description) { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 600px) {
+    .mod-settings:has(.clip2md-settings, .clip2md-subscription-settings, .clip2md-desktop-settings) .vertical-tab-header { display: none; }
+    .mod-settings:has(.clip2md-settings, .clip2md-subscription-settings, .clip2md-desktop-settings) .vertical-tab-content-container,
+    .mod-settings:has(.clip2md-settings, .clip2md-subscription-settings, .clip2md-desktop-settings) .vertical-tab-content { width: 100%; max-width: none; }
+    .mod-settings:has(.clip2md-settings, .clip2md-subscription-settings, .clip2md-desktop-settings) .setting-page-content { box-sizing: border-box; width: 100%; max-width: none; }
+    .clip2md-status-bar { align-items: stretch; padding: 12px; }
+    .clip2md-status-main { flex-basis: 100%; }
+    .clip2md-status-actions { width: 100%; }
+    .clip2md-subscription-filter-panel { grid-template-columns: minmax(0, 1fr); }
+    .clip2md-subscription-list-tools { flex-wrap: wrap; }
+    .clip2md-subscription-list-tools input[type="search"] { flex-basis: 100%; }
+    .clip2md-subscription-item-meta .clip2md-status-badge { margin-left: 0; }
+    .clip2md-subscription-view .clip2md-subscription-item { grid-template-columns: minmax(0, 1fr) auto; }
+    .clip2md-desktop-settings .setting-item { flex-wrap: wrap; }
+    .clip2md-desktop-settings .setting-item-info { flex: 1 1 180px; }
+    .clip2md-desktop-settings .setting-item-control { flex-wrap: wrap; }
+    .clip2md-desktop-settings .clip2md-local-platform .setting-item-control { width: auto; justify-content: flex-start; }
+    .clip2md-desktop-settings .clip2md-local-platform-header .setting-item-control { flex: 0 0 auto; }
+}
+@media (max-width: 340px) {
+    .clip2md-subscription-header { align-items: flex-start; }
+    .clip2md-subscription-panel-actions { flex: 1 1 100%; }
+    .clip2md-subscription-view-tools { align-items: stretch; flex-direction: column; }
+    .clip2md-filter-disclosure > summary { display: flex; }
+    .clip2md-subscription-view .clip2md-subscription-item { grid-template-columns: minmax(0, 1fr); }
+    .clip2md-subscription-item-more { justify-self: start; }
+    .clip2md-subscription-item-more[open] > summary { text-align: left; }
+}
+@container (max-width: 360px) {
+    .clip2md-subscription-header { align-items: flex-start; }
+    .clip2md-subscription-panel-actions { flex: 1 1 100%; }
+    .clip2md-subscription-view-tools { align-items: stretch; flex-direction: column; }
+    .clip2md-subscription-filter-panel { grid-template-columns: minmax(0, 1fr); }
+    .clip2md-subscription-list-tools { flex-wrap: wrap; }
+    .clip2md-subscription-list-tools input[type="search"] { flex-basis: 100%; }
+    .clip2md-subscription-item-meta .clip2md-status-badge { margin-left: 0; }
+    .clip2md-subscription-view .clip2md-subscription-item { grid-template-columns: minmax(0, 1fr); }
+    .clip2md-subscription-item-more { justify-self: start; }
+    .clip2md-subscription-item-more[open] > summary { text-align: left; }
+}
+@media (pointer: coarse) {
+    .clip2md-settings :is(button, input, select, summary),
+    .clip2md-subscription-settings :is(button, input, select, summary),
+    .clip2md-subscription-view :is(button, select, summary),
+    .clip2md-desktop-settings :is(button, input, select, summary) { min-height: 44px; }
+    .clip2md-subscription-view input { min-height: 44px; }
+}
+
+/* Clip2MD workspace: quiet surfaces, clear hierarchy, and one accent color. */
+.clip2md-settings,
+.clip2md-subscription-settings,
+.clip2md-subscription-view {
+    --clip2md-radius-card: 14px;
+    --clip2md-radius-control: 8px;
+    --clip2md-border: var(--background-modifier-border);
+    --clip2md-surface: var(--background-secondary);
+    --clip2md-inset: var(--background-primary);
+    --clip2md-shadow: 0 8px 24px rgb(0 0 0 / 6%);
+    --clip2md-accent: var(--interactive-accent);
+    font-family: var(--font-interface);
+    letter-spacing: .01em;
+    padding-bottom: 28px;
+}
+
+.clip2md-settings > .setting-item-heading,
+.clip2md-settings > .setting-item,
+.clip2md-settings-section > :is(.setting-item, .setting-item-heading),
+.clip2md-settings-section > :not(summary),
+.clip2md-settings .clip2md-update-panel > .setting-item,
+.clip2md-settings .clip2md-update-panel > .setting-item-heading {
+    margin: 0;
+    border: 0;
+}
+
+.clip2md-settings :is(.setting-item, .setting-item-heading),
+.clip2md-subscription-settings .setting-item {
+    gap: 24px;
+    padding: 17px 0;
+    border: 0;
+}
+
+.clip2md-settings .setting-item:not(.clip2md-template-setting) + .setting-item,
+.clip2md-subscription-settings .setting-item + .setting-item {
+    border-top: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+}
+
+.clip2md-settings .setting-item-name,
+.clip2md-subscription-settings .setting-item-name,
+.clip2md-subscription-view .setting-item-name {
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+.clip2md-settings .setting-item-description,
+.clip2md-subscription-settings .setting-item-description {
+    margin-top: 4px;
+    color: var(--text-muted);
+    line-height: 1.65;
+}
+
+.clip2md-settings .setting-item-info,
+.clip2md-subscription-settings .setting-item-info {
+    min-width: 0;
+}
+
+.clip2md-settings .setting-item-control,
+.clip2md-subscription-settings .setting-item-control {
+    flex: 0 1 auto;
+    gap: 8px;
+}
+
+.clip2md-settings :is(input[type="text"], input[type="password"], input[type="search"], select),
+.clip2md-subscription-settings :is(input[type="text"], input[type="password"], input[type="search"], select),
+.clip2md-subscription-view :is(input[type="text"], input[type="search"], select) {
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+    color: var(--text-normal);
+    box-shadow: none;
+    transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.clip2md-settings :is(input, select):focus,
+.clip2md-subscription-settings :is(input, select):focus,
+.clip2md-subscription-view :is(input, select):focus {
+    border-color: color-mix(in srgb, var(--clip2md-accent) 70%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--clip2md-accent) 12%, transparent);
+}
+
+.clip2md-settings :is(input, select)::placeholder,
+.clip2md-subscription-settings :is(input, select)::placeholder {
+    color: var(--text-faint);
+}
+
+.clip2md-settings button,
+.clip2md-subscription-settings button,
+.clip2md-subscription-view button {
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    box-shadow: none;
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+    line-height: 1.4;
+    transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+
+.clip2md-settings button:hover,
+.clip2md-subscription-settings button:hover,
+.clip2md-subscription-view button:hover {
+    border-color: var(--background-modifier-border-hover);
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-settings button:active,
+.clip2md-subscription-settings button:active,
+.clip2md-subscription-view button:active {
+    transform: translateY(1px);
+}
+
+.clip2md-settings button.mod-cta,
+.clip2md-subscription-settings .clip2md-subscription-primary-actions button {
+    border-color: var(--clip2md-accent);
+    background: var(--clip2md-accent);
+    color: var(--text-on-accent);
+    font-weight: 600;
+}
+
+.clip2md-settings button.mod-cta:hover,
+.clip2md-subscription-settings .clip2md-subscription-primary-actions button:hover {
+    background: var(--interactive-accent-hover);
+    border-color: var(--interactive-accent-hover);
+}
+
+.clip2md-settings button.mod-warning {
+    border-color: color-mix(in srgb, var(--text-error) 35%, transparent);
+    color: var(--text-error);
+}
+
+.clip2md-settings button:disabled,
+.clip2md-subscription-settings button:disabled,
+.clip2md-subscription-view button:disabled {
+    opacity: .45;
+    transform: none;
+}
+
+.clip2md-settings .clickable-icon {
+    padding: 5px;
+    border-radius: var(--clip2md-radius-control);
+    color: var(--text-muted);
+}
+
+.clip2md-settings .clickable-icon:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+/* Account overview */
+.clip2md-settings > .clip2md-status-bar {
+    position: relative;
+    isolation: isolate;
+    display: flex;
+    gap: 24px;
+    margin: 4px 0 24px;
+    padding: 24px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 80%, transparent);
+    border-radius: var(--clip2md-radius-card);
+    background: linear-gradient(120deg, var(--clip2md-surface), var(--background-primary));
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-settings > .clip2md-status-bar::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    width: 240px;
+    height: 240px;
+    right: -100px;
+    top: -150px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--clip2md-accent) 8%, transparent);
+    pointer-events: none;
+}
+
+.clip2md-settings .clip2md-status-account {
+    margin-bottom: 12px;
+}
+
+.clip2md-settings .clip2md-account-name {
+    font-size: var(--font-ui-medium, 15px);
+    letter-spacing: -.01em;
+}
+
+.clip2md-settings .clip2md-account-id {
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-settings .clip2md-status-line {
+    gap: 6px 10px;
+    color: var(--text-muted);
+}
+
+.clip2md-settings .clip2md-status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+}
+
+.clip2md-settings .clip2md-status-indicator.is-connected::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-green);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.clip2md-settings .clip2md-status-summary {
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-settings .clip2md-status-actions button {
+    min-height: 36px;
+    padding-inline: 18px;
+}
+
+/* Main settings groups */
+.clip2md-settings > .clip2md-settings-section,
+.clip2md-settings > details:not(.clip2md-settings-section) {
+    margin: 0 0 16px;
+    padding: 0 20px 8px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-settings > .clip2md-settings-section > summary,
+.clip2md-settings > details:not(.clip2md-settings-section) > summary {
+    min-height: 56px;
+    padding: 17px 0;
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 650;
+    letter-spacing: .02em;
+}
+
+.clip2md-settings-section[open] > summary {
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--clip2md-border);
+}
+
+.clip2md-settings-section > :not(summary) {
+    margin-inline: 0;
+}
+
+.clip2md-settings > .setting-item-heading {
+    padding: 0;
+    font-size: var(--font-ui-small, 13px);
+}
+
+.clip2md-settings .clip2md-folder-reminder {
+    margin: 8px 0 16px;
+    border: 1px solid color-mix(in srgb, var(--text-warning) 30%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: color-mix(in srgb, var(--text-warning) 7%, transparent);
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-settings .clip2md-path-preview,
+.clip2md-settings .clip2md-content-preview,
+.clip2md-subscription-settings .clip2md-subscription-preview {
+    margin: 8px 0 18px;
+    padding: 14px 16px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller, 12px);
+    line-height: 1.65;
+}
+
+.clip2md-settings .clip2md-chip-button {
+    min-height: 28px;
+    padding: 4px 10px;
+    border-radius: 7px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-settings .clip2md-content-custom {
+    margin-block: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+}
+
+/* Maintenance is part of the same surface system, not a separate panel. */
+.clip2md-settings .clip2md-update-panel {
+    margin: 0 0 16px;
+    padding: 4px 20px 14px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-settings .clip2md-update-panel > .setting-item-heading {
+    padding: 17px 0 8px;
+    font-weight: 650;
+}
+
+.clip2md-settings .clip2md-update-meta {
+    gap: 6px;
+    margin: 6px 0 4px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+}
+
+.clip2md-settings .clip2md-update-action {
+    padding-bottom: 6px;
+}
+
+.clip2md-settings > .clip2md-help-actions {
+    justify-content: flex-start;
+    margin: 4px 0 0;
+    padding: 4px 0 0;
+    border: 0;
+}
+
+.clip2md-settings .clip2md-help-actions a {
+    padding: 8px 4px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    text-decoration: none;
+}
+
+.clip2md-settings .clip2md-help-actions a:hover {
+    color: var(--text-accent);
+}
+
+.clip2md-settings .clip2md-help-actions button {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+}
+
+/* Connection and onboarding */
+.clip2md-settings > .setting-item-heading:has(+ p),
+.clip2md-settings > .setting-item-heading + p {
+    margin-inline: 20px;
+}
+
+.clip2md-settings .clip2md-binding-tabs {
+    gap: 4px;
+    margin: 16px 0;
+    padding: 4px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: 10px;
+    background: var(--clip2md-surface);
+}
+
+.clip2md-settings .clip2md-binding-tabs button {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+}
+
+.clip2md-settings .clip2md-binding-tabs button.is-active {
+    border-color: var(--clip2md-border);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    box-shadow: var(--shadow-s);
+}
+
+.clip2md-settings .clip2md-guide-card {
+    margin-bottom: 20px;
+    padding: 24px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-settings .clip2md-binding-title {
+    margin-bottom: 20px;
+    font-size: var(--font-ui-medium, 15px);
+}
+
+.clip2md-settings .clip2md-binding-code {
+    padding: 7px 12px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--background-primary);
+    font-family: var(--font-monospace);
+}
+
+/* Subscription settings */
+.clip2md-subscription-settings .clip2md-subscription-overview {
+    gap: 14px;
+    margin: 4px 0 20px;
+    padding: 24px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: linear-gradient(120deg, var(--clip2md-surface), var(--background-primary));
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-subscription-overview-header > strong {
+    font-size: var(--font-ui-medium, 15px);
+}
+
+.clip2md-subscription-settings .clip2md-subscription-status {
+    display: inline-flex;
+    justify-self: start;
+    padding: 4px 9px;
+    border-radius: 6px;
+    background: var(--background-primary);
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-subscription-settings .clip2md-subscription-metrics {
+    gap: 24px;
+    padding-top: 4px;
+}
+
+.clip2md-subscription-settings .clip2md-subscription-metrics strong {
+    font-size: var(--font-ui-medium, 15px);
+    font-weight: 500;
+}
+
+.clip2md-subscription-settings > .clip2md-subscription-actions {
+    margin: 0 0 16px;
+    padding: 12px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: 12px;
+    background: var(--clip2md-surface);
+}
+
+.clip2md-subscription-settings > details {
+    margin: 0 0 16px;
+    padding: 0 20px 10px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-subscription-settings > details > summary {
+    min-height: 56px;
+    padding: 17px 0;
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 650;
+}
+
+.clip2md-subscription-settings > details[open] > summary {
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--clip2md-border);
+}
+
+.clip2md-subscription-settings .clip2md-subscription-scope-tools {
+    margin: 8px 0 12px;
+}
+
+.clip2md-subscription-settings > details > .setting-item-description {
+    margin: 8px 0 16px;
+}
+
+.clip2md-subscription-settings > .clip2md-subscription-actions:last-of-type {
+    justify-content: flex-end;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.clip2md-subscription-settings > .clip2md-subscription-actions:last-of-type button:first-child {
+    border-color: var(--clip2md-accent);
+    background: var(--clip2md-accent);
+    color: var(--text-on-accent);
+}
+
+/* Subscription browser */
+.clip2md-subscription-view {
+    padding: 4px;
+}
+
+.clip2md-subscription-view .clip2md-subscription-header {
+    margin-bottom: 20px;
+    padding: 20px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+}
+
+.clip2md-subscription-view .clip2md-subscription-header h2 {
+    font-size: var(--font-ui-larger, 17px);
+    letter-spacing: -.02em;
+}
+
+.clip2md-subscription-view .clip2md-subscription-view-tools,
+.clip2md-subscription-view .clip2md-subscription-list-tools {
+    gap: 12px;
+    margin: 12px 0;
+}
+
+.clip2md-subscription-view .clip2md-segmented-control {
+    padding: 3px;
+    border-radius: 10px;
+}
+
+.clip2md-subscription-view .clip2md-segmented-control button {
+    border-radius: 7px;
+}
+
+.clip2md-subscription-view .clip2md-subscription-filter-panel {
+    margin: 12px 0 20px;
+    padding: 12px 20px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+}
+
+.clip2md-subscription-view .clip2md-subscription-item {
+    margin: 0 0 12px;
+    padding: 20px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    transition: border-color .16s ease, background .16s ease;
+}
+
+.clip2md-subscription-view .clip2md-subscription-item:hover {
+    border-color: var(--background-modifier-border-hover);
+    background: var(--background-primary-alt);
+}
+
+.clip2md-subscription-view .clip2md-subscription-item-title strong {
+    font-size: var(--font-ui-small, 13px);
+    line-height: 1.6;
+}
+
+.clip2md-subscription-view .clip2md-status-badge,
+.clip2md-subscription-settings .clip2md-status-badge {
+    padding: 3px 8px;
+    border-radius: 6px;
+}
+
+/* Folder picker */
+.modal:has(.clip2md-folder-picker-tree) .modal-content {
+    padding: 4px 0;
+}
+
+.clip2md-folder-picker-current {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: 10px;
+    font-size: var(--font-ui-small, 13px);
+}
+
+.clip2md-folder-picker-tree {
+    max-height: 360px;
+    margin-bottom: 16px;
+    padding: 8px;
+    border-radius: 10px;
+    background: var(--background-primary);
+}
+
+.clip2md-tree-item {
+    gap: 8px;
+    min-height: 34px;
+    border-radius: 6px;
+}
+
+.clip2md-tree-item.selected {
+    background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+    color: var(--text-normal);
+}
+
+.clip2md-folder-picker-create {
+    padding: 0 0 16px;
+}
+
+.clip2md-folder-picker-buttons {
+    padding-top: 16px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.clip2md-folder-picker-buttons button {
+    border-radius: 8px;
+}
+
+/* Narrow panels retain the same hierarchy without squeezing controls. */
+@container (max-width: 680px) {
+    .clip2md-settings .setting-item:not(.clip2md-template-setting),
+    .clip2md-subscription-settings .setting-item {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .clip2md-settings .setting-item:not(.clip2md-template-setting) .setting-item-control,
+    .clip2md-subscription-settings .setting-item-control {
+        flex: 1 0 100%;
+        justify-content: flex-start;
+    }
+    .clip2md-settings .setting-item-control :is(input[type="text"], input[type="password"]),
+    .clip2md-subscription-settings .setting-item-control input[type="text"] {
+        flex: 1 1 240px;
+    }
+}
+
+@media (max-width: 680px) {
+    .clip2md-settings > .clip2md-status-bar {
+        gap: 16px;
+        padding: 20px;
+    }
+    .clip2md-settings > .clip2md-settings-section,
+    .clip2md-settings > details:not(.clip2md-settings-section),
+    .clip2md-subscription-settings > details {
+        padding-inline: 16px;
+    }
+    .clip2md-settings .setting-item:not(.clip2md-template-setting),
+    .clip2md-subscription-settings .setting-item {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .clip2md-settings .setting-item:not(.clip2md-template-setting) .setting-item-control,
+    .clip2md-subscription-settings .setting-item-control {
+        flex: 1 0 100%;
+        justify-content: flex-start;
+    }
+    .clip2md-settings .setting-item-control :is(input[type="text"], input[type="password"]),
+    .clip2md-subscription-settings .setting-item-control input[type="text"] {
+        flex: 1 1 240px;
+    }
+    .clip2md-settings .clip2md-update-panel {
+        padding-inline: 16px;
+    }
+    .clip2md-settings .clip2md-help-actions {
+        justify-content: flex-start;
+    }
+}
+
+@media (max-width: 480px) {
+    .clip2md-settings > .clip2md-status-bar {
+        align-items: stretch;
+        padding: 18px;
+    }
+    .clip2md-settings .clip2md-status-actions {
+        width: 100%;
+    }
+    .clip2md-settings .clip2md-status-actions button {
+        width: 100%;
+    }
+    .clip2md-subscription-settings .clip2md-subscription-overview {
+        padding: 20px;
+    }
+    .clip2md-subscription-settings .clip2md-subscription-actions button {
+        flex: 1 1 auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clip2md-settings *,
+    .clip2md-subscription-settings *,
+    .clip2md-subscription-view * {
+        transition: none !important;
+    }
+}
+
+/* Local companion: the same calm surfaces and controls as the main workspace. */
+.clip2md-desktop-settings {
+    --clip2md-radius-card: 14px;
+    --clip2md-radius-control: 8px;
+    --clip2md-border: var(--background-modifier-border);
+    --clip2md-surface: var(--background-secondary);
+    --clip2md-inset: var(--background-primary);
+    --clip2md-shadow: 0 8px 24px rgb(0 0 0 / 6%);
+    --clip2md-accent: var(--interactive-accent);
+    padding-bottom: 28px;
+    font-family: var(--font-interface);
+    letter-spacing: .01em;
+}
+
+.clip2md-desktop-settings .setting-item {
+    gap: 24px;
+    padding: 16px 0;
+    border: 0;
+}
+
+.clip2md-desktop-settings .setting-item + .setting-item {
+    border-top: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+}
+
+.clip2md-desktop-settings .setting-item-info {
+    min-width: 0;
+}
+
+.clip2md-desktop-settings .setting-item-name {
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    line-height: 1.5;
+}
+
+.clip2md-desktop-settings .setting-item-description {
+    margin-top: 4px;
+    color: var(--text-muted);
+    line-height: 1.65;
+}
+
+.clip2md-desktop-settings .setting-item-control {
+    flex: 0 1 auto;
+    gap: 8px;
+}
+
+.clip2md-desktop-settings :is(input, select) {
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+    color: var(--text-normal);
+    box-shadow: none;
+    transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.clip2md-desktop-settings :is(input, select):focus {
+    border-color: color-mix(in srgb, var(--clip2md-accent) 70%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--clip2md-accent) 12%, transparent);
+}
+
+.clip2md-desktop-settings input::placeholder {
+    color: var(--text-faint);
+}
+
+.clip2md-desktop-settings button {
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    box-shadow: none;
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+    line-height: 1.4;
+    transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+
+.clip2md-desktop-settings button:hover {
+    border-color: var(--background-modifier-border-hover);
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-desktop-settings button:active {
+    transform: translateY(1px);
+}
+
+.clip2md-desktop-settings button.mod-cta {
+    border-color: var(--clip2md-accent);
+    background: var(--clip2md-accent);
+    color: var(--text-on-accent);
+    font-weight: 600;
+}
+
+.clip2md-desktop-settings button.mod-warning {
+    border-color: color-mix(in srgb, var(--text-error) 35%, transparent);
+    color: var(--text-error);
+}
+
+.clip2md-desktop-settings button:disabled {
+    opacity: .45;
+    transform: none;
+}
+
+.clip2md-desktop-settings .extra-setting-button {
+    padding: 5px;
+    border-radius: var(--clip2md-radius-control);
+}
+
+/* Account, activation and current state form one clear entry point. */
+.clip2md-desktop-settings .clip2md-desktop-account-bar {
+    position: relative;
+    isolation: isolate;
+    gap: 20px;
+    margin: 4px 0 16px;
+    padding: 20px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 80%, transparent);
+    border-radius: var(--clip2md-radius-card);
+    background: linear-gradient(120deg, var(--clip2md-surface), var(--background-primary));
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-account-bar::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    width: 220px;
+    height: 220px;
+    right: -100px;
+    top: -150px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--clip2md-accent) 8%, transparent);
+    pointer-events: none;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-account-bar .clip2md-cloud-account {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+}
+
+.clip2md-desktop-settings .clip2md-account-name {
+    font-size: var(--font-ui-medium, 15px);
+    font-weight: 600;
+    letter-spacing: -.01em;
+}
+
+.clip2md-desktop-settings .clip2md-account-id {
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller, 12px);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-help-actions {
+    gap: 6px;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-help-actions :is(a, button) {
+    min-height: 32px;
+    padding: 6px 9px;
+    border: 1px solid transparent;
+    border-radius: var(--clip2md-radius-control);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-help-actions :is(a, button):hover {
+    border-color: var(--clip2md-border);
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-primary-setting {
+    margin: 0 0 16px;
+    padding: 17px 20px !important;
+    border: 1px solid color-mix(in srgb, var(--clip2md-accent) 20%, var(--clip2md-border));
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-primary-setting + .setting-item {
+    border-top: 0;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-overview {
+    gap: 6px;
+    margin: 0 0 16px;
+    padding: 20px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: linear-gradient(120deg, var(--clip2md-surface), var(--background-primary));
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-overview strong {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--font-ui-medium, 15px);
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-overview strong::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-green);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-disabled-overview strong::before {
+    background: var(--text-faint);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-overview .clip2md-desktop-status {
+    margin: 8px 0 0;
+    padding: 11px 13px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+    line-height: 1.6;
+}
+
+/* Top-level disclosures are cards; nested controls use quieter inset surfaces. */
+.clip2md-desktop-settings .clip2md-desktop-runtime > .clip2md-settings-group {
+    margin: 0 0 16px;
+    padding: 0 20px 10px;
+    border: 1px solid var(--clip2md-border);
+    border-radius: var(--clip2md-radius-card);
+    background: var(--clip2md-surface);
+    box-shadow: var(--clip2md-shadow);
+}
+
+.clip2md-desktop-settings .clip2md-desktop-runtime > .clip2md-settings-group > summary {
+    min-height: 56px;
+    padding: 17px 0;
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 650;
+    letter-spacing: .02em;
+}
+
+.clip2md-desktop-settings .clip2md-desktop-runtime > .clip2md-settings-group[open] > summary {
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--clip2md-border);
+}
+
+.clip2md-desktop-settings .clip2md-settings-group-content {
+    padding: 4px 0 8px;
+}
+
+.clip2md-desktop-settings .clip2md-settings-group-content > .setting-item-description,
+.clip2md-desktop-settings .clip2md-local-guide {
+    margin: 10px 0 14px;
+    color: var(--text-muted);
+    line-height: 1.65;
+}
+
+.clip2md-desktop-settings .clip2md-tool-setup-error {
+    margin: 12px 0;
+    padding: 11px 13px;
+    border: 1px solid color-mix(in srgb, var(--text-error) 25%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: color-mix(in srgb, var(--text-error) 6%, transparent);
+    line-height: 1.6;
+}
+
+.clip2md-desktop-settings .clip2md-tool-setup-error:empty {
+    display: none;
+}
+
+.clip2md-desktop-settings .clip2md-settings-group .clip2md-settings-group {
+    margin: 14px 0 4px;
+    padding: 0 14px 6px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 75%, transparent);
+    border-radius: 10px;
+    background: var(--clip2md-inset);
+    box-shadow: none;
+}
+
+.clip2md-desktop-settings .clip2md-settings-group .clip2md-settings-group > summary {
+    min-height: 42px;
+    padding: 12px 0;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 600;
+}
+
+.clip2md-desktop-settings .clip2md-settings-group .clip2md-settings-group[open] > summary {
+    color: var(--text-normal);
+}
+
+/* Platform cards keep authentication and feature state easy to scan. */
+.clip2md-desktop-settings .clip2md-local-platform {
+    margin: 0 0 12px;
+    padding: 0 16px 8px;
+    overflow: hidden;
+    border: 1px solid var(--clip2md-border);
+    border-radius: 12px;
+    background: var(--clip2md-inset);
+    box-shadow: none;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform:last-child {
+    margin-bottom: 4px;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-header {
+    margin-inline: -16px;
+    padding: 15px 16px !important;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-header .setting-item-name {
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 650;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-status {
+    display: flex;
+    align-items: flex-start;
+    margin: 0 -16px;
+    padding: 9px 16px;
+    border-top: 1px solid color-mix(in srgb, var(--clip2md-border) 65%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--clip2md-border) 65%, transparent);
+    background: var(--clip2md-surface);
+    font-size: var(--font-ui-smaller, 12px);
+    line-height: 1.55;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-status::before {
+    flex: 0 0 auto;
+    margin-top: .45em;
+    margin-right: 8px;
+    font-size: 8px;
+    line-height: 1;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-details {
+    margin: 0;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-details > summary {
+    min-height: 40px;
+    padding: 12px 0 8px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-details[open] > summary {
+    color: var(--text-normal);
+}
+
+.clip2md-desktop-settings .clip2md-local-platform-options {
+    margin: 0 0 8px;
+    padding: 4px 0 4px 14px;
+    border: 0;
+    border-left: 2px solid color-mix(in srgb, var(--clip2md-accent) 20%, var(--clip2md-border));
+}
+
+.clip2md-desktop-settings .clip2md-local-platform .setting-item {
+    padding-block: 13px;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform .setting-item-control {
+    gap: 8px;
+}
+
+.clip2md-desktop-settings .clip2md-local-platform .setting-item-control button {
+    min-height: 32px;
+}
+
+.clip2md-desktop-settings .clip2md-local-feature-guide {
+    margin: 8px 0 10px;
+    color: var(--text-muted);
+}
+
+.clip2md-desktop-settings .clip2md-local-domain {
+    margin-top: 14px;
+    padding: 14px 12px 4px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-surface);
+}
+
+.clip2md-desktop-settings .clip2md-local-domain-status {
+    margin: 5px 0 8px;
+}
+
+.clip2md-desktop-settings .clip2md-local-domain-editor {
+    gap: 8px;
+    margin: 12px 0 16px;
+}
+
+/* Queue summaries, records and destructive operations have distinct weight. */
+.clip2md-desktop-settings .clip2md-queue-tools {
+    margin: 12px 0;
+}
+
+.clip2md-desktop-settings .clip2md-queue-tools .clip2md-queue-summary {
+    min-height: 38px;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+    border-radius: var(--clip2md-radius-control);
+    background: var(--clip2md-inset);
+}
+
+.clip2md-desktop-settings .clip2md-material-queue > select {
+    margin: 0 0 12px;
+}
+
+.clip2md-desktop-settings .clip2md-queue-group {
+    margin: 0 0 10px;
+    padding: 0 14px 6px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 75%, transparent);
+    border-radius: 10px;
+    background: var(--clip2md-inset);
+}
+
+.clip2md-desktop-settings .clip2md-queue-group > summary {
+    min-height: 40px;
+    padding: 12px 0;
+    color: var(--text-normal);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 600;
+}
+
+.clip2md-desktop-settings .clip2md-queue-item {
+    border-bottom: 0;
+}
+
+.clip2md-desktop-settings .clip2md-queue-item .setting-item {
+    padding-block: 13px;
+}
+
+.clip2md-desktop-settings .clip2md-queue-item + .clip2md-queue-item {
+    border-top: 1px solid color-mix(in srgb, var(--clip2md-border) 65%, transparent);
+}
+
+.clip2md-desktop-settings .clip2md-empty-state {
+    margin: 12px 0;
+    padding: 24px 16px;
+    border: 1px dashed var(--clip2md-border);
+    border-radius: 10px;
+    background: var(--clip2md-inset);
+}
+
+.clip2md-desktop-settings .clip2md-empty-state strong {
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 600;
+}
+
+.clip2md-desktop-settings .clip2md-empty-state p {
+    margin: 6px 0 4px;
+    line-height: 1.6;
+}
+
+.clip2md-desktop-settings .clip2md-empty-state .setting-item {
+    justify-content: center;
+    padding-bottom: 0;
+}
+
+.clip2md-desktop-settings .clip2md-queue-actions {
+    margin-top: 12px;
+    padding: 0 14px 6px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border) 70%, transparent);
+    border-radius: 10px;
+    background: var(--clip2md-inset);
+}
+
+.clip2md-desktop-settings .clip2md-queue-actions > summary {
+    min-height: 40px;
+    padding: 12px 0;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.clip2md-desktop-settings .clip2md-maintenance-group .setting-item-description:first-child {
+    margin-bottom: 12px;
+}
+
+@container (max-width: 680px) {
+    .clip2md-desktop-settings .setting-item:not(.clip2md-local-platform-header) {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .clip2md-desktop-settings .setting-item:not(.clip2md-local-platform-header) .setting-item-control {
+        flex: 1 0 100%;
+        justify-content: flex-start;
+    }
+    .clip2md-desktop-settings .setting-item-control :is(input[type="text"], input[type="url"], input[type="number"]) {
+        flex: 1 1 220px;
+    }
+}
+
+@media (max-width: 680px) {
+    .clip2md-desktop-settings .clip2md-desktop-account-bar,
+    .clip2md-desktop-settings .clip2md-desktop-overview {
+        padding: 18px;
+    }
+    .clip2md-desktop-settings .clip2md-desktop-runtime > .clip2md-settings-group {
+        padding-inline: 16px;
+    }
+    .clip2md-desktop-settings .setting-item:not(.clip2md-local-platform-header) {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .clip2md-desktop-settings .setting-item:not(.clip2md-local-platform-header) .setting-item-control {
+        flex: 1 0 100%;
+        justify-content: flex-start;
+    }
+    .clip2md-desktop-settings .setting-item-control :is(input[type="text"], input[type="url"], input[type="number"]) {
+        flex: 1 1 220px;
+    }
+}
+
+@media (max-width: 480px) {
+    .clip2md-desktop-settings .clip2md-desktop-account-bar {
+        align-items: stretch;
+        gap: 12px;
+    }
+    .clip2md-desktop-settings .clip2md-desktop-help-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+    .clip2md-desktop-settings .clip2md-desktop-help-actions :is(a, button) {
+        justify-content: center;
+        width: 100%;
+        white-space: normal;
+    }
+    .clip2md-desktop-settings .clip2md-desktop-primary-setting {
+        padding: 16px !important;
+    }
+    .clip2md-desktop-settings .clip2md-local-platform {
+        padding-inline: 12px;
+    }
+    .clip2md-desktop-settings .clip2md-local-platform-header {
+        margin-inline: -12px;
+        padding-inline: 12px !important;
+    }
+    .clip2md-desktop-settings .clip2md-local-platform-status {
+        margin-inline: -12px;
+        padding-inline: 12px;
+    }
+    .clip2md-desktop-settings .clip2md-local-platform-options {
+        padding-left: 10px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clip2md-desktop-settings * {
+        transition: none !important;
+    }
+}
+
+/* Folder picker: one calm modal surface across main and companion settings. */
+.modal:has(.clip2md-folder-picker-current) {
+    --clip2md-radius-card: 14px;
+    --clip2md-radius-control: 8px;
+    --clip2md-border: var(--background-modifier-border);
+    --clip2md-surface: var(--background-secondary);
+    --clip2md-inset: var(--background-primary);
+    --clip2md-shadow: 0 8px 24px rgb(0 0 0 / 6%);
+}
+
+.modal:has(.clip2md-folder-picker-current) .modal-title {
+    font-size: var(--font-ui-medium, 15px);
+    font-weight: 650;
+    letter-spacing: -.01em;
+}
+
+.modal:has(.clip2md-folder-picker-current) .modal-content {
+    padding: 16px 18px 18px;
+}
+
+.clip2md-folder-picker-current {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border, var(--background-modifier-border)) 82%, transparent);
+    border-radius: 10px;
+    background: linear-gradient(120deg, var(--clip2md-surface, var(--background-secondary)), var(--background-primary));
+    box-shadow: var(--clip2md-shadow, none);
+}
+
+.clip2md-folder-picker-current-label {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.clip2md-folder-picker-current code {
+    min-width: 0;
+    padding: 4px 7px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border, var(--background-modifier-border)) 72%, transparent);
+    border-radius: 7px;
+    background: var(--clip2md-inset, var(--background-primary));
+    color: var(--text-normal);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller, 12px);
+    overflow-wrap: anywhere;
+}
+
+.clip2md-folder-picker-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.clip2md-folder-picker-search input[type="search"] {
+    flex: 1 1 180px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 7px 11px;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: var(--clip2md-radius-control, 8px);
+    background: var(--clip2md-inset, var(--background-primary));
+    color: var(--text-normal);
+    box-shadow: none;
+    transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.clip2md-folder-picker-search input[type="search"]:focus {
+    border-color: color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+    outline: none;
+}
+
+.clip2md-folder-picker-search input[type="search"]::placeholder {
+    color: var(--text-faint);
+}
+
+.clip2md-folder-picker-search-clear {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: var(--clip2md-radius-control, 8px);
+    background: var(--clip2md-surface, var(--background-secondary));
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+}
+
+.clip2md-folder-picker-search-clear:hover {
+    border-color: var(--background-modifier-border-hover);
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-folder-picker-tree {
+    max-height: 380px;
+    margin-bottom: 14px;
+    padding: 6px;
+    overflow-y: auto;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: 10px;
+    background: var(--clip2md-inset, var(--background-primary));
+}
+
+.clip2md-tree-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 34px;
+    gap: 7px;
+    padding: 7px 9px 7px var(--clip2md-tree-item-padding-left, 9px);
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-normal);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+}
+
+.clip2md-tree-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-tree-item:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+    outline-offset: 2px;
+}
+
+.clip2md-tree-item.selected {
+    background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+    color: var(--text-normal);
+    font-weight: 600;
+}
+
+.clip2md-tree-item.selected .clip2md-tree-icon {
+    filter: saturate(1.1);
+}
+
+.clip2md-tree-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    color: var(--text-muted);
+    font-size: 10px;
+    flex: 0 0 auto;
+}
+
+.clip2md-tree-icon {
+    flex: 0 0 auto;
+    font-size: 14px;
+}
+
+.clip2md-tree-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.clip2md-folder-picker-empty {
+    padding: 26px 14px;
+    border: 1px dashed color-mix(in srgb, var(--clip2md-border, var(--background-modifier-border)) 70%, transparent);
+    border-radius: 10px;
+    color: var(--text-muted);
+    text-align: center;
+    background: var(--clip2md-surface, var(--background-secondary));
+}
+
+.clip2md-folder-picker-empty strong {
+    color: var(--text-normal);
+    font-size: var(--font-ui-small, 13px);
+    font-weight: 600;
+}
+
+.clip2md-folder-picker-empty p {
+    margin: 6px 0 0;
+    line-height: 1.6;
+}
+
+.clip2md-folder-picker-create {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--clip2md-border, var(--background-modifier-border)) 72%, transparent);
+    border-radius: 10px;
+    background: var(--clip2md-surface, var(--background-secondary));
+}
+
+.clip2md-folder-picker-create p {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.clip2md-folder-picker-create input {
+    flex: 1 1 180px;
+    min-width: 0;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: var(--clip2md-radius-control, 8px);
+    background: var(--clip2md-inset, var(--background-primary));
+    color: var(--text-normal);
+    box-shadow: none;
+}
+
+.clip2md-folder-picker-create input:focus {
+    border-color: color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+    outline: none;
+}
+
+.clip2md-folder-picker-create button,
+.clip2md-folder-picker-buttons button {
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid var(--clip2md-border, var(--background-modifier-border));
+    border-radius: var(--clip2md-radius-control, 8px);
+    background: var(--clip2md-inset, var(--background-primary));
+    color: var(--text-normal);
+    box-shadow: none;
+    font-size: var(--font-ui-smaller, 12px);
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.clip2md-folder-picker-create button:hover,
+.clip2md-folder-picker-buttons button:hover {
+    border-color: var(--background-modifier-border-hover);
+    background: var(--background-modifier-hover);
+}
+
+.clip2md-folder-picker-create button.mod-cta,
+.clip2md-folder-picker-buttons button.mod-cta {
+    border-color: var(--interactive-accent);
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    font-weight: 600;
+}
+
+.clip2md-folder-picker-create button.mod-cta:hover,
+.clip2md-folder-picker-buttons button.mod-cta:hover {
+    border-color: var(--interactive-accent-hover);
+    background: var(--interactive-accent-hover);
+}
+
+.clip2md-folder-picker-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 14px;
+    border-top: 1px solid color-mix(in srgb, var(--clip2md-border, var(--background-modifier-border)) 72%, transparent);
+}
+
+@media (max-width: 600px) {
+    .clip2md-folder-picker-search { align-items: stretch; flex-direction: column; }
+    .clip2md-folder-picker-search-clear { width: 100%; }
+    .clip2md-folder-picker-create input { flex-basis: 100%; }
+    .clip2md-folder-picker-create button,
+    .clip2md-folder-picker-buttons button,
+    .clip2md-tree-item { min-height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clip2md-folder-picker-tree *,
+    .clip2md-folder-picker-create *,
+    .clip2md-folder-picker-buttons * {
+        transition: none !important;
+    }
+}
+
+/* Explicit favorites import: bounded rendering, full-list selection. */
+.clip2md-favorite-import { width: min(760px, 92vw); }
+.clip2md-favorite-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.clip2md-favorite-summary, .clip2md-favorite-status { padding: 8px 0; overflow-wrap: anywhere; }
+.clip2md-favorite-list { max-height: 50vh; overflow-y: auto; border-top: 1px solid var(--background-modifier-border); }
+.clip2md-favorite-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px solid var(--background-modifier-border); }
+.clip2md-favorite-row > input { flex-shrink: 0; margin-top: 4px; }
+.clip2md-favorite-row > div { min-width: 0; overflow-wrap: anywhere; }
+.clip2md-favorite-row p { margin: 4px 0 0; }

@@ -6,10 +6,12 @@ describe('sanitizeConfigForBackup', () => {
         expect(sanitizeConfigForBackup({
             apiKey: 'secret-api-key',
             targetFolder: 'Clip2MD',
+            commentFolder: 'Clip2MD/评论',
             syncInterval: 60, titleMode: 'custom', customTitleTemplate: '{{source_title}}',
             dailyMergeFrontmatterTemplate: '---\ntask_count: {{task_count}}\n---',
         })).toEqual({
             targetFolder: 'Clip2MD',
+            commentFolder: 'Clip2MD/评论',
             syncInterval: 60, titleMode: 'custom', customTitleTemplate: '{{source_title}}',
             dailyMergeFrontmatterTemplate: '---\ntask_count: {{task_count}}\n---',
         });
