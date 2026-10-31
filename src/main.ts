@@ -229,6 +229,7 @@ export default class BijiSyncPlugin extends Plugin {
   private maintenanceRunning = false;
   private desktopVariableWarning = "";
   notifyDesktopVariableAvailability(): void {
+    if (!Platform.isDesktopApp) return;
     this.recoveryDispatch?.wake();
     if ([this.settings.template,this.settings.frontmatterTemplate,this.settings.dailyMergeFrontmatterTemplate].some(value=>desktopTokens(value).length) && !this.companion?.enabled()) this.warnDesktopVariables("模板含桌面变量，但扩展未开启或不可用，请打开桌面扩展设置。");
   }
@@ -632,6 +633,7 @@ export default class BijiSyncPlugin extends Plugin {
     this.startSyncInterval();
     this.startAckRetryInterval();
     this.timers.setTimeout(() => this.retryPendingAcks(), 3000, "network");
+    if (Platform.isDesktopApp) {
     try {
       this.companion = new CompanionHost(this);
       await this.companion.start();
@@ -645,6 +647,9 @@ export default class BijiSyncPlugin extends Plugin {
     this.recoveryDispatch = new LocalRecoveryDispatch(this);
     this.recoveryDispatch.start();
     this.registerObsidianProtocolHandler("clipmd-desktop", () => this.openDesktopSettings());
+    this.registerObsidianProtocolHandler("clipmd-settings", () => this.openSettingsTab());
+    this.registerObsidianProtocolHandler("clipmd-local-records", () => { void this.openLocalRetries(); });
+    }
     this.notifyDesktopVariableAvailability();
     if(Platform.isDesktopApp){this.registerInterval(window.setInterval(()=>{void this.pollLocalRetries();},15000));void this.pollLocalRetries();}
     this.scheduleStartupSync();
@@ -2580,7 +2585,7 @@ export default class BijiSyncPlugin extends Plugin {
 
       let result: SyncResult;
       try {
-        const localNames=[...new Set([this.settings.template,this.settings.frontmatterTemplate].flatMap(desktopTokens))];
+        const localNames=Platform.isDesktopApp ? [...new Set([this.settings.template,this.settings.frontmatterTemplate].flatMap(desktopTokens))] : [];
         if(localNames.length) {
           const state=this.companion?.snapshot(), scope=await this.companion?.bindingScope();
           if(state?.enabled && state.prepareTemplateValues && scope) {

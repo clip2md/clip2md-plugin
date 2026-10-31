@@ -1,6 +1,7 @@
 import { Modal, Notice, Platform, Setting, SettingPage } from 'obsidian';
 import type BijiSyncPlugin from './main';
-import { pluginInstallation } from './local-diagnostics';
+import { renderDependency } from './plugin-dependency';
+import { BUILD_CHANNEL } from './build-channel';
 import { desktopTokens, removeDesktopTokens } from './desktop-variables';
 export const DESKTOP_ENABLED_KEY = 'clip2md-desktop-enabled-v1';
 const TEMPLATE_KEYS = ['template', 'frontmatterTemplate', 'dailyMergeFrontmatterTemplate', 'customTitleTemplate', 'filenameTemplate', 'targetFolder'] as const;
@@ -63,37 +64,38 @@ export async function setDesktopEnabled(plugin: BijiSyncPlugin, enabled: boolean
 export class DesktopSettingsPage extends SettingPage {
     constructor(private readonly plugin: BijiSyncPlugin) { super(); this.title = '本地剪藏扩展'; }
     private cleanup?: () => void;
-    hide(): void { this.cleanup?.(); this.cleanup=undefined; }
+    private timer?: number;
+    private signature = '';
+    hide(): void {
+        this.cleanup?.(); this.cleanup = undefined;
+        if (this.timer !== undefined) window.clearInterval(this.timer);
+        this.timer = undefined;
+    }
     display(): void {
         this.hide();
         const el = this.containerEl;
         el.empty();
+        if (!Platform.isDesktopApp) return;
         const p = this.plugin, state = p.companion?.snapshot();
-        const enabled = state?.enabled === true;
-        el.createEl('p', { text: '在本机补充原站正文、媒体、评论和字幕；配置与已下载素材均保留在本地。', cls: 'clip2md-desktop-guide' });
-        el.createEl('p', { text: '在 Web 端开启自动本地解析后，云端失败恢复会通过主插件上传来源标题及本机提取或转写的文本，用于云端生成智能笔记，并按账号规则使用额度。关闭 Web 端自动本地解析或本机扩展可停止后续自动处理。' });
-        el.createEl('a', { text: '隐私政策', href: 'https://clip2.md/privacy' });
-        new Setting(el).setName('启用本地剪藏扩展').setDesc('开启后可按平台配置登录与采集能力。')
-            .addToggle(t => t.setValue(enabled).onChange(async (value) => { await setDesktopEnabled(p, value); this.display(); }));
-        if (enabled && state?.renderSettings) {
-            const cleanup=state.renderSettings(el);
-            if(typeof cleanup==='function')this.cleanup=cleanup;
+        this.signature = `${!!state?.renderSettings}:${state?.runtimeVersion || ''}`;
+        if (state?.renderSettings) {
+            const cleanup = state.renderSettings(el);
+            if (typeof cleanup === 'function') this.cleanup = cleanup;
+        } else if (BUILD_CHANNEL === 'website') {
+            el.createEl('p', { text: '开启本地剪藏扩展，在本机补充原站正文、媒体、评论与字幕。首次开启会准备本地工具和固定转写资源。' });
+            new Setting(el).setName('启用本地剪藏扩展').addButton(button => button.setButtonText('开启').onClick(async () => {
+                await setDesktopEnabled(p, true); this.display();
+            }));
         } else {
-            const overview=el.createDiv({cls:'clip2md-desktop-overview clip2md-desktop-disabled-overview'});
-            overview.createEl('strong',{text:'本地剪藏未开启'});
-            overview.createEl('p',{text:'开启后按平台配置补充新同步笔记；首次使用需准备本地工具。'});
+            this.cleanup = renderDependency(el, p.app, 'clipmd-desktop-tools', () => {
+                const current = p.companion?.snapshot();
+                const connected = p.companion?.connected() === true;
+                return { connected, compatible: !connected || !!current?.setEnabled, bound: !!p.settings.apiKey };
+            });
         }
-        if (!state)
-            el.createEl('a', { text: '安装桌面扩展与安装说明', href: 'https://clip2.md/app/sync' });
-        const info=el.createEl('details',{cls:'clip2md-settings-group clip2md-desktop-runtime-info'});
-        info.createEl('summary',{text:'扩展信息'});
-        const panel=info.createDiv({cls:'clip2md-settings-group-content'});
-        const versionEl = panel.createEl('p', { text: `桌面版本：${state?.runtimeVersion || '未检测到'}${state?.message ? ` · ${state.message}` : ''}` });
-        if (!state)
-            void pluginInstallation(p.app.vault.adapter, p.app.vault.configDir, 'clipmd-desktop-tools').then(installed => { if (versionEl.isConnected && installed.version)
-                versionEl.setText(`桌面版本：${installed.version} · 已安装，尚未启用`); });
-        const instanceEl=panel.createEl('p',{text:'云端执行实例：连接中'});
-        void p.localRecoveryInstance().then(id=>{if(instanceEl.isConnected)instanceEl.setText(id?`云端执行实例：${id.slice(0,6)} · 由队列自动分配`:'云端执行实例：尚未连接');});
-        new Setting(el).setName('本地自动处理记录').setDesc('查看云端失败任务的本地处理状态').addButton(b => b.setButtonText('查看记录').onClick(() => { void p.openLocalRetries(); }));
+        this.timer = window.setInterval(() => {
+            const current = p.companion?.snapshot();
+            if (`${!!current?.renderSettings}:${current?.runtimeVersion || ''}` !== this.signature) this.display();
+        }, 1000);
     }
 }

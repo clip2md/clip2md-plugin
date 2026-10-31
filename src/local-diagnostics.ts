@@ -177,6 +177,7 @@ export async function pluginInstallation(
   id: string,
 ): Promise<{
   installed: boolean;
+  unknown?: boolean;
   version?: string;
   channel?: string;
 }> {
@@ -199,7 +200,7 @@ export async function pluginInstallation(
         : "unknown",
     };
   } catch {
-    return { installed: false };
+    return { installed: false, unknown: true };
   }
 }
 export async function diagnosticReport(

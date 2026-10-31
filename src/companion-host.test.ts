@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { webcrypto } from "node:crypto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { TFile } from "obsidian";
+import { Platform, TFile } from "obsidian";
 import { CompanionHost } from "./companion-host";
 import {
   BRIDGE_EVENTS,
@@ -28,6 +28,7 @@ class Bus {
   }
 }
 function fixture(Host = CompanionHost, notePath = "Notes/a.md") {
+  Platform.isDesktopApp = true;
   const bus = new Bus();
   const files = new Map([
     [

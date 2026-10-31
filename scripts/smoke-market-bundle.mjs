@@ -7,7 +7,7 @@ const bundlePath = process.argv[2] || 'main.js';
 const bundle = fs.readFileSync(bundlePath, 'utf8');
 const pluginManifest = JSON.parse(fs.readFileSync(path.join(path.dirname(bundlePath), 'manifest.json'), 'utf8'));
 
-async function loadWith(localState, rejectSubscriptionView = false, noCrypto = false) {
+async function loadWith(localState, rejectSubscriptionView = false, noCrypto = false, desktop = false) {
   const registrations = [];
   class Plugin {
     constructor(app, manifest) { this.app = app; this.manifest = manifest; }
@@ -21,13 +21,14 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
       registrations.push(type);
     }
     registerEvent() {}
+    registerInterval() {}
     registerObsidianProtocolHandler(action) { registrations.push(`protocol:${action}`); }
   }
   class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
   const obsidian = {
     Plugin, PluginSettingTab, ItemView: class {}, Modal: class {}, Notice: class {},
     MarkdownView: class {}, TFile: class {}, TFolder: class {}, Setting: class {}, SettingPage: class {},
-    Platform: { isMobileApp: false, isDesktopApp: false }, addIcon() {},
+    Platform: { isMobileApp: false, isDesktopApp: desktop }, addIcon() {},
     requestUrl() { throw new Error('startup attempted a network request'); },
   };
   const storage = new Map([['clip2md-device-state-v1', localState]]);
@@ -65,14 +66,18 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
   if (typeof PluginClass !== 'function') throw new Error('bundle has no plugin entry class');
   const plugin = new PluginClass(app, pluginManifest);
   await plugin.onload();
-  const requiredRegistrations = rejectSubscriptionView ? ['settings', 'sync-now', 'protocol:clipmd-desktop']
-    : ['settings', 'sync-now', 'blogger-subscriptions', 'clip2md-blogger-subscriptions', 'protocol:clipmd-desktop'];
+  const requiredRegistrations = rejectSubscriptionView ? ['settings', 'sync-now']
+    : ['settings', 'sync-now', 'blogger-subscriptions', 'clip2md-blogger-subscriptions'];
   for (const required of requiredRegistrations) {
     if (!registrations.includes(required)) throw new Error(`startup missed ${required}`);
   }
   if (rejectSubscriptionView && !plugin.subscriptionError.includes('订阅面板初始化失败')) {
     throw new Error('startup did not isolate optional subscription registration');
   }
+  if (!desktop && (plugin.companion || plugin.recoveryDispatch || registrations.some(id => /desktop|local-retry/.test(id)))) {
+    throw new Error('mobile startup exposed desktop runtime or commands');
+  }
+  if (desktop && !registrations.includes('protocol:clipmd-desktop')) throw new Error('desktop entry missing');
   return { storage, plugin };
 }
 
@@ -82,7 +87,8 @@ const coreState = {
   pendingAcks: [], restoreMissingMappedTasksOnNextSync: false,
   unresolvedTaskIds: [], legacyKeyMigrated: false,
 };
-const desktopCheck = await loadWith(coreState);
+const desktopCheck = await loadWith(coreState, false, false, true);
+await loadWith(coreState);
 const desktopPlugin = desktopCheck.plugin;
 if (await desktopPlugin.ensureDesktopRuntime() !== false) {
   throw new Error('missing desktop companion was accepted');

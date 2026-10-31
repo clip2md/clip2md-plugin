@@ -195,7 +195,7 @@ export class NoteContentSettings {
 
     private updateControls() {
         const local = [...this.editors.values()].flatMap(input => desktopTokens(input.value));
-        if (local.length && (!Platform.isDesktopApp || !this.plugin.companion?.enabled())) this.saveStatus && (this.saveStatus.textContent = '模板含桌面变量，但扩展未开启或不可用；相关字段暂不可使用，请打开桌面扩展设置。');
+        if (Platform.isDesktopApp && local.length && !this.plugin.companion?.enabled()) this.saveStatus && (this.saveStatus.textContent = '模板含桌面变量，但扩展未开启或不可用；相关字段暂不可使用，请打开桌面扩展设置。');
         const custom = !this.plugin.settings.template.includes('{{content}}');
         this.modeControl.disabled = custom;
         this.modeControl.value = this.plugin.settings.syncContentMode;

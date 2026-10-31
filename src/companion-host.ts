@@ -1,6 +1,6 @@
 import { BUILD_CHANNEL } from './build-channel';
 import { parseDocument } from "yaml";
-import { Events, Modal, Notice, Platform, Setting, TFile } from "obsidian";
+import { Events, Platform, TFile } from "obsidian";
 import type BijiSyncPlugin from "./main";
 import type { SyncTask } from "./sync";
 import { applySourceProperties, readSourceProperties, sourcePropertyKeys } from './property-template';
@@ -27,7 +27,7 @@ import {
 import { FavoriteLinkImporter } from './favorite-import';
 const CONTEXT_KEY = "clip2md-companion-contexts-v1";
 const OWNERS_KEY = "clip2md-companion-task-owners-v1";
-const DISMISSED_KEY = "clip2md-companion-install-dismissed-v1";
+
 /** Optional companion bridge. No Node/Electron or cloud credentials cross this interface. */
 export class CompanionHost {
   private alive = true;
@@ -80,6 +80,7 @@ export class CompanionHost {
   }
   resumeAfterUpdate(): void { this.companion?.resumeAfterUpdate?.(); }
   async start(): Promise<void> {
+    if (!Platform.isDesktopApp) return;
     const p = this.plugin;
     p.logger?.log("bridge.started");
     const scope = await this.scope();
@@ -121,7 +122,7 @@ export class CompanionHost {
     );
     p.addCommand({
       id: "desktop-tools",
-      name: "桌面扩展与本地素材",
+      name: "本地剪藏扩展",
       callback: () => this.showStatus(),
     });
     p.registerInterval(
@@ -132,12 +133,7 @@ export class CompanionHost {
     p.app.workspace.onLayoutReady(() => {
       if (!this.alive) return;
       this.emit(BRIDGE_EVENTS.ready, this.api);
-      if (
-        Platform.isDesktopApp &&
-        !p.app.loadLocalStorage(DISMISSED_KEY) &&
-        !this.companion?.enabled && BUILD_CHANNEL !== "website"
-      )
-        this.showStatus();
+
     });
   }
   private async checkBinding(): Promise<void> {
@@ -453,37 +449,6 @@ export class CompanionHost {
     });
   }
   private showStatus(): void {
-    if (!Platform.isDesktopApp) {
-      new Notice("桌面扩展仅在电脑端可用");
-      return;
-    }
-    const modal = new Modal(this.plugin.app);
-    modal.titleEl.setText("桌面扩展");
-    modal.contentEl.createEl("p", {
-      text:
-        this.companion?.message ||
-        "可安装独立桌面扩展，为云端笔记补充来源属性、视频、字幕、原图和评论。",
-    });
-    if (this.companion?.available && this.companion.openSettings)
-      new Setting(modal.contentEl).addButton((b) =>
-        b.setButtonText("打开扩展设置").onClick(() => {
-          this.companion?.openSettings?.();
-          modal.close();
-        }),
-      );
-    else {
-      if (BUILD_CHANNEL === 'website') modal.contentEl.createEl('a', { text: '下载双插件组合包与安装说明', href: 'https://clip2.md/app/sync' });
-      modal.contentEl.createEl("p", {
-        text: "扩展尚未上架。取得审核通过的安装包后，将三个程序文件手动放入 Vault 配置目录的 plugins/clipmd-desktop-tools/，然后在社区插件设置中启用。主插件不会下载或安装扩展及其依赖。",
-      });
-    }
-    new Setting(modal.contentEl).addButton((b) =>
-      b.setButtonText("知道了，不再提示").onClick(() => {
-        this.plugin.app.saveLocalStorage(DISMISSED_KEY, true);
-        modal.close();
-      }),
-    );
-    modal.onClose = () => this.plugin.app.saveLocalStorage(DISMISSED_KEY, true);
-    modal.open();
+    if (Platform.isDesktopApp) this.plugin.openDesktopSettings();
   }
 }
