@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import { CLIP2MD_API_BASE_URL } from './config';
+import { nowBeijingDateTime } from './date-format';
 
 export interface RelatedWork { subscription_id?: number | null; work_id?: string | null; task_id?: number | null; url?: string | null; title?: string | null; }
 export interface SubscriptionContext {
@@ -61,8 +62,8 @@ export interface SubscriptionDeviceState {
     legacyProofs?: Record<string, { filepath: string; contentHash: string }>;
 }
 export const DEFAULT_ARCHIVE_CONFIG: ArchiveConfig = {
-    enabled: false, folderTemplate: 'Clip2MD/博主订阅/{{platform}}/{{blogger_name}}',
-    indexEnabled: true, reportsEnabled: true, reportFolder: 'Clip2MD/博主订阅/日报', bloggers: {},
+    enabled: false, folderTemplate: '',
+    indexEnabled: true, reportsEnabled: true, reportFolder: '', bloggers: {},
 };
 export function archiveConfig(input?: unknown): ArchiveConfig {
     const raw = isArchiveRecord(input) ? input : undefined;
@@ -73,10 +74,19 @@ export function archiveConfig(input?: unknown): ArchiveConfig {
         };
     }
     return { enabled: raw?.enabled === true,
-        folderTemplate: typeof raw?.folderTemplate === 'string' && raw.folderTemplate.trim() ? raw.folderTemplate : DEFAULT_ARCHIVE_CONFIG.folderTemplate,
+        folderTemplate: typeof raw?.folderTemplate === 'string' && raw.folderTemplate !== 'Clip2MD/博主订阅/{{platform}}/{{blogger_name}}' ? raw.folderTemplate.trim() : DEFAULT_ARCHIVE_CONFIG.folderTemplate,
         indexEnabled: raw?.indexEnabled !== false, reportsEnabled: raw?.reportsEnabled !== false,
-        reportFolder: typeof raw?.reportFolder === 'string' && raw.reportFolder.trim() ? raw.reportFolder : DEFAULT_ARCHIVE_CONFIG.reportFolder,
+        reportFolder: typeof raw?.reportFolder === 'string' && raw.reportFolder !== 'Clip2MD/博主订阅/日报' ? raw.reportFolder.trim() : DEFAULT_ARCHIVE_CONFIG.reportFolder,
         bloggers };
+}
+/** Blank directories follow the main target, while explicit paths remain independent. */
+export function resolvedArchiveConfig(config: ArchiveConfig, mainFolder: string): ArchiveConfig {
+    const root = (mainFolder || 'Clip2MD').replace(/\\/g, '/').replace(/\/+$/, '');
+    const child = (path: string) => [root, path].filter(Boolean).join('/');
+    return { ...config,
+        folderTemplate: config.folderTemplate.trim() || child('博主订阅/{{platform}}/{{blogger_name}}'),
+        reportFolder: config.reportFolder.trim() || child('博主订阅/日报'),
+    };
 }
 export function newSubscriptionState(): SubscriptionDeviceState {
     return { version: 1, excludedTaskIds: [], statuses: {}, keptLocalTaskIds: [] };
@@ -197,5 +207,5 @@ export async function fetchArchiveSnapshot(apiKey: string): Promise<ArchiveSnaps
         throw new ArchiveFormatError('订阅分页超过安全上限，请缩小保留范围后重试');
     }
     const [works, reports] = await Promise.all([pages('bloggers/works', isCloudWork), pages('bloggers/reports', isCloudReport)]);
-    return { ...listing, works, reports, fetchedAt: new Date().toISOString() };
+    return { ...listing, works, reports, fetchedAt: nowBeijingDateTime() };
 }

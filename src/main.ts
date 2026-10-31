@@ -1,153 +1,2326 @@
-import { refreshCommentLinks } from './comment-source';
-import { validateCustomTitle } from './note-title';
-import { App, MarkdownView, Notice, Plugin, WorkspaceLeaf, addIcon, requestUrl } from 'obsidian';
+import { desktopTokens } from "./desktop-variables";
+import { Modal, Setting, Platform } from "obsidian";
+import { withSourcePropertyTemplate } from './property-template';
+import { DesktopSettingsPage, setDesktopEnabled } from "./desktop-settings-page";
+import { CloudAccountDisplay } from "./cloud-account";
+import { LocalRecoveryDispatch } from "./local-recovery-dispatch";
+import { openLocalRetries, pollLocalRetries } from "./local-retry-ui";
+import { PersistentConfig } from "./persistent-config";
+import { LocalLogger } from "./local-diagnostics";
+import { DiagnosticsUI } from "./diagnostics-ui";
+import { CompanionHost } from "./companion-host";
+import { refreshCommentLinks } from "./comment-source";
+import { validateCustomTitle } from "./note-title";
+import { taskIdsInContent } from "./task-id";
 import {
-    BijiSyncSettings,
-    BijiSyncSettingTab,
-    DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE,
-    DEFAULT_FRONTMATTER_TEMPLATE,
-    ImageMode,
-    LEGACY_DEFAULT_FRONTMATTER_TEMPLATE,
-    LEGACY_TAGGED_FRONTMATTER_TEMPLATE,
-    NEW_DEFAULT_FRONTMATTER_TEMPLATE,
-    NEW_DEFAULT_FILENAME_TEMPLATE,
-    MergeMode,
-    SyncContentMode,
-    SyncRunSummary,
-    SyncRuntimeState,
-    SyncTrigger,
-} from './settings';
-import { isInvalidApiKeyError, PendingTaskFetchResult, SyncResult, SyncService, SyncTask, validateMarkdownBodyTemplate } from './sync';
-import { CLIP2MD_APP_URL, DeviceBindingClient, DeviceBindingError, DeviceBindingSession, DeviceCredentialStatus } from './binding';
-import { CLIP2MD_API_BASE_URL } from './config';
-import { sanitizeConfigForBackup } from './config-backup';
-import { TimerRegistry } from './timers';
-import { buildSyncAck, getSyncAckBlockedReason, postSyncAck, SyncAckHttpError, SyncAckQueue, type PendingSyncAck } from './sync-ack';
-import { API_SECRET_ID, PENDING_SECRET_ID, readLocalDeviceState, saveLocalDeviceState, setLocalSecret, type LocalDeviceState, type PendingBinding } from './local-state';
-import { sha256, verifySavedSyncProof } from './saved-sync-proof';
-import { SubsetDeleteModal } from './subset-delete-modal';
-import { archiveConfig, bloggerName, fetchArchiveSnapshot, isExcluded, newSubscriptionState, ArchiveRequestError, ArchiveFormatError, type ArchiveErrorKind, type ArchiveConfig, type SubscriptionContext } from './subscriptions';
-import { collidingSubscriptions, rebuildSubscriptionArchive, scanSubscriptionNotes, type LocalSubscriptionNote, type IndexConflict } from './subscription-archive';
-import { documentMetadata, verifiedRegion } from './subscription-document';
-import { SubscriptionView, SUBSCRIPTION_VIEW_TYPE } from './subscription-view';
+  App,
+  MarkdownView,
+  Notice,
+  Plugin,
+  WorkspaceLeaf,
+  addIcon,
+  requestUrl,
+} from "obsidian";
+import {
+  BijiSyncSettings,
+  BijiSyncSettingTab,
+  DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE,
+  DEFAULT_FRONTMATTER_TEMPLATE,
+  ImageMode,
+  LEGACY_DEFAULT_FRONTMATTER_TEMPLATE,
+  LEGACY_TAGGED_FRONTMATTER_TEMPLATE,
+  NEW_DEFAULT_FRONTMATTER_TEMPLATE,
+  NEW_DEFAULT_FILENAME_TEMPLATE,
+  MergeMode,
+  SyncContentMode,
+  SyncRunSummary,
+  SyncRuntimeState,
+  SyncTrigger,
+} from "./settings";
+import {
+  isInvalidApiKeyError,
+  PendingTaskFetchResult,
+  SyncResult,
+  SyncService,
+  SyncTask,
+  validateMarkdownBodyTemplate,
+} from "./sync";
+import {
+  CLIP2MD_APP_URL,
+  DeviceBindingClient,
+  DeviceBindingError,
+  DeviceBindingSession,
+  DeviceCredentialStatus,
+} from "./binding";
+import { CLIP2MD_API_BASE_URL } from "./config";
+import { sanitizeConfigForBackup } from "./config-backup";
+import { TimerRegistry } from "./timers";
+import {
+  buildSyncAck,
+  getSyncAckBlockedReason,
+  postSyncAck,
+  SyncAckHttpError,
+  SyncAckQueue,
+  type PendingSyncAck,
+} from "./sync-ack";
+import {
+  API_SECRET_ID,
+  PENDING_SECRET_ID,
+  readLocalDeviceState,
+  saveLocalDeviceState,
+  setLocalSecret,
+  type LocalDeviceState,
+  type PendingBinding,
+} from "./local-state";
+import { sha256, verifySavedSyncProof } from "./saved-sync-proof";
+import { SubsetDeleteModal } from "./subset-delete-modal";
+import {
+  archiveConfig,
+  resolvedArchiveConfig,
+  bloggerName,
+  fetchArchiveSnapshot,
+  isExcluded,
+  newSubscriptionState,
+  ArchiveRequestError,
+  ArchiveFormatError,
+  type ArchiveErrorKind,
+  type ArchiveConfig,
+  type SubscriptionContext,
+} from "./subscriptions";
+import {
+  collidingSubscriptions,
+  rebuildSubscriptionArchive,
+  scanSubscriptionNotes,
+  type LocalSubscriptionNote,
+  type IndexConflict,
+} from "./subscription-archive";
+import { documentMetadata, verifiedRegion } from "./subscription-document";
+import { SubscriptionView, SUBSCRIPTION_VIEW_TYPE } from "./subscription-view";
 
-const CONFIG_BACKUP_DIR = '.clip2md-config-backup';
+const CONFIG_BACKUP_DIR = ".clip2md-config-backup";
 const MAX_CONFIG_BACKUPS = 5;
 const CONFIG_CORRUPTION_THRESHOLD = 100 * 1024;
 
 type StoredPluginData = Record<string, unknown>;
 
 function isRecord(value: unknown): value is StoredPluginData {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isSyncContentMode(value: unknown): value is SyncContentMode {
-    return value === 'full' || value === 'note' || value === 'source';
+  return value === "full" || value === "note" || value === "source";
 }
 
 function isImageMode(value: unknown): value is ImageMode {
-    return value === 'local' || value === 'disabled';
+  return value === "local" || value === "disabled";
 }
 
 function isMergeMode(value: unknown): value is MergeMode {
-    return value === 'none' || value === 'daily';
+  return value === "none" || value === "daily";
 }
 
 function isSyncRunSummary(value: unknown): value is SyncRunSummary {
-    if (!isRecord(value)) return false;
-    return typeof value.startedAt === 'string'
-        && typeof value.finishedAt === 'string'
-        && (value.trigger === 'manual'
-            || value.trigger === 'scheduled'
-            || value.trigger === 'startup'
-            || value.trigger === 'onboarding')
-        && (value.outcome === 'success' || value.outcome === 'partial' || value.outcome === 'failed')
-        && typeof value.pages === 'number'
-        && typeof value.processed === 'number'
-        && typeof value.succeeded === 'number'
-        && typeof value.pending === 'number'
-        && (value.ignored === undefined || (Number.isSafeInteger(value.ignored) && Number(value.ignored) >= 0))
-        && typeof value.skipped === 'number'
-        && typeof value.failed === 'number'
-        && (value.ackBlockedCount === undefined || (Number.isSafeInteger(value.ackBlockedCount) && Number(value.ackBlockedCount) >= 0))
-        && (value.ackBlockedReasons === undefined || (Array.isArray(value.ackBlockedReasons)
-            && value.ackBlockedReasons.every(reason => typeof reason === 'string')))
-        && (value.errorMessage === undefined || typeof value.errorMessage === 'string');
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.startedAt === "string" &&
+    typeof value.finishedAt === "string" &&
+    (value.trigger === "manual" ||
+      value.trigger === "scheduled" ||
+      value.trigger === "startup" ||
+      value.trigger === "onboarding") &&
+    (value.outcome === "success" ||
+      value.outcome === "partial" ||
+      value.outcome === "failed") &&
+    typeof value.pages === "number" &&
+    typeof value.processed === "number" &&
+    typeof value.succeeded === "number" &&
+    typeof value.pending === "number" &&
+    (value.ignored === undefined ||
+      (Number.isSafeInteger(value.ignored) && Number(value.ignored) >= 0)) &&
+    typeof value.skipped === "number" &&
+    typeof value.failed === "number" &&
+    (value.ackBlockedCount === undefined ||
+      (Number.isSafeInteger(value.ackBlockedCount) &&
+        Number(value.ackBlockedCount) >= 0)) &&
+    (value.ackBlockedReasons === undefined ||
+      (Array.isArray(value.ackBlockedReasons) &&
+        value.ackBlockedReasons.every(
+          (reason) => typeof reason === "string",
+        ))) &&
+    (value.errorMessage === undefined || typeof value.errorMessage === "string")
+  );
 }
 
 function isTaskFileMapping(value: unknown): value is Record<number, string> {
-    if (!isRecord(value)) {
-        return false;
+  if (!isRecord(value)) {
+    return false;
+  }
+  for (const key of Object.keys(value)) {
+    if (typeof value[key] !== "string") {
+      return false;
     }
-    for (const key of Object.keys(value)) {
-        if (typeof value[key] !== 'string') {
-            return false;
-        }
-    }
-    return true;
+  }
+  return true;
 }
 
 function isNumberArray(value: unknown): value is number[] {
-    return Array.isArray(value) && value.every(item => typeof item === 'number');
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "number")
+  );
 }
 
-type ConnectionState = 'unconfigured' | 'configured' | 'connected' | 'invalid' | 'error';
+type ConnectionState =
+  | "unconfigured"
+  | "configured"
+  | "connected"
+  | "invalid"
+  | "error";
 
 interface StatusSnapshot {
-    kind: ConnectionState | 'syncing';
-    label: string;
-    description: string;
-    runtimeState: SyncRuntimeState;
+  kind: ConnectionState | "syncing";
+  label: string;
+  description: string;
+  runtimeState: SyncRuntimeState;
 }
 
 interface SyncCounters {
-    total: number;
-    pages: number;
-    processed: number;
-    succeeded: number;
-    pending: number;
-    ignored: number;
-    skipped: number;
-    failed: number;
-    ackBlockedCount: number;
-    ackBlockedReasons: Set<string>;
+  total: number;
+  pages: number;
+  processed: number;
+  succeeded: number;
+  pending: number;
+  ignored: number;
+  skipped: number;
+  failed: number;
+  ackBlockedCount: number;
+  ackBlockedReasons: Set<string>;
 }
 
 interface SyncProgress {
-    phase: 'idle' | 'discovering' | 'syncing';
-    total: number;
-    processed: number;
-    succeeded: number;
-    pending: number;
-    ignored: number;
-    skipped: number;
-    failed: number;
+  phase: "idle" | "discovering" | "syncing";
+  total: number;
+  processed: number;
+  succeeded: number;
+  pending: number;
+  ignored: number;
+  skipped: number;
+  failed: number;
 }
 
-const CLIP2MD_ICON_ID = 'clip2md-logo';
+const CLIP2MD_ICON_ID = "clip2md-logo";
 // `addIcon` accepts SVG markup (not only a path fragment).  Keeping the
 // viewBox on the registered icon also makes it render correctly when the
 // icon is used by an ItemView action, which is stricter than the ribbon API.
-const CLIP2MD_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 3 18 15v6L6 9V3Z" /></svg>';
+const CLIP2MD_ICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 3 18 15v6L6 9V3Z" /></svg>';
 
 export default class BijiSyncPlugin extends Plugin {
-    settings: BijiSyncSettings;
-    syncService: SyncService;
-    syncAckQueue: SyncAckQueue;
-    private subsetDeleteDecisions?: Map<string, boolean>;
-    syncIntervalId: number | null = null;
-    ackRetryIntervalId: number | null = null;
-    settingTab: BijiSyncSettingTab | null = null;
-    readonly timers = new TimerRegistry();
+  companion?: CompanionHost;
+  private recoveryDispatch?: LocalRecoveryDispatch;
+  private cloudAccount?: CloudAccountDisplay;
+  private accountDisplay():CloudAccountDisplay { return this.cloudAccount ??= new CloudAccountDisplay(()=>this.settings.apiKey,()=>!this.unloading&&this.connectionState!=="invalid"); }
+  renderCloudAccount(container:HTMLElement):()=>void {return this.accountDisplay().render(container);}
+  private refreshCloudAccount():Promise<void> {return this.accountDisplay().refresh();}
+  diagnostics?: DiagnosticsUI;
+  logger?: LocalLogger;
+  private retainedConfig?: PersistentConfig;
+  private configurationCleared = false;
+  private updatePaused = false;
+  private maintenanceRunning = false;
+  private desktopVariableWarning = "";
+  notifyDesktopVariableAvailability(): void {
+    if (!Platform.isDesktopApp) return;
+    this.recoveryDispatch?.wake();
+    if ([this.settings.template,this.settings.frontmatterTemplate,this.settings.dailyMergeFrontmatterTemplate].some(value=>desktopTokens(value).length) && !this.companion?.enabled()) this.warnDesktopVariables("模板含桌面变量，但扩展未开启或不可用，请打开桌面扩展设置。");
+  }
+  private warnDesktopVariables(message: string): void {if(this.desktopVariableWarning===message)return;this.desktopVariableWarning=message;new Notice(message,10000);}
+  isUpdatePaused(): boolean {
+    return this.updatePaused;
+  }
+  renderDiagnostics(container: HTMLElement): void {
+    this.diagnostics?.render(container, async () => {
+      this.configurationCleared = true;
+      await this.retainedConfig?.clear();
+      await this.saveData({});
+      const dir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
+      if (await this.app.vault.adapter.exists(dir)) {
+        const listing = await this.app.vault.adapter.list(dir);
+        for (const file of listing.files)
+          if (/config-.*\.json$/.test(file))
+            await this.app.vault.adapter.remove(file);
+      }
+    });
+  }
+  settings: BijiSyncSettings;
+  syncService: SyncService;
+  syncAckQueue: SyncAckQueue;
+  private subsetDeleteDecisions?: Map<string, boolean>;
+  syncIntervalId: number | null = null;
+  ackRetryIntervalId: number | null = null;
+  settingTab: BijiSyncSettingTab | null = null;
+  readonly timers = new TimerRegistry();
 
-    private ribbonEl: HTMLElement | null = null;
-    private viewActions = new Map<object, { element: HTMLElement; progress: HTMLElement; label: HTMLElement }>();
-    private syncNotice: Notice | null = null;
-    private syncing = false;
-    private runtimeState: SyncRuntimeState = 'idle';
-    private processedCount = 0;
-    private syncProgress: SyncProgress = {
-        phase: 'idle',
+  private ribbonEl: HTMLElement | null = null;
+  private viewActions = new Map<
+    object,
+    { element: HTMLElement; progress: HTMLElement; label: HTMLElement }
+  >();
+  private syncNotice: Notice | null = null;
+  private syncing = false;
+  private runtimeState: SyncRuntimeState = "idle";
+  private processedCount = 0;
+  private syncProgress: SyncProgress = {
+    phase: "idle",
+    total: 0,
+    processed: 0,
+    succeeded: 0,
+    pending: 0,
+    ignored: 0,
+    skipped: 0,
+    failed: 0,
+  };
+  private connectionState: ConnectionState = "unconfigured";
+  private connectionMessage = "请填写 API Key 开始使用";
+  private startupSyncTriggered = false;
+  private appVisible = true;
+  private persistenceQueue: Promise<void> = Promise.resolve();
+  private restoreMissingMappedTasksOnNextSync = false;
+  private syncWriteInProgress = false;
+  private localState: LocalDeviceState;
+  subscriptionError = "";
+  subscriptionErrorKind: ArchiveErrorKind | null = null;
+  subscriptionLoading = false;
+  private subscriptionListeners = new Set<() => void>();
+  private credentialGeneration = 0;
+  private observedCredential: string | undefined;
+  subscriptionArchiveErrors: string[] = [];
+  subscriptionIndexConflicts: IndexConflict[] = [];
+  private indexReplacements = new Map<number, string>();
+  private subscriptionNotes: LocalSubscriptionNote[] = [];
+  private subscriptionRefresh: Promise<void> | null = null;
+  private subscriptionRebuild: Promise<void> | null = null;
+  private legacySharedData: StoredPluginData = {};
+  private readonly bindingClient = new DeviceBindingClient();
+  private bindingTimer: number | null = null;
+  private bindingPollInFlight = false;
+  private bindingStarting = false;
+  private bindingEpoch = 0;
+  private bindingMessage = "";
+  private justMigratedLegacyKey = false;
+
+  async ensureDesktopRuntime(): Promise<boolean> {
+    if (!this.companion?.snapshot()?.setEnabled) {
+      new Notice("请先安装、启用兼容的桌面扩展");
+      return false;
+    }
+    return true;
+  }
+  setDesktopEnabled(value: boolean) { return setDesktopEnabled(this, value); }
+  async enableSourcePropertiesTemplate():Promise<void> {
+    if(this.settings.sourcePropertiesTemplateInitialized)return;
+    const before=this.settings.frontmatterTemplate;
+    const next=withSourcePropertyTemplate(before.trim()?before:NEW_DEFAULT_FRONTMATTER_TEMPLATE);
+    this.settings.frontmatterTemplate=next;
+    this.settings.sourcePropertiesTemplateInitialized=true;
+    try{await this.saveSettings();this.app?.workspace?.trigger('clip2md:source-property-template-changed');}
+    catch(error){if(this.settings.frontmatterTemplate===next)this.settings.frontmatterTemplate=before;this.settings.sourcePropertiesTemplateInitialized=false;throw error;}
+  }
+  private unloading = false;
+  isLocalRetryCurrent(key:string):boolean {return !this.unloading && this.settings.apiKey===key;}
+  private localRetryPolling = false;
+  async pollLocalRetries():Promise<void> {if(this.localRetryPolling)return;this.localRetryPolling=true;try{await pollLocalRetries(this);}catch{this.logger?.log("local_retry.poll_failed",{},"warn");}finally{this.localRetryPolling=false;}}
+  openLocalRetries() { return openLocalRetries(this); }
+
+  async onload() {
+    this.logger = new LocalLogger(this.app, "clipmd", this.manifest.version);
+    this.logger.log("plugin.start");
+    let rawSaved: unknown;
+    let rawError: unknown;
+    try {
+      rawSaved = await this.loadData();
+    } catch (error) {
+      rawError = error;
+    }
+    this.retainedConfig = new PersistentConfig(
+      this.app.vault.adapter,
+      this.app.vault.configDir,
+      "clipmd",
+      sanitizeConfigForBackup,
+      (value) => isRecord(value) && !this.isConfigCorrupted(value),
+    );
+    const restored = await this.retainedConfig
+      .load(
+        () => {
+          if (rawError) throw new Error("原配置无法读取");
+          return Promise.resolve(rawSaved);
+        },
+        () => this.restoreConfigFromBackup(),
+      )
+      .catch((error: unknown) => {
+        this.logger?.log("config.recovery.failed", {}, "error");
+        new Notice(
+          "保留配置无法恢复，已停止启动并保留原文件，请导出备份后检查",
+          15000,
+        );
+        throw error instanceof Error ? error : new Error("配置恢复失败");
+      });
+    this.logger.log("config.loaded", { source: restored.source });
+    if (["backup", "historical"].includes(restored.source))
+      new Notice("Clip2MD: 已从有效备份恢复配置");
+    let saved: unknown = {
+      ...(isRecord(rawSaved) ? rawSaved : {}),
+      ...restored.data,
+    };
+    let savedData = isRecord(saved) ? saved : {};
+    const freshInstall =
+      restored.source === "defaults" && readLocalDeviceState(this.app) === null;
+    const legacyApiUrl =
+      typeof savedData.apiUrl === "string" ? savedData.apiUrl : "";
+    const legacySchemaVersion =
+      typeof savedData.settingsSchemaVersion === "number"
+        ? savedData.settingsSchemaVersion
+        : Number(savedData.settingsSchemaVersion || 0);
+
+    if (this.isConfigCorrupted(saved)) {
+      console.warn("Clip2MD: 检测到配置文件损坏，尝试从备份恢复...");
+      const restored = await this.restoreConfigFromBackup();
+      if (restored) {
+        saved = restored;
+        savedData = restored;
+        new Notice(
+          "Clip2MD: 配置文件已损坏，已从备份恢复。请检查设置。",
+          10000,
+        );
+      } else {
+        new Notice(
+          "Clip2MD: 配置文件已损坏且无可用备份，请重新配置 API Key。",
+          10000,
+        );
+        saved = null;
+        savedData = {};
+      }
+    }
+
+    this.settings = this.normalizeSettings(savedData);
+    if (freshInstall) {
+      this.settings.filenameTemplate = NEW_DEFAULT_FILENAME_TEMPLATE;
+      this.settings.frontmatterTemplate = NEW_DEFAULT_FRONTMATTER_TEMPLATE;
+    }
+    for (const key of [
+      "apiKey",
+      "credentialId",
+      "credentialName",
+      "installationId",
+      "cursor",
+      "taskFileMap",
+      "pendingTaskIds",
+      "ignoredTaskIds",
+      "pendingAcks",
+      "restoreMissingMappedTasksOnNextSync",
+      "lastSyncSummary",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(savedData, key))
+        this.legacySharedData[key] = savedData[key];
+    }
+    let settingsMigrated = savedData.titleMode === undefined;
+    if (
+      typeof savedData.frontmatterTemplate === "string" &&
+      savedData.frontmatterTemplate !== this.settings.frontmatterTemplate
+    ) {
+      settingsMigrated = true;
+    }
+    if (
+      legacySchemaVersion < 3 ||
+      Object.prototype.hasOwnProperty.call(savedData, "apiUrl")
+    ) {
+      this.settings.settingsSchemaVersion = 3;
+      settingsMigrated = true;
+    }
+    if (legacyApiUrl && legacyApiUrl !== CLIP2MD_API_BASE_URL) {
+      new Notice(
+        "Clip2MD: 服务地址已统一为官方地址，旧自定义地址不再生效。",
+        8000,
+      );
+    }
+
+    if (
+      savedData.syncContentMode === undefined &&
+      typeof savedData.apiKey === "string" &&
+      savedData.apiKey
+    ) {
+      this.settings.syncContentMode = "source";
+    }
+
+    this.localState = await this.loadOrMigrateLocalState(savedData);
+    this.settings.installationId = this.localState.installationId;
+    this.settings.credentialId = this.localState.credentialId;
+    this.settings.credentialName = this.localState.credentialName;
+    this.settings.apiKey =
+      this.app.secretStorage.getSecret(API_SECRET_ID) || "";
+    this.settings.lastSyncSummary = this.localState.lastSyncSummary;
+    this.restoreMissingMappedTasksOnNextSync =
+      this.localState.restoreMissingMappedTasksOnNextSync;
+    this.syncService = new SyncService(this.settings, this.app.fileManager);
+    this.syncService.setCursor(this.localState.cursor);
+    this.syncService.loadTaskFileMap(this.localState.taskFileMap);
+    this.syncService.loadIgnoredTaskIds(this.localState.ignoredTaskIds);
+    this.syncService.loadPendingTaskIds(this.localState.pendingTaskIds);
+    this.syncAckQueue = new SyncAckQueue(
+      () => this.persistSyncState(),
+      (ack) => this.deliverSyncAck(ack),
+    );
+    this.syncAckQueue.load(this.localState.pendingAcks);
+    const subscriptions = this.getSubscriptionState();
+    if (
+      !subscriptions.credentialFingerprint ||
+      !this.settings.apiKey ||
+      this.localState.credentialInvalid
+    ) {
+      subscriptions.unverified = true;
+    } else {
+      try {
+        if (
+          subscriptions.credentialFingerprint !==
+          (await sha256(this.settings.apiKey))
+        )
+          subscriptions.unverified = true;
+      } catch {
+        subscriptions.unverified = true;
+        this.subscriptionError = "订阅凭证校验暂不可用，基础同步继续运行";
+      }
+    }
+    subscriptions.legacyProofs ??= {};
+    for (const ack of this.localState.pendingAcks)
+      if (ack.savedProof && !ack.savedProof.scope) {
+        subscriptions.legacyProofs[ack.taskId] = {
+          filepath: ack.savedProof.filepath,
+          contentHash: ack.savedProof.contentHash,
+        };
+      }
+    if (settingsMigrated) {
+      await this.saveSettings();
+    }
+    if (this.justMigratedLegacyKey) {
+      new Notice(
+        "Clip2MD: 旧 Key 已暂时沿用；请在每台设备分别扫码绑定。",
+        10000,
+      );
+    }
+
+    this.updateConnectionState(
+      this.settings.apiKey
+        ? this.localState.credentialInvalid
+          ? "invalid"
+          : "configured"
+        : "unconfigured",
+    );
+
+    addIcon(CLIP2MD_ICON_ID, CLIP2MD_ICON_SVG);
+
+    this.diagnostics = new DiagnosticsUI({
+      app: this.app,
+      logger: this.logger,
+      apiBase: CLIP2MD_API_BASE_URL,
+      website: CLIP2MD_APP_URL,
+      key: () => this.settings.apiKey,
+      enabled: () => ({
+        clipmd: true,
+        "clipmd-desktop-tools": this.companion?.enabled() ?? false,
+      }),
+      tools: () => this.companion?.diagnosticTools() ?? {},
+    });
+    this.addCommand({
+      id: "feedback",
+      name: "反馈问题",
+      callback: () => this.diagnostics?.open(),
+    });
+    this.addCommand({
+      id: "export-diagnostics",
+      name: "导出诊断报告",
+      callback: () => {
+        void this.diagnostics?.export();
+      },
+    });
+    this.settingTab = new BijiSyncSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
+    this.appVisible = typeof document === "undefined" || !document.hidden;
+    if (typeof document !== "undefined" && typeof window !== "undefined") {
+      this.registerDomEvent(document, "visibilitychange", () =>
+        this.handleAppVisibility(!document.hidden),
+      );
+      this.registerDomEvent(window, "focus", () =>
+        this.handleAppVisibility(true),
+      );
+      this.registerDomEvent(window, "pageshow", () =>
+        this.handleAppVisibility(true),
+      );
+    }
+    this.settingTab.onAppVisibilityChange(this.appVisible);
+    this.scheduleDeviceBindingPoll(0);
+
+    this.ribbonEl = this.addRibbonIcon(CLIP2MD_ICON_ID, "Clip2MD 同步", () => {
+      if (!this.settings.apiKey) {
+        this.openSettingsTab();
+        return;
+      }
+      void this.syncNow("manual");
+    });
+    this.updateRibbonState();
+    this.app.workspace.iterateAllLeaves((leaf) => this.attachViewAction(leaf));
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf) {
+          this.attachViewAction(leaf);
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.app.workspace.iterateAllLeaves((leaf) =>
+          this.attachViewAction(leaf),
+        );
+        this.pruneViewActions();
+      }),
+    );
+
+    this.addCommand({
+      id: "sync-now",
+      name: "立即同步剪藏",
+      callback: () => {
+        void this.syncNow("manual");
+      },
+    });
+
+    try {
+      this.registerView(
+        SUBSCRIPTION_VIEW_TYPE,
+        (leaf) => new SubscriptionView(leaf, this),
+      );
+      this.addCommand({
+        id: "blogger-subscriptions",
+        name: "打开博主订阅",
+        callback: () => {
+          void this.openSubscriptionPanel();
+        },
+      });
+      this.registerEvent(
+        this.app.vault.on("rename", (file) => {
+          void this.rebuildSubscriptions();
+        }),
+      );
+      this.registerEvent(
+        this.app.vault.on("delete", (file) => {
+          const map = this.syncService.getTaskFileMap();
+          for (const [id, path] of Object.entries(map))
+            if (
+              path === file.path &&
+              this.subscriptionNotes.some(
+                (n) => n.metadata.task_id === Number(id),
+              )
+            ) {
+              if (this.settings.preventReimportAfterLocalRemoval)
+                this.syncService.markIgnored(Number(id));
+            }
+          void this.rebuildSubscriptions();
+        }),
+      );
+    } catch (error) {
+      this.subscriptionError = "订阅面板初始化失败；基础同步仍可使用";
+      console.error(`Clip2MD: ${this.subscriptionError}`, error);
+    }
+
+    if (Platform.isDesktopApp) this.addCommand({id:"local-retry-failed",name:"查看本地自动处理记录",callback:()=>{void this.openLocalRetries();}});
+    this.startSyncInterval();
+    this.startAckRetryInterval();
+    this.timers.setTimeout(() => this.retryPendingAcks(), 3000, "network");
+    if (Platform.isDesktopApp) {
+    try {
+      this.companion = new CompanionHost(this);
+      await this.companion.start();
+
+    } catch {
+      this.companion?.stop();
+      this.companion = undefined;
+      console.warn("Clip2MD: 桌面扩展联动暂不可用，云端同步继续");
+    }
+    await this.syncService.refreshLocalRetryTasks?.().catch(() => undefined);
+    this.recoveryDispatch = new LocalRecoveryDispatch(this);
+    this.recoveryDispatch.start();
+    this.registerObsidianProtocolHandler("clipmd-desktop", () => this.openDesktopSettings());
+    this.registerObsidianProtocolHandler("clipmd-settings", () => this.openSettingsTab());
+    this.registerObsidianProtocolHandler("clipmd-local-records", () => { void this.openLocalRetries(); });
+    }
+    this.notifyDesktopVariableAvailability();
+    if(Platform.isDesktopApp){this.registerInterval(window.setInterval(()=>{void this.pollLocalRetries();},15000));void this.pollLocalRetries();}
+    this.scheduleStartupSync();
+  }
+
+  onunload() {
+    this.recoveryDispatch?.stop();
+    this.unloading=true;
+    this.cloudAccount?.dispose();
+    this.logger?.log("plugin.stop");
+    this.diagnostics?.stop();
+    this.companion?.stop();
+    this.bindingEpoch++;
+    this.settingTab?.hide();
+    this.subscriptionListeners.clear();
+    this.timers.clearAll();
+    this.bindingTimer = null;
+    this.syncIntervalId = null;
+    this.ackRetryIntervalId = null;
+    this.syncNotice?.hide();
+    this.syncNotice = null;
+    this.viewActions.forEach(({ element }) => element.remove());
+    this.viewActions.clear();
+  }
+
+  async loadSettings() {
+    await this.persistenceQueue;
+    const saved = await this.loadStoredData();
+    this.legacySharedData = {};
+    for (const key of [
+      "apiKey",
+      "credentialId",
+      "credentialName",
+      "installationId",
+      "cursor",
+      "taskFileMap",
+      "pendingTaskIds",
+      "ignoredTaskIds",
+      "pendingAcks",
+      "restoreMissingMappedTasksOnNextSync",
+      "lastSyncSummary",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(saved, key))
+        this.legacySharedData[key] = saved[key];
+    }
+    const local = {
+      apiKey: this.settings.apiKey,
+      credentialId: this.settings.credentialId,
+      credentialName: this.settings.credentialName,
+      installationId: this.settings.installationId,
+      lastSyncSummary: this.settings.lastSyncSummary,
+    };
+    this.settings = { ...this.normalizeSettings(saved), ...local };
+    this.syncService.updateSettings(this.settings);
+    this.updateConnectionState(
+      this.settings.apiKey
+        ? this.localState.credentialInvalid
+          ? "invalid"
+          : "configured"
+        : "unconfigured",
+    );
+    this.updateRibbonState();
+  }
+
+  async onExternalSettingsChange(): Promise<void> {
+    const external = await this.loadStoredData();
+    if (this.isConfigCorrupted(external)) {
+      new Notice("外部配置格式无效，已保留当前设置");
+      return;
+    }
+    if (!this.configurationCleared) await this.retainedConfig?.save(external);
+    await this.loadSettings();
+    this.refreshSettingTab();
+  }
+
+  async saveSettings() {
+    this.getCredentialGeneration();
+    this.settings = this.normalizeSettings(this.settings);
+    if (this.syncService) {
+      this.syncService.updateSettings(this.settings);
+    }
+    if (
+      this.app.secretStorage.getSecret(API_SECRET_ID) !== this.settings.apiKey
+    ) {
+      this.localState.credentialInvalid = false;
+      this.updateConnectionState(
+        this.settings.apiKey ? "configured" : "unconfigured",
+      );
+      if (this.localState.subscriptions) {
+        this.localState.subscriptions.unverified = true;
+        this.subscriptionNotes = [];
+      }
+    }
+    await this.persistPluginState(true);
+    this.startSyncInterval();
+    this.startAckRetryInterval();
+    // 不在这里刷新设置页面，避免每次保存都重建 UI
+    // 需要刷新时由调用方显式调用 refreshSettingTab()
+  }
+
+  async setPreventReimportAfterLocalRemoval(value: boolean): Promise<void> {
+    if (this.settings.preventReimportAfterLocalRemoval && !value) {
+      this.restoreMissingMappedTasksOnNextSync = true;
+    }
+    this.settings.preventReimportAfterLocalRemoval = value;
+    await this.saveSettings();
+  }
+
+  getMigrationUnresolvedTasks(): number[] {
+    return [...this.localState.unresolvedTaskIds];
+  }
+
+  hasLegacySharedState(): boolean {
+    return Object.keys(this.legacySharedData).length > 0;
+  }
+
+  async resolveMigrationTask(
+    taskId: number,
+    action: "ignore" | "reimport",
+  ): Promise<void> {
+    if (!this.localState.unresolvedTaskIds.includes(taskId)) return;
+    this.localState.unresolvedTaskIds =
+      this.localState.unresolvedTaskIds.filter((id) => id !== taskId);
+    if (action === "ignore") {
+      this.syncService.markIgnored(taskId);
+      this.syncService.removePending(taskId);
+    } else {
+      this.syncService.removeIgnored(taskId);
+      this.syncService.markPending(taskId);
+    }
+    await this.persistSyncState();
+    this.refreshSettingTab();
+  }
+
+  async clearLegacySharedState(): Promise<void> {
+    const write = async () => {
+      const shared: StoredPluginData = { ...this.settings };
+      for (const key of [
+        "apiKey",
+        "credentialId",
+        "credentialName",
+        "installationId",
+        "lastSyncSummary",
+      ])
+        delete shared[key];
+      await this.saveData(shared);
+      this.legacySharedData = {};
+      await this.backupConfig();
+      this.refreshSettingTab();
+    };
+    const next = this.persistenceQueue.catch(() => undefined).then(write);
+    this.persistenceQueue = next;
+    await next;
+  }
+
+  getDeviceBindingSession(): DeviceBindingSession | null {
+    const pending = this.localState.pendingBinding;
+    if (!pending) return null;
+    return {
+      device_code: pending.deviceCode,
+      user_code: pending.userCode,
+      expires_in: Math.max(
+        0,
+        Math.ceil((pending.expiresAt - Date.now()) / 1000),
+      ),
+      interval: pending.interval,
+    };
+  }
+
+  getDeviceBindingMessage(): string {
+    return (
+      this.bindingMessage ||
+      (this.localState.pendingBinding?.phase === "prepared"
+        ? "正在完成本机绑定…"
+        : "等待手机端授权…")
+    );
+  }
+
+  async cancelDeviceBinding(): Promise<void> {
+    if (this.bindingStarting) throw new Error("绑定请求正在保存，请稍后重试");
+    if (this.localState.pendingBinding?.phase === "prepared") {
+      throw new Error("正在完成 Key 替换，请等待结果或绑定码到期");
+    }
+    this.bindingEpoch = (this.bindingEpoch || 0) + 1;
+    this.bindingPollInFlight = false;
+    this.timers.clearTimeout(this.bindingTimer);
+    this.bindingTimer = null;
+    try {
+      await this.persistBindingState(undefined);
+    } catch (error) {
+      this.scheduleDeviceBindingPoll(5);
+      throw error;
+    }
+  }
+
+  async beginDeviceBinding(session: DeviceBindingSession): Promise<void> {
+    if (this.bindingStarting) throw new Error("绑定请求正在保存，请稍后重试");
+    if (this.localState.pendingBinding?.phase === "prepared") {
+      throw new Error("上次绑定正在完成，请等待结果后重试");
+    }
+    const pending: PendingBinding = {
+      deviceCode: session.device_code,
+      userCode: session.user_code,
+      expiresAt: Date.now() + session.expires_in * 1000,
+      interval: session.interval,
+      phase: "polling",
+    };
+    this.bindingStarting = true;
+    const epoch = (this.bindingEpoch = (this.bindingEpoch || 0) + 1);
+    this.bindingPollInFlight = false;
+    this.timers.clearTimeout(this.bindingTimer);
+    this.bindingTimer = null;
+    try {
+      // Publish the session only after its local write has been verified.
+      await this.persistBindingState(pending);
+      if (epoch !== this.bindingEpoch) return;
+      this.bindingMessage = "等待手机端授权…";
+    } catch (error) {
+      this.bindingMessage =
+        error instanceof Error ? error.message : "本机绑定状态保存失败，请重试";
+      throw error;
+    } finally {
+      this.bindingStarting = false;
+      if (epoch === this.bindingEpoch)
+        this.scheduleDeviceBindingPoll(session.interval);
+    }
+  }
+
+  resumeDeviceBinding(): void {
+    this.scheduleDeviceBindingPoll(0);
+  }
+
+  private persistBindingState(
+    pendingBinding: PendingBinding | undefined,
+  ): Promise<void> {
+    const next = this.persistenceQueue
+      .catch(() => undefined)
+      .then(() => this.writePluginState(false, { pendingBinding }));
+    this.persistenceQueue = next;
+    return next;
+  }
+
+  private isCurrentBinding(pending: PendingBinding, epoch: number): boolean {
+    return (
+      epoch === (this.bindingEpoch || 0) &&
+      !this.bindingStarting &&
+      this.localState.pendingBinding?.deviceCode === pending.deviceCode
+    );
+  }
+
+  private async withBindingTimeout<T>(
+    request: Promise<T>,
+    expiresAt?: number,
+  ): Promise<T> {
+    const delay = Math.min(
+      15_000,
+      expiresAt === undefined ? 15_000 : Math.max(1, expiresAt - Date.now()),
+    );
+    let timer: number | null = null;
+    try {
+      return await Promise.race([
+        request,
+        new Promise<never>((_resolve, reject) => {
+          timer = this.timers.setTimeout(
+            () =>
+              reject(
+                new DeviceBindingError(
+                  "绑定请求超时，正在重试",
+                  408,
+                  "binding_request_timeout",
+                ),
+              ),
+            delay,
+            "binding",
+          );
+        }),
+      ]);
+    } finally {
+      this.timers.clearTimeout(timer);
+    }
+  }
+
+  private scheduleDeviceBindingPoll(seconds: number): void {
+    this.timers.clearTimeout(this.bindingTimer);
+    this.bindingTimer = null;
+    if (
+      !this.appVisible ||
+      this.bindingStarting ||
+      !this.localState?.pendingBinding
+    )
+      return;
+    const pending = this.localState.pendingBinding;
+    const delay =
+      pending.phase === "polling" && pending.expiresAt > Date.now()
+        ? Math.min(
+            Math.max(0, seconds) * 1000,
+            Math.max(0, pending.expiresAt - Date.now()),
+          )
+        : Math.max(0, seconds) * 1000;
+    const timer = this.timers.setTimeout(
+      () => {
+        if (this.bindingTimer === timer) this.bindingTimer = null;
+        void this.pollDeviceBinding();
+      },
+      delay,
+      "binding",
+    );
+    this.bindingTimer = timer;
+  }
+
+  private async probeCandidateKey(apiKey: string): Promise<boolean | null> {
+    const response = await requestUrl({
+      url: `${CLIP2MD_API_BASE_URL}/sync/tasks?limit=1`,
+      headers: { "X-API-Key": apiKey },
+      throw: false,
+    });
+    if (response.status === 401) return false;
+    if (response.status >= 200 && response.status < 300) return true;
+    return null;
+  }
+
+  private async promotePendingCredential(
+    credentialId?: number,
+    credentialName?: string,
+  ): Promise<void> {
+    const pendingKey = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+    if (!pendingKey) throw new Error("待领取 Key 的本机草稿丢失，请重新扫码");
+    if (pendingKey !== this.settings.apiKey && this.localState.subscriptions) {
+      this.localState.subscriptions.unverified = true;
+      this.subscriptionNotes = [];
+    }
+    setLocalSecret(this.app, API_SECRET_ID, pendingKey);
+    this.settings.apiKey = pendingKey;
+    this.getCredentialGeneration();
+    this.settings.credentialId = credentialId;
+    this.settings.credentialName =
+      credentialName || this.localState.pendingBinding?.credentialName;
+    this.localState.legacyKeyMigrated = false;
+    this.localState.credentialInvalid = false;
+    await this.persistBindingState(undefined);
+    setLocalSecret(this.app, PENDING_SECRET_ID, "");
+    this.updateConnectionState("connected", "已验证连接");
+    this.startSyncInterval();
+    this.startAckRetryInterval();
+    this.bindingMessage = "绑定成功";
+    void this.refreshCloudAccount();
+    this.settingTab?.onDeviceBindingFinished();
+    new Notice("Clip2MD: 本机绑定成功，可以开始同步。", 6000);
+    this.refreshSettingTab();
+  }
+
+  private async pollDeviceBinding(): Promise<void> {
+    const pending = this.localState?.pendingBinding;
+    if (
+      !pending ||
+      !this.appVisible ||
+      this.bindingStarting ||
+      this.bindingPollInFlight
+    )
+      return;
+    const epoch = this.bindingEpoch || 0;
+    this.bindingPollInFlight = true;
+    try {
+      const candidate = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+      if (pending.phase === "prepared" && candidate) {
+        // A completed server transaction may need recovery even after expiry.
+        const active = await this.withBindingTimeout(
+          this.probeCandidateKey(candidate),
+        );
+        if (!this.isCurrentBinding(pending, epoch)) return;
+        if (active === null)
+          throw new Error("暂时无法验证本机绑定草稿，稍后重试");
+        if (active === true) {
+          await this.promotePendingCredential(
+            undefined,
+            pending.credentialName,
+          );
+          return;
+        }
+        if (Date.now() >= pending.expiresAt) {
+          this.bindingMessage = "绑定码已过期，旧 Key 保持原样；请重新扫码。";
+          await this.persistBindingState(undefined);
+          setLocalSecret(this.app, PENDING_SECRET_ID, "");
+          this.refreshSettingTab();
+          return;
+        }
+        const completed = await this.withBindingTimeout(
+          this.bindingClient.complete(pending.deviceCode, candidate),
+          pending.expiresAt,
+        );
+        if (!this.isCurrentBinding(pending, epoch)) return;
+        await this.promotePendingCredential(
+          completed.credential_id,
+          completed.credential_name,
+        );
+        return;
+      }
+      if (Date.now() >= pending.expiresAt) {
+        this.bindingMessage = "绑定码已过期，旧 Key 保持原样；请重新扫码。";
+        try {
+          await this.persistBindingState(undefined);
+          setLocalSecret(this.app, PENDING_SECRET_ID, "");
+        } catch (storageError) {
+          this.bindingMessage =
+            storageError instanceof Error
+              ? storageError.message
+              : "本机绑定状态保存失败，请重试";
+        }
+        this.refreshSettingTab();
+        return;
+      }
+      const result = await this.withBindingTimeout(
+        this.bindingClient.credential(pending.deviceCode),
+        pending.expiresAt,
+      );
+      if (!this.isCurrentBinding(pending, epoch)) return;
+      if (result.status === "prepared") {
+        setLocalSecret(this.app, PENDING_SECRET_ID, result.api_key);
+        const before = this.localState.pendingBinding;
+        this.localState.pendingBinding = {
+          ...pending,
+          phase: "prepared",
+          credentialName: result.credential_name,
+        };
+        try {
+          await this.persistSyncState();
+        } catch (error) {
+          this.localState.pendingBinding = before;
+          throw error;
+        }
+        if (!this.isCurrentBinding(pending, epoch)) return;
+        this.bindingMessage = "手机已授权，正在完成本机绑定…";
+        this.scheduleDeviceBindingPoll(0);
+      } else if (result.status === "completed") {
+        const draft = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
+        const active = draft
+          ? await this.withBindingTimeout(this.probeCandidateKey(draft))
+          : false;
+        if (!this.isCurrentBinding(pending, epoch)) return;
+        if (active === null)
+          throw new Error("暂时无法验证本机绑定草稿，稍后重试");
+        if (active) {
+          await this.promotePendingCredential(result.credential_id);
+        } else {
+          this.bindingMessage = "绑定结果无法恢复，请重新扫码。";
+          await this.persistBindingState(undefined);
+        }
+      } else if (
+        result.status === "pending_approval" ||
+        result.status === "approving"
+      ) {
+        this.bindingMessage =
+          result.status === "approving"
+            ? "手机已授权，正在准备 Key…"
+            : "等待手机端授权…";
+        this.scheduleDeviceBindingPoll(result.retry_after);
+      } else {
+        throw new Error("绑定协议版本不匹配，请重新扫码");
+      }
+      this.refreshSettingTab();
+    } catch (error) {
+      if (!this.isCurrentBinding(pending, epoch)) return;
+      if (
+        error instanceof DeviceBindingError &&
+        [
+          "access_denied",
+          "expired_token",
+          "replacement_credential_unavailable",
+          "credential_limit_reached_v2",
+          "candidate_mismatch",
+          "credential_revoked",
+        ].includes(error.code)
+      ) {
+        this.bindingMessage = [
+          "replacement_credential_unavailable",
+          "credential_limit_reached_v2",
+        ].includes(error.code)
+          ? "所选旧 Key 已被其他操作替换或 Key 数量已满；请重新扫码并选择当前有效 Key。"
+          : "绑定已拒绝、过期或草稿不匹配，旧 Key 保持原样；请重新扫码。";
+        try {
+          await this.persistBindingState(undefined);
+          setLocalSecret(this.app, PENDING_SECRET_ID, "");
+        } catch (storageError) {
+          this.bindingMessage =
+            storageError instanceof Error
+              ? storageError.message
+              : "本机绑定状态保存失败，请重试";
+        }
+      } else {
+        this.bindingMessage = "绑定暂未完成，网络恢复后将重试。";
+        this.scheduleDeviceBindingPoll(
+          pending.phase === "polling" && pending.expiresAt <= Date.now()
+            ? 0
+            : 10,
+        );
+      }
+      this.refreshSettingTab();
+    } finally {
+      if (epoch === (this.bindingEpoch || 0)) {
+        this.bindingPollInFlight = false;
+        if (this.localState?.pendingBinding && this.bindingTimer === null) {
+          this.scheduleDeviceBindingPoll(10);
+        }
+      }
+    }
+  }
+
+  async persistSyncState() {
+    await this.persistPluginState(false);
+  }
+
+  private persistPluginState(includeShared: boolean): Promise<void> {
+    const next = this.persistenceQueue
+      .catch(() => undefined)
+      .then(() => this.writePluginState(includeShared));
+    this.persistenceQueue = next;
+    return next;
+  }
+
+  /** Queue tasks call the writer directly; it must never enqueue itself. */
+  private async writePluginState(
+    includeShared: boolean,
+    stateUpdates: Partial<LocalDeviceState> = {},
+  ): Promise<void> {
+    setLocalSecret(this.app, API_SECRET_ID, this.settings.apiKey);
+    const nextState: LocalDeviceState = {
+      ...this.localState,
+      ...stateUpdates,
+      version: 1,
+      installationId: this.settings.installationId,
+      credentialId: this.settings.credentialId,
+      credentialName: this.settings.credentialName,
+      cursor: this.syncService?.getCursor() ?? null,
+      taskFileMap: { ...(this.syncService?.getTaskFileMap() ?? {}) },
+      pendingTaskIds: [...(this.syncService?.getPendingTaskIds() ?? [])],
+      ignoredTaskIds: [...(this.syncService?.getIgnoredTaskIds() ?? [])],
+      restoreMissingMappedTasksOnNextSync:
+        this.restoreMissingMappedTasksOnNextSync,
+      pendingAcks: this.syncAckQueue?.snapshot() ?? [],
+      lastSyncSummary: this.settings.lastSyncSummary,
+    };
+    saveLocalDeviceState(this.app, nextState);
+    this.localState = nextState;
+    if (includeShared && !this.configurationCleared) {
+      const shared: StoredPluginData = { ...this.settings };
+      for (const key of [
+        "apiKey",
+        "credentialId",
+        "credentialName",
+        "installationId",
+        "lastSyncSummary",
+      ])
+        delete shared[key];
+      await this.retainedConfig?.save(shared);
+      await this.saveData({ ...shared, ...this.legacySharedData });
+      await this.backupConfig();
+    }
+  }
+
+  private async loadOrMigrateLocalState(
+    saved: StoredPluginData,
+  ): Promise<LocalDeviceState> {
+    const existing = readLocalDeviceState(this.app);
+    if (existing) return existing;
+    const legacyMap = isTaskFileMapping(saved.taskFileMap)
+      ? saved.taskFileMap
+      : {};
+    const verifiedMap: Record<number, string> = {};
+    const unresolved: number[] = [];
+    const probe = new SyncService(this.settings, this.app.fileManager);
+    probe.loadTaskFileMap(legacyMap);
+    for (const key of Object.keys(legacyMap)) {
+      const id = Number(key);
+      if (!Number.isSafeInteger(id) || id <= 0) continue;
+      if (await probe.verifyTaskFile(this.app.vault, id))
+        verifiedMap[id] = legacyMap[id];
+    }
+    // Rebuild mappings from this Vault's actual task markers. A copied
+    // data.json may describe another device, and notes may have moved.
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const content = await this.app.vault.read(file);
+      for (const id of taskIdsInContent(content)) {
+        if (!verifiedMap[id]) verifiedMap[id] = file.path;
+      }
+    }
+    if (this.settings.preventReimportAfterLocalRemoval) {
+      for (const key of Object.keys(legacyMap)) {
+        const id = Number(key);
+        if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id])
+          unresolved.push(id);
+      }
+    }
+    if (
+      this.settings.preventReimportAfterLocalRemoval &&
+      isNumberArray(saved.ignoredTaskIds)
+    ) {
+      for (const id of saved.ignoredTaskIds) {
+        if (
+          Number.isSafeInteger(id) &&
+          id > 0 &&
+          !verifiedMap[id] &&
+          !unresolved.includes(id)
+        )
+          unresolved.push(id);
+      }
+    }
+    const oldKey = typeof saved.apiKey === "string" ? saved.apiKey : "";
+    const existingLocalKey = this.app.secretStorage.getSecret(API_SECRET_ID);
+    if (oldKey && !existingLocalKey)
+      setLocalSecret(this.app, API_SECRET_ID, oldKey);
+    this.justMigratedLegacyKey = Boolean(oldKey && !existingLocalKey);
+    const state: LocalDeviceState = {
+      version: 1,
+      installationId: this.createInstallationId(),
+      credentialId:
+        typeof saved.credentialId === "number" ? saved.credentialId : undefined,
+      credentialName:
+        typeof saved.credentialName === "string"
+          ? saved.credentialName
+          : undefined,
+      cursor: null,
+      taskFileMap: verifiedMap,
+      pendingTaskIds: [],
+      ignoredTaskIds: [],
+      pendingAcks: [],
+      restoreMissingMappedTasksOnNextSync: false,
+      unresolvedTaskIds: unresolved,
+      legacyKeyMigrated: Boolean(oldKey && !existingLocalKey),
+      credentialInvalid: false,
+    };
+    saveLocalDeviceState(this.app, state);
+    return state;
+  }
+
+  async verifyConnection(): Promise<void> {
+    try {
+      await this.syncService.probeConnection();
+      this.updateConnectionState("connected", "已验证连接");
+      void this.refreshCloudAccount();
+      this.startSyncInterval();
+      this.startAckRetryInterval();
+      this.refreshSettingTab();
+    } catch (error) {
+      this.handleConnectionError(error);
+      throw error;
+    }
+  }
+
+  handleConnectionError(error: unknown) {
+    const message = this.getFriendlyErrorMessage(error);
+    this.updateConnectionState(
+      isInvalidApiKeyError(error) ? "invalid" : "error",
+      message,
+    );
+    new Notice(`Clip2MD: ${message}`, 8000);
+    this.refreshSettingTab();
+  }
+
+  getStatusSnapshot(): StatusSnapshot {
+    if (!this.settings.apiKey) {
+      return {
+        kind: "unconfigured",
+        label: "○ 未配置",
+        description: "绑定账号后开始同步",
+        runtimeState: this.runtimeState,
+      };
+    }
+
+    if (this.runtimeState === "syncing") {
+      const progress = this.syncProgress;
+      if (progress.phase === "discovering") {
+        return {
+          kind: "syncing",
+          label: "◌ 同步中",
+          description: "正在获取待同步任务…",
+          runtimeState: this.runtimeState,
+        };
+      }
+      return {
+        kind: "syncing",
+        label: "◌ 同步中",
+        description: `已同步 ${progress.succeeded}/${progress.total}，已处理 ${progress.processed} 项`,
+        runtimeState: this.runtimeState,
+      };
+    }
+
+    const summary = this.settings.lastSyncSummary;
+    const summaryText = summary
+      ? [
+          `上次同步 ${this.formatRelativeTime(summary.finishedAt)}`,
+          summary.succeeded ? `${summary.succeeded} 成功` : "",
+          summary.pending ? `${summary.pending} 待重试` : "",
+          summary.failed ? `${summary.failed} 失败` : "",
+          summary.ignored ? `${summary.ignored} 主动忽略` : "",
+        ].filter(Boolean).join(" · ") + this.describeBlockedAcks(summary)
+      : "尚未执行同步";
+
+    if (this.connectionState === "connected") {
+      return {
+        kind: "connected",
+        label: "● 已连接",
+        description: summaryText,
+        runtimeState: this.runtimeState,
+      };
+    }
+
+    if (this.connectionState === "invalid") {
+      return {
+        kind: "invalid",
+        label: "● API Key 已失效",
+        description: "当前 API Key 已失效，请重新扫码绑定或填写新的 Key",
+        runtimeState: this.runtimeState,
+      };
+    }
+
+    if (this.connectionState === "error") {
+      return {
+        kind: "error",
+        label: "● 连接异常",
+        description: this.connectionMessage || summaryText,
+        runtimeState: this.runtimeState,
+      };
+    }
+
+    return {
+      kind: "configured",
+      label: "● 已配置",
+      description: summary
+        ? `本次 Obsidian 会话尚未验证；${summaryText}`
+        : "本次 Obsidian 会话尚未验证",
+      runtimeState: this.runtimeState,
+    };
+  }
+
+  validateTargetFolder(folder: string): boolean {
+    return this.syncService.validateTargetFolder(folder);
+  }
+
+  getTemplatePreview() {
+    return this.syncService.getTemplatePreviewData();
+  }
+
+  renderTemplatePreview(target?: "single" | "daily") {
+    return this.syncService.renderTemplatePreview(
+      this.settings.template,
+      target,
+    );
+  }
+
+  renderDailyMergeFrontmatterPreview() {
+    return this.syncService.renderDailyMergeFrontmatterPreview();
+  }
+
+  validateTemplate(template: string) {
+    return this.syncService.validateTemplate(template);
+  }
+
+  async applyOnboardingSettings(input: {
+    apiKey: string;
+    targetFolder: string;
+  }) {
+    this.settings.apiKey = input.apiKey.trim();
+    this.settings.targetFolder = input.targetFolder.trim() || "Clip2MD";
+    this.settings.credentialId = undefined;
+    this.settings.credentialName = undefined;
+    await this.saveSettings();
+    await this.verifyConnection();
+  }
+
+  async applyDeviceCredential(
+    result: Extract<DeviceCredentialStatus, { status: "approved" }>,
+  ): Promise<void> {
+    this.settings.apiKey = result.api_key;
+    this.settings.credentialId = result.credential_id;
+    this.settings.credentialName = result.credential_name;
+    if (!this.settings.targetFolder) {
+      this.settings.targetFolder = "Clip2MD";
+    }
+    await this.saveSettings();
+    try {
+      await this.verifyConnection();
+      new Notice("Clip2MD: 绑定成功，点击“立即同步”开始使用。", 6000);
+    } catch {
+      new Notice("Clip2MD: API Key 已保存，但连接验证失败，请稍后重试。", 8000);
+    }
+  }
+
+  getBindingClientName(): string {
+    const vaultName = this.app.vault.getName().trim() || "Vault";
+    const suffix = this.settings.installationId.slice(0, 4).toUpperCase();
+    return `Obsidian · ${vaultName} (${suffix})`.slice(0, 100);
+  }
+
+  openCredentialPage() {
+    const query = this.settings.credentialId
+      ? `?credential_id=${this.settings.credentialId}`
+      : "";
+    window.open(
+      `${CLIP2MD_APP_URL}/app/sync${query}#api-credentials`,
+      "_blank",
+    );
+  }
+
+  getCredentialGeneration(): number {
+    this.cloudAccount?.changed();
+    const key = this.settings.apiKey;
+    if (
+      this.observedCredential !== undefined &&
+      this.observedCredential !== key
+    ) {
+      this.credentialGeneration = (this.credentialGeneration || 0) + 1;
+      if (this.localState?.subscriptions)
+        this.localState.subscriptions.unverified = true;
+      this.subscriptionNotes = [];
+      this.observedCredential = key;
+      this.subscriptionError = "";
+      this.subscriptionErrorKind = null;
+      this.subscriptionLoading = false;
+      this.emitSubscriptionChange();
+    }
+    this.observedCredential = key;
+    return this.credentialGeneration || 0;
+  }
+
+  subscribeSubscriptionChanges(listener: () => void): () => void {
+    this.subscriptionListeners ??= new Set();
+    this.subscriptionListeners.add(listener);
+    return () => this.subscriptionListeners.delete(listener);
+  }
+
+  private emitSubscriptionChange(): void {
+    for (const listener of this.subscriptionListeners || []) {
+      try {
+        listener();
+      } catch (error) {
+        console.error("Clip2MD: 订阅页面刷新失败，基础同步继续运行", error);
+      }
+    }
+  }
+
+  getSubscriptionState() {
+    this.getCredentialGeneration();
+    return (this.localState.subscriptions ??= newSubscriptionState());
+  }
+
+  getSubscriptionConfig(
+    accountId = this.getSubscriptionState().accountId || "",
+  ): ArchiveConfig {
+    return archiveConfig(this.settings.subscriptionAccounts?.[accountId]);
+  }
+
+  getSubscriptionNotes(): LocalSubscriptionNote[] {
+    return this.getSubscriptionState().unverified ? [] : this.subscriptionNotes;
+  }
+
+  previewSubscriptionFolders(config: ArchiveConfig): string {
+    const state = this.getSubscriptionState();
+    const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(
+      (sub) => ({
+        kind: "work",
+        account_id: state.accountId!,
+        subscription_id: sub.id,
+        platform: sub.platform,
+        blogger_id: sub.blogger_id,
+        nickname: sub.profile?.nickname,
+        remark: sub.name,
+        work_id: "",
+      }),
+    );
+    const writer = new SyncService({
+      ...this.settings,
+      subscriptionAccounts: {
+        ...this.settings.subscriptionAccounts,
+        [state.accountId!]: config,
+      },
+    });
+    writer.configureArchive(collidingSubscriptions(contexts, resolvedArchiveConfig(config, this.settings.targetFolder)));
+    return (
+      contexts
+        .map(
+          (c) =>
+            `${bloggerName(c)} → ${writer.folderForTask({ ...writer.createPreviewTask(), subscription_context: c })}`,
+        )
+        .join("\n") || `示例目录：${resolvedArchiveConfig(config, this.settings.targetFolder).folderTemplate}`
+    );
+  }
+
+  async updateSubscriptionConfig(
+    config: ArchiveConfig,
+    expectedAccount = this.getSubscriptionState().accountId,
+    expectedGeneration = this.getCredentialGeneration(),
+  ): Promise<void> {
+    const submitted = archiveConfig(config);
+    const guard = () => {
+      const generation = this.getCredentialGeneration();
+      const state = this.getSubscriptionState();
+      if (
+        !expectedAccount ||
+        state.accountId !== expectedAccount ||
+        state.unverified ||
+        generation !== expectedGeneration
+      ) {
+        throw new Error("账号或凭证已变化，请重新验证后保存");
+      }
+    };
+    guard();
+    const write = async () => {
+      guard();
+      const previous: unknown = await this.loadData();
+      guard();
+      const shared: StoredPluginData = {
+        ...this.settings,
+        subscriptionAccounts: {
+          ...this.settings.subscriptionAccounts,
+          [expectedAccount!]: submitted,
+        },
+      };
+      for (const key of [
+        "apiKey",
+        "credentialId",
+        "credentialName",
+        "installationId",
+        "lastSyncSummary",
+      ])
+        delete shared[key];
+      const previousConfig = this.settings.subscriptionAccounts;
+      try {
+        if (!this.configurationCleared) await this.retainedConfig?.save(shared);
+        await this.saveData({ ...shared, ...this.legacySharedData });
+        guard();
+        this.settings.subscriptionAccounts = {
+          ...this.settings.subscriptionAccounts,
+          [expectedAccount!]: submitted,
+        };
+        this.syncService.updateSettings(this.settings);
+        await this.configureSubscriptionRouting();
+        guard();
+        for (const id of this.getSubscriptionState().excludedTaskIds)
+          this.syncService.markPending(id);
+        await this.writePluginState(false);
+        guard();
+      } catch (error) {
+        // Already inside the queue: use raw writes rather than enqueueing
+        // saveSettings()/persistSyncState() and waiting for ourselves.
+        this.settings.subscriptionAccounts = previousConfig;
+        this.syncService.updateSettings(this.settings);
+        try {
+          if (!this.configurationCleared)
+            await this.retainedConfig?.save(previous);
+          await this.saveData(previous);
+        } catch {
+          this.getSubscriptionState().unverified = true;
+          this.subscriptionError = "订阅配置恢复失败，请重新验证账号后重试";
+        }
+        if (!this.getSubscriptionState().unverified)
+          await this.configureSubscriptionRouting();
+        throw error;
+      }
+    };
+    const next = this.persistenceQueue.catch(() => undefined).then(write);
+    this.persistenceQueue = next;
+    try {
+      await next;
+    } finally {
+      this.refreshSubscriptionViews();
+    }
+  }
+
+  private async configureSubscriptionRouting() {
+    const state = this.getSubscriptionState();
+    const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(
+      (s) => ({
+        kind: "work",
+        account_id: state.accountId!,
+        subscription_id: s.id,
+        platform: s.platform,
+        blogger_id: s.blogger_id,
+        remark: s.name,
+        nickname: s.profile?.nickname,
+        work_id: "",
+      }),
+    );
+    this.syncService.configureArchive(
+      collidingSubscriptions(contexts, resolvedArchiveConfig(this.getSubscriptionConfig(), this.settings.targetFolder)),
+      state.legacyProofs,
+    );
+  }
+
+  async refreshSubscriptionSnapshot(): Promise<void> {
+    const generation = this.getCredentialGeneration();
+    if (this.subscriptionRefresh && this.subscriptionLoading)
+      return this.subscriptionRefresh;
+    if (!this.settings.apiKey) {
+      this.subscriptionError = "请先绑定当前设备";
+      this.emitSubscriptionChange();
+      return;
+    }
+    const key = this.settings.apiKey;
+    const current = () =>
+      generation === this.getCredentialGeneration() &&
+      key === this.settings.apiKey;
+    this.subscriptionLoading = true;
+    this.emitSubscriptionChange();
+    this.subscriptionRefresh = (async () => {
+      try {
+        const snapshot = await fetchArchiveSnapshot(key);
+        if (!current()) return;
+        const fingerprint = await sha256(key);
+        if (!current()) return;
+        let state = this.getSubscriptionState();
+        if (state.accountId && state.accountId !== snapshot.account_id) {
+          state = newSubscriptionState();
+          this.localState.subscriptions = state;
+          this.syncService.setCursor(null);
+          this.syncService.loadTaskFileMap({});
+          this.syncService.loadPendingTaskIds([]);
+          this.syncService.loadIgnoredTaskIds([]);
+          this.syncAckQueue.load([]);
+          this.subscriptionNotes = [];
+        }
+        state.accountId = snapshot.account_id;
+        state.credentialFingerprint = fingerprint;
+        state.unverified = false;
+        state.snapshot = snapshot;
+        this.subscriptionError = "";
+        this.subscriptionErrorKind = null;
+        await this.configureSubscriptionRouting();
+        if (!current()) return;
+        const successfulIds = [
+          ...snapshot.works
+            .filter((w) => w.clip_status === "SUCCESS" && w.task_id)
+            .map((w) => w.task_id!),
+          ...snapshot.works
+            .filter(
+              (w) => w.supplement_status === "SUCCESS" && w.supplement_task_id,
+            )
+            .map((w) => w.supplement_task_id!),
+          ...snapshot.reports
+            .filter((r) => r.status === "SUCCESS" && r.task_id)
+            .map((r) => r.task_id!),
+        ];
+        for (const id of successfulIds) {
+          if (!current()) return;
+          if (
+            state.keptLocalTaskIds.includes(id) ||
+            state.excludedTaskIds.includes(id) ||
+            this.syncService.getIgnoredTaskIds().includes(id)
+          )
+            continue;
+          const path = this.syncService.getTaskFileMap()[id];
+          const file = path ? this.app.vault.getFileByPath(path) : null;
+          const metadata = file
+            ? documentMetadata(await this.app.vault.read(file))
+            : null;
+          if (!current()) return;
+          if (!metadata) {
+            this.syncService.markPending(id);
+            // Older full-file receipts must not erase identity before the note is upgraded.
+            await this.syncAckQueue.remove(id);
+          }
+        }
+        if (!current()) return;
+        await this.persistSyncState();
+      } catch (error) {
+        if (!current()) return;
+        this.subscriptionErrorKind =
+          error instanceof ArchiveRequestError ||
+          error instanceof ArchiveFormatError
+            ? error.kind
+            : "network";
+        this.subscriptionError =
+          error instanceof Error ? error.message : "订阅刷新失败";
+        if (this.subscriptionErrorKind === "authentication")
+          this.getSubscriptionState().unverified = true;
+        if (error instanceof ArchiveRequestError && error.status === 401) {
+          this.updateConnectionState("invalid", "API Key 已失效");
+        }
+      } finally {
+        if (current()) {
+          this.subscriptionLoading = false;
+          this.refreshSubscriptionViews();
+        }
+      }
+    })();
+    const request = this.subscriptionRefresh;
+    try {
+      await request;
+    } finally {
+      if (this.subscriptionRefresh === request) this.subscriptionRefresh = null;
+    }
+  }
+
+  async rebuildSubscriptions(): Promise<void> {
+    if (this.subscriptionRebuild) return this.subscriptionRebuild;
+    const state = this.getSubscriptionState();
+    const generation = this.getCredentialGeneration();
+    const account = state.accountId;
+    const current = () =>
+      generation === this.getCredentialGeneration() &&
+      account === this.getSubscriptionState().accountId &&
+      !this.getSubscriptionState().unverified;
+    if (!state.accountId || state.unverified) return;
+    this.subscriptionRebuild = (async () => {
+      try {
+        const result = await rebuildSubscriptionArchive(
+          this.app,
+          state.accountId!,
+          this.getSubscriptionConfig(),
+          state,
+          this.syncService.getTaskFileMap(),
+          this.indexReplacements,
+        );
+        if (!current()) return;
+        this.subscriptionNotes = result.notes;
+        this.subscriptionArchiveErrors = result.errors;
+        this.subscriptionIndexConflicts = result.indexConflicts;
+        await this.persistSyncState();
+      } catch (error) {
+        if (current()) this.subscriptionArchiveErrors = [String(error)];
+      }
+      this.refreshSubscriptionViews();
+    })();
+    try {
+      await this.subscriptionRebuild;
+    } finally {
+      this.subscriptionRebuild = null;
+    }
+  }
+
+  private refreshSubscriptionViews() {
+    this.emitSubscriptionChange();
+    for (const leaf of this.app.workspace?.getLeavesOfType?.(
+      SUBSCRIPTION_VIEW_TYPE,
+    ) || []) {
+      if (leaf.view instanceof SubscriptionView) leaf.view.render();
+    }
+  }
+
+  async openSubscriptionPanel() {
+    const existing = this.app.workspace.getLeavesOfType(
+      SUBSCRIPTION_VIEW_TYPE,
+    )[0];
+    const leaf =
+      existing ||
+      this.app.workspace.getRightLeaf(false) ||
+      this.app.workspace.getLeaf(true);
+    if (!existing)
+      await leaf.setViewState({ type: SUBSCRIPTION_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  async retrySubscriptionTask(id: number) {
+    if (this.syncService.getIgnoredTaskIds().includes(id)) {
+      new Notice("此笔记已主动删除，请使用现有重新导入设置恢复");
+      return;
+    }
+    const state = this.getSubscriptionState();
+    state.keptLocalTaskIds = state.keptLocalTaskIds.filter(
+      (item) => item !== id,
+    );
+    this.syncService.markPending(id);
+    await this.persistSyncState();
+    await this.syncNow();
+  }
+
+  async keepLocalSubscription(id: number) {
+    const state = this.getSubscriptionState();
+    if (!state.keptLocalTaskIds.includes(id)) state.keptLocalTaskIds.push(id);
+    await this.syncAckQueue.remove(id);
+    await this.persistSyncState();
+    this.refreshSubscriptionViews();
+  }
+
+  async replaceSubscription(id: number, reviewedContent: string) {
+    this.syncService.authorizeSubscriptionReplacement(id, reviewedContent);
+    await this.retrySubscriptionTask(id);
+    await this.rebuildSubscriptions();
+  }
+
+  async resolveSubscriptionIndex(conflict: IndexConflict, replace: boolean) {
+    const state = this.getSubscriptionState();
+    state.keptIndexIds ??= [];
+    if (replace) {
+      state.keptIndexIds = state.keptIndexIds.filter(
+        (id) => id !== conflict.id,
+      );
+      this.indexReplacements.set(conflict.id, conflict.current);
+    } else if (!state.keptIndexIds.includes(conflict.id))
+      state.keptIndexIds.push(conflict.id);
+    await this.persistSyncState();
+    await this.rebuildSubscriptions();
+  }
+
+  openDesktopSettings(): void {
+    if (!Platform.isDesktopApp) { new Notice("桌面扩展需要在电脑端 Obsidian 中配置。"); return; }
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("本地剪藏扩展设置");
+    const page = new DesktopSettingsPage(this);
+    page.containerEl = modal.contentEl;
+    modal.onOpen = () => page.display();
+    modal.onClose = () => page.hide();
+    modal.open();
+  }
+  async localRecoveryInstance(): Promise<string> { return await this.recoveryDispatch?.instanceId() || ""; }
+  wakeLocalRecovery(): void { this.recoveryDispatch?.wake(); }
+
+  openSettingsTab() {
+    const setting = (
+      this.app as App & {
+        setting?: {
+          open: () => void;
+          openTabById: (id: string) => void;
+        };
+      }
+    ).setting;
+    if (setting) {
+      setting.open();
+      setting.openTabById(this.manifest.id);
+    }
+  }
+
+  startSyncInterval() {
+    this.timers.clearInterval(this.syncIntervalId);
+    this.syncIntervalId = null;
+
+    if (
+      !this.appVisible ||
+      !this.settings.apiKey ||
+      this.connectionState === "invalid" ||
+      this.settings.syncInterval === 0
+    ) {
+      return;
+    }
+
+    const intervalMinutes = Math.max(5, this.settings.syncInterval);
+    const intervalMs = intervalMinutes * 60 * 1000;
+    this.syncIntervalId = this.timers.setInterval(
+      () => {
+        void this.syncNow("scheduled");
+      },
+      intervalMs,
+      "network",
+    );
+  }
+
+  private startAckRetryInterval(): void {
+    this.timers.clearInterval(this.ackRetryIntervalId);
+    this.ackRetryIntervalId = null;
+    if (
+      !this.appVisible ||
+      !this.settings.apiKey ||
+      this.connectionState === "invalid"
+    )
+      return;
+    this.ackRetryIntervalId = this.timers.setInterval(
+      () => this.retryPendingAcks(),
+      5 * 60 * 1000,
+      "network",
+    );
+  }
+
+  private retryPendingAcks(): void {
+    if (
+      !this.syncing &&
+      this.appVisible &&
+      this.settings.apiKey &&
+      this.connectionState !== "invalid" &&
+      this.syncAckQueue.snapshot().length > 0
+    ) {
+      void this.syncAckQueue.flush();
+    }
+  }
+
+  private async deliverSyncAck(
+    ack: PendingSyncAck,
+  ): Promise<"accepted" | "discard"> {
+    this.logger?.log("receipt.attempt", { taskId: ack.taskId });
+    if (this.updatePaused || this.syncWriteInProgress)
+      throw new Error("Vault 写入期间或插件更新期间暂缓回执");
+    if (ack.savedProof?.scope === "subscription-v1") {
+      const file = this.app.vault.getFileByPath(ack.savedProof.filepath);
+      const content = file ? await this.app.vault.read(file) : "";
+      const context = documentMetadata(content);
+      const state = this.getSubscriptionState();
+      if (
+        !context ||
+        context.task_id !== ack.taskId ||
+        state.unverified ||
+        context.account_id !== state.accountId
+      ) {
+        this.syncService.markPending(ack.taskId);
+        state.statuses[ack.taskId] = {
+          status: "conflict",
+          message: "账号或笔记身份尚未核对，已暂缓回执",
+        };
+        await this.persistSyncState();
+        return "discard";
+      }
+      if (isExcluded(context, this.getSubscriptionConfig(context.account_id))) {
+        if (!state.excludedTaskIds.includes(ack.taskId))
+          state.excludedTaskIds.push(ack.taskId);
+        state.statuses[ack.taskId] = { status: "excluded" };
+        this.syncService.removePending(ack.taskId);
+        await this.persistSyncState();
+        return "discard";
+      }
+      if (state.keptLocalTaskIds.includes(ack.taskId)) return "discard";
+      if (
+        (await scanSubscriptionNotes(this.app, context.account_id)).filter(
+          (n) => n.metadata.task_id === ack.taskId,
+        ).length !== 1
+      ) {
+        this.syncService.markPending(ack.taskId);
+        state.statuses[ack.taskId] = {
+          status: "conflict",
+          message: "本地任务身份重复，已暂缓回执",
+        };
+        await this.persistSyncState();
+        return "discard";
+      }
+      try {
+        await verifiedRegion(content, "links", ack.taskId);
+      } catch {
+        this.syncService.markPending(ack.taskId);
+        await this.persistSyncState();
+        return "discard";
+      }
+    }
+    if (
+      ack.scopeVersion === 2 &&
+      (ack.contentMode !== this.settings.syncContentMode ||
+        (ack.imageMode ?? "local") !== this.settings.imageMode ||
+        !ack.savedProof ||
+        !(await verifySavedSyncProof(
+          this.app.vault,
+          ack.taskId,
+          ack.savedProof,
+        )))
+    ) {
+      this.syncService.markPending(ack.taskId);
+      await this.persistSyncState();
+      return "discard";
+    }
+    if (
+      this.settings.preventReimportAfterLocalRemoval &&
+      this.syncService.getIgnoredTaskIds().includes(ack.taskId)
+    ) {
+      return "discard";
+    }
+    if (!(await this.syncService.verifyTaskFile(this.app.vault, ack.taskId))) {
+      if (this.settings.preventReimportAfterLocalRemoval) {
+        this.syncService.markIgnored(ack.taskId);
+      } else {
+        this.syncService.markPending(ack.taskId);
+      }
+      await this.persistSyncState();
+      return "discard";
+    }
+    // Settings can change while the readback checks await Vault I/O.
+    if (
+      ack.scopeVersion === 2 &&
+      (ack.contentMode !== this.settings.syncContentMode ||
+        (ack.imageMode ?? "local") !== this.settings.imageMode)
+    ) {
+      this.syncService.markPending(ack.taskId);
+      await this.persistSyncState();
+      return "discard";
+    }
+    try {
+      return await postSyncAck(ack, this.settings.apiKey);
+    } catch (error) {
+      if (error instanceof SyncAckHttpError && error.status === 401) {
+        this.updateConnectionState(
+          "invalid",
+          "回执请求返回 401；请为本机重新绑定 Key",
+        );
+        new Notice(
+          "Clip2MD: 本机 API Key 已失效，请重新绑定；待发回执已保留。",
+          8000,
+        );
+        this.refreshSettingTab();
+      }
+      throw error;
+    }
+  }
+
+  scheduleStartupSync() {
+    if (
+      !this.settings.syncOnStart ||
+      !this.settings.apiKey ||
+      this.connectionState === "invalid"
+    ) {
+      return;
+    }
+    this.app.workspace.onLayoutReady(() => {
+      if (this.startupSyncTriggered) {
+        return;
+      }
+      this.startupSyncTriggered = true;
+      this.timers.setTimeout(
+        () => {
+          if (!this.appVisible) {
+            this.startupSyncTriggered = false;
+            return;
+          }
+          if (!this.settings.apiKey) {
+            return;
+          }
+          void this.syncNow("startup");
+        },
+        3000,
+        "network",
+      );
+    });
+  }
+
+  private handleAppVisibility(visible: boolean): void {
+    if (this.appVisible === visible) {
+      if (visible) {
+        this.retryPendingAcks();
+        this.scheduleDeviceBindingPoll(0);
+        this.settingTab?.onAppVisibilityChange(true);
+      }
+      return;
+    }
+    this.appVisible = visible;
+    if (visible) {
+      this.startSyncInterval();
+      this.startAckRetryInterval();
+      this.retryPendingAcks();
+      this.scheduleDeviceBindingPoll(0);
+      if (!this.startupSyncTriggered) this.scheduleStartupSync();
+      this.settingTab?.onAppVisibilityChange(true);
+    } else {
+      this.timers.clearGroup("network");
+      this.timers.clearTimeout(this.bindingTimer);
+      this.bindingTimer = null;
+      this.syncIntervalId = null;
+      this.ackRetryIntervalId = null;
+      this.settingTab?.onAppVisibilityChange(false);
+    }
+  }
+
+  async syncNow(
+    trigger: SyncTrigger = "manual",
+  ): Promise<SyncRunSummary | undefined> {
+    if (this.updatePaused || this.configurationCleared) return undefined;
+    this.logger?.log("sync.requested", { source: trigger });
+    if (!this.settings.apiKey) {
+      if (trigger === "manual") {
+        this.openSettingsTab();
+      }
+      return undefined;
+    }
+
+    if (!this.settings.targetFolder) {
+      // A completed Vault write may already have a durable receipt even
+      // when the folder setting is later cleared.
+      await this.syncAckQueue.flush();
+      if (trigger === "manual") {
+        new Notice("Clip2MD: 请先在设置中配置目标文件夹", 5000);
+        this.openSettingsTab();
+      }
+      return undefined;
+    }
+
+    if (this.syncing) {
+      if (trigger === "manual") {
+        new Notice("Clip2MD: 同步正在进行中", 4000);
+      }
+      return this.settings.lastSyncSummary;
+    }
+
+    const templateValidation = validateMarkdownBodyTemplate(
+      this.settings.template,
+    );
+    if (!templateValidation.valid) {
+      await this.syncAckQueue.flush();
+      if (trigger === "manual") {
+        new Notice(`Clip2MD: ${templateValidation.message}`, 8000);
+        this.openSettingsTab();
+      }
+      console.warn(`Clip2MD: ${templateValidation.message}`);
+      return undefined;
+    }
+
+    this.syncing = true;
+    this.runtimeState = "syncing";
+    this.processedCount = 0;
+    this.syncProgress = {
+      phase: "discovering",
+      total: 0,
+      processed: 0,
+      succeeded: 0,
+      pending: 0,
+      ignored: 0,
+      skipped: 0,
+      failed: 0,
+    };
+    this.updateRibbonState();
+    this.updateViewActions();
+    this.refreshSettingTab();
+    this.startSyncProgressNotice();
+
+    const startedAt = new Date().toISOString();
+    const counters: SyncCounters = {
+      total: 0,
+      pages: 0,
+      processed: 0,
+      succeeded: 0,
+      pending: 0,
+      ignored: 0,
+      skipped: 0,
+      failed: 0,
+      ackBlockedCount: 0,
+      ackBlockedReasons: new Set(),
+    };
+    const processedTaskIds = new Set<number>();
+    this.subsetDeleteDecisions = new Map();
+
+    try {
+      if (typeof this.app.vault.getMarkdownFiles === "function") {
+        await this.refreshSubscriptionSnapshot();
+        await this.rebuildSubscriptions();
+        for (const id of this.getSubscriptionState().excludedTaskIds)
+          this.syncService.markPending(id);
+      }
+      await this.syncAckQueue.flush();
+      if (
+        !this.settings.preventReimportAfterLocalRemoval &&
+        this.restoreMissingMappedTasksOnNextSync
+      ) {
+        const missing = await this.syncService.findMissingMappedTaskIds(
+          this.app.vault,
+        );
+        missing.forEach((id) => this.syncService.markIgnored(id));
+        this.restoreMissingMappedTasksOnNextSync = false;
+        try {
+          await this.persistSyncState();
+        } catch (error) {
+          this.restoreMissingMappedTasksOnNextSync = true;
+          throw error;
+        }
+      }
+      const restoreTasks = this.settings.preventReimportAfterLocalRemoval
+        ? []
+        : await this.syncService.fetchIgnoredTasks();
+      const restoreIds = new Set(restoreTasks.map((item) => item.taskId));
+      const pendingTasks = (await this.syncService.fetchPendingTasks()).filter(
+        (item) => !restoreIds.has(item.taskId),
+      );
+      let cursor = this.syncService.getCursor();
+      let batch = await this.syncService.fetchNextPage(cursor);
+      counters.total =
+        [...restoreTasks, ...pendingTasks].reduce(
+          (count, item) => count + (item.task ? 1 : 0),
+          0,
+        ) + batch.total;
+      this.updateSyncProgress(counters, "syncing");
+      this.refreshSettingTab();
+
+      await this.processPendingQueue(
+        restoreTasks,
+        processedTaskIds,
+        counters,
+        true,
+      );
+      await this.processPendingQueue(pendingTasks, processedTaskIds, counters);
+
+      let hasMore = true;
+      while (hasMore) {
+        counters.pages += 1;
+        const deduped = batch.tasks.filter((task) => {
+          if (processedTaskIds.has(task.id)) {
+            return false;
+          }
+          processedTaskIds.add(task.id);
+          return true;
+        });
+        const duplicateCount = batch.tasks.length - deduped.length;
+        if (duplicateCount > 0) {
+          counters.total = Math.max(
+            counters.processed,
+            counters.total - duplicateCount,
+          );
+          this.updateSyncProgress(counters, "syncing");
+        }
+
+        await this.processTasks(deduped, counters);
+        this.processedCount = counters.processed;
+
+        const previousCursor = this.syncService.getCursor();
+        const nextCursor = batch.nextCursor;
+        if (batch.hasMore && (!nextCursor || nextCursor === cursor)) {
+          throw new Error("同步游标未推进，已停止以避免无限循环");
+        }
+
+        this.syncService.setCursor(nextCursor);
+        try {
+          await this.persistSyncState();
+        } catch (error) {
+          this.syncService.setCursor(previousCursor);
+          throw error;
+        }
+
+        cursor = nextCursor;
+        hasMore = batch.hasMore;
+        if (hasMore) {
+          batch = await this.syncService.fetchNextPage(cursor);
+        }
+      }
+
+      counters.pending += this.syncAckQueue.snapshot().length;
+      const outcome =
+        counters.failed > 0
+          ? "failed"
+          : counters.pending > 0 ||
+              counters.skipped > 0 ||
+              counters.ackBlockedCount > 0
+            ? "partial"
+            : "success";
+      const summary = this.finishSyncRun({
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        trigger,
+        outcome,
+        pages: counters.pages,
+        processed: counters.processed,
+        succeeded: counters.succeeded,
+        pending: counters.pending,
+        ignored: counters.ignored,
+        skipped: counters.skipped,
+        failed: counters.failed,
+        ackBlockedCount: counters.ackBlockedCount,
+        ackBlockedReasons: [...counters.ackBlockedReasons],
+      });
+
+      this.updateConnectionState("connected", "已验证连接");
+      this.completeSyncProgressNotice(summary);
+      return summary;
+    } catch (error) {
+      const message = this.getFriendlyErrorMessage(error);
+      console.error("Clip2MD 同步出错:", error);
+      this.updateConnectionState(
+        isInvalidApiKeyError(error) ? "invalid" : "error",
+        message,
+      );
+      const summary = this.finishSyncRun({
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        trigger,
+        outcome: "failed",
+        pages: counters.pages,
+        processed: counters.processed,
+        succeeded: counters.succeeded,
+        pending: counters.pending,
+        ignored: counters.ignored,
+        skipped: counters.skipped,
+        failed: counters.failed + 1,
+        ackBlockedCount: counters.ackBlockedCount,
+        ackBlockedReasons: [...counters.ackBlockedReasons],
+        errorMessage: message,
+      });
+
+      this.failSyncProgressNotice(message);
+      return summary;
+    } finally {
+      this.syncing = false;
+      this.processedCount = 0;
+      this.syncProgress = {
+        phase: "idle",
         total: 0,
         processed: 0,
         succeeded: 0,
@@ -155,1956 +2328,855 @@ export default class BijiSyncPlugin extends Plugin {
         ignored: 0,
         skipped: 0,
         failed: 0,
-    };
-    private connectionState: ConnectionState = 'unconfigured';
-    private connectionMessage = '请填写 API Key 开始使用';
-    private startupSyncTriggered = false;
-    private appVisible = true;
-    private persistenceQueue: Promise<void> = Promise.resolve();
-    private restoreMissingMappedTasksOnNextSync = false;
-    private syncWriteInProgress = false;
-    private localState: LocalDeviceState;
-    subscriptionError = '';
-    subscriptionErrorKind: ArchiveErrorKind | null = null;
-    subscriptionLoading = false;
-    private subscriptionListeners = new Set<() => void>();
-    private credentialGeneration = 0;
-    private observedCredential: string | undefined;
-    subscriptionArchiveErrors: string[] = [];
-    subscriptionIndexConflicts: IndexConflict[] = [];
-    private indexReplacements = new Map<number, string>();
-    private subscriptionNotes: LocalSubscriptionNote[] = [];
-    private subscriptionRefresh: Promise<void> | null = null;
-    private subscriptionRebuild: Promise<void> | null = null;
-    private legacySharedData: StoredPluginData = {};
-    private readonly bindingClient = new DeviceBindingClient();
-    private bindingTimer: number | null = null;
-    private bindingPollInFlight = false;
-    private bindingStarting = false;
-    private bindingEpoch = 0;
-    private bindingMessage = '';
-    private justMigratedLegacyKey = false;
-
-    async onload() {
-        let saved: unknown = await this.loadData();
-        let savedData = isRecord(saved) ? saved : {};
-        const freshInstall = (saved === null || saved === undefined) && readLocalDeviceState(this.app) === null;
-        const legacyApiUrl = typeof savedData.apiUrl === 'string' ? savedData.apiUrl : '';
-        const legacySchemaVersion = typeof savedData.settingsSchemaVersion === 'number'
-            ? savedData.settingsSchemaVersion
-            : Number(savedData.settingsSchemaVersion || 0);
-
-        if (this.isConfigCorrupted(saved)) {
-            console.warn('Clip2MD: 检测到配置文件损坏，尝试从备份恢复...');
-            const restored = await this.restoreConfigFromBackup();
-            if (restored) {
-                saved = restored;
-                savedData = restored;
-                new Notice('Clip2MD: 配置文件已损坏，已从备份恢复。请检查设置。', 10000);
-            } else {
-                new Notice('Clip2MD: 配置文件已损坏且无可用备份，请重新配置 API Key。', 10000);
-                saved = null;
-                savedData = {};
-            }
-        }
-
-        const hasLegacyVersionSettings = Object.keys(savedData)
-            .some(key => key.toLowerCase().includes('update'));
-
-        this.settings = this.normalizeSettings(savedData);
-        if (freshInstall) {
-            this.settings.filenameTemplate = NEW_DEFAULT_FILENAME_TEMPLATE;
-            this.settings.frontmatterTemplate = NEW_DEFAULT_FRONTMATTER_TEMPLATE;
-        }
-        for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId', 'cursor', 'taskFileMap',
-            'pendingTaskIds', 'ignoredTaskIds', 'pendingAcks', 'restoreMissingMappedTasksOnNextSync',
-            'lastSyncSummary']) {
-            if (Object.prototype.hasOwnProperty.call(savedData, key)) this.legacySharedData[key] = savedData[key];
-        }
-        let settingsMigrated = savedData.titleMode === undefined;
-        if (typeof savedData.frontmatterTemplate === 'string'
-            && savedData.frontmatterTemplate !== this.settings.frontmatterTemplate) {
-            settingsMigrated = true;
-        }
-        if (legacySchemaVersion < 4
-            || Object.prototype.hasOwnProperty.call(savedData, 'apiUrl')
-            || hasLegacyVersionSettings) {
-            this.settings.settingsSchemaVersion = 4;
-            settingsMigrated = true;
-        }
-        if (legacyApiUrl && legacyApiUrl !== CLIP2MD_API_BASE_URL) {
-            new Notice('Clip2MD: 服务地址已统一为官方地址，旧自定义地址不再生效。', 8000);
-        }
-
-        if (savedData.syncContentMode === undefined && typeof savedData.apiKey === 'string' && savedData.apiKey) {
-            this.settings.syncContentMode = 'source';
-        }
-
-        this.localState = await this.loadOrMigrateLocalState(savedData);
-        this.settings.installationId = this.localState.installationId;
-        this.settings.credentialId = this.localState.credentialId;
-        this.settings.credentialName = this.localState.credentialName;
-        this.settings.apiKey = this.app.secretStorage.getSecret(API_SECRET_ID) || '';
-        this.settings.lastSyncSummary = this.localState.lastSyncSummary;
-        this.restoreMissingMappedTasksOnNextSync = this.localState.restoreMissingMappedTasksOnNextSync;
-        this.syncService = new SyncService(this.settings, this.app.fileManager);
-        this.syncService.setCursor(this.localState.cursor);
-        this.syncService.loadTaskFileMap(this.localState.taskFileMap);
-        this.syncService.loadIgnoredTaskIds(this.localState.ignoredTaskIds);
-        this.syncService.loadPendingTaskIds(this.localState.pendingTaskIds);
-        this.syncAckQueue = new SyncAckQueue(
-            () => this.persistSyncState(),
-            ack => this.deliverSyncAck(ack),
-        );
-        this.syncAckQueue.load(this.localState.pendingAcks);
-        const subscriptions = this.getSubscriptionState();
-        if (!subscriptions.credentialFingerprint || !this.settings.apiKey || this.localState.credentialInvalid) {
-            subscriptions.unverified = true;
-        } else {
-            try {
-                if (subscriptions.credentialFingerprint !== await sha256(this.settings.apiKey)) subscriptions.unverified = true;
-            } catch {
-                subscriptions.unverified = true;
-                this.subscriptionError = '订阅凭证校验暂不可用，基础同步继续运行';
-            }
-        }
-        subscriptions.legacyProofs ??= {};
-        for (const ack of this.localState.pendingAcks) if (ack.savedProof && !ack.savedProof.scope) {
-            subscriptions.legacyProofs[ack.taskId] = { filepath: ack.savedProof.filepath, contentHash: ack.savedProof.contentHash };
-        }
-        if (settingsMigrated) {
-            await this.saveSettings();
-        }
-        if (this.justMigratedLegacyKey) {
-            new Notice('Clip2MD: 旧 Key 已暂时沿用；请在每台设备分别扫码绑定。', 10000);
-        }
-
-        this.updateConnectionState(this.settings.apiKey
-            ? (this.localState.credentialInvalid ? 'invalid' : 'configured') : 'unconfigured');
-
-        addIcon(CLIP2MD_ICON_ID, CLIP2MD_ICON_SVG);
-
-        this.settingTab = new BijiSyncSettingTab(this.app, this);
-        this.addSettingTab(this.settingTab);
-        this.appVisible = typeof document === 'undefined' || !document.hidden;
-        if (typeof document !== 'undefined' && typeof window !== 'undefined') {
-            this.registerDomEvent(document, 'visibilitychange', () => this.handleAppVisibility(!document.hidden));
-            this.registerDomEvent(window, 'focus', () => this.handleAppVisibility(true));
-            this.registerDomEvent(window, 'pageshow', () => this.handleAppVisibility(true));
-        }
-        this.settingTab.onAppVisibilityChange(this.appVisible);
-        this.scheduleDeviceBindingPoll(0);
-
-        this.ribbonEl = this.addRibbonIcon(CLIP2MD_ICON_ID, 'Clip2MD 同步', () => {
-            if (!this.settings.apiKey) {
-                this.openSettingsTab();
-                return;
-            }
-            void this.syncNow('manual');
-        });
-        this.updateRibbonState();
-        this.app.workspace.iterateAllLeaves(leaf => this.attachViewAction(leaf));
-        this.registerEvent(this.app.workspace.on('active-leaf-change', leaf => {
-            if (leaf) {
-                this.attachViewAction(leaf);
-            }
-        }));
-        this.registerEvent(this.app.workspace.on('layout-change', () => {
-            this.app.workspace.iterateAllLeaves(leaf => this.attachViewAction(leaf));
-            this.pruneViewActions();
-        }));
-
-        this.addCommand({
-            id: 'sync-now',
-            name: '立即同步剪藏',
-            callback: () => {
-                void this.syncNow('manual');
-            }
-        });
-
-        try {
-            this.registerView(SUBSCRIPTION_VIEW_TYPE, leaf => new SubscriptionView(leaf, this));
-            this.addCommand({ id: 'blogger-subscriptions', name: '打开博主订阅', callback: () => { void this.openSubscriptionPanel(); } });
-            this.registerEvent(this.app.vault.on('rename', file => {
-                void this.rebuildSubscriptions();
-            }));
-            this.registerEvent(this.app.vault.on('delete', file => {
-                const map = this.syncService.getTaskFileMap();
-                for (const [id, path] of Object.entries(map)) if (path === file.path && this.subscriptionNotes.some(n => n.metadata.task_id === Number(id))) {
-                    if (this.settings.preventReimportAfterLocalRemoval) this.syncService.markIgnored(Number(id));
-                }
-                void this.rebuildSubscriptions();
-            }));
-        } catch (error) {
-            this.subscriptionError = '订阅面板初始化失败；基础同步仍可使用';
-            console.error(`Clip2MD: ${this.subscriptionError}`, error);
-        }
-
-
-        this.startSyncInterval();
-        this.startAckRetryInterval();
-        this.timers.setTimeout(() => this.retryPendingAcks(), 3000, 'network');
-        this.scheduleStartupSync();
-    }
-
-    onunload() {
-        this.bindingEpoch++;
-        this.settingTab?.hide();
-        this.subscriptionListeners.clear();
-        this.timers.clearAll();
-        this.bindingTimer = null;
-        this.syncIntervalId = null;
-        this.ackRetryIntervalId = null;
-        this.syncNotice?.hide();
+      };
+      if (this.runtimeState === "syncing") {
+        this.runtimeState =
+          this.connectionState === "error" || this.connectionState === "invalid"
+            ? "error"
+            : "idle";
+      }
+      if (this.syncNotice) {
+        this.syncNotice.hide();
         this.syncNotice = null;
-        this.viewActions.forEach(({ element }) => element.remove());
-        this.viewActions.clear();
-    }
-
-    async loadSettings() {
-        await this.persistenceQueue;
-        const saved = await this.loadStoredData();
-        this.legacySharedData = {};
-        for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId', 'cursor', 'taskFileMap',
-            'pendingTaskIds', 'ignoredTaskIds', 'pendingAcks', 'restoreMissingMappedTasksOnNextSync',
-            'lastSyncSummary']) {
-            if (Object.prototype.hasOwnProperty.call(saved, key)) this.legacySharedData[key] = saved[key];
-        }
-        const local = {
-            apiKey: this.settings.apiKey,
-            credentialId: this.settings.credentialId,
-            credentialName: this.settings.credentialName,
-            installationId: this.settings.installationId,
-            lastSyncSummary: this.settings.lastSyncSummary,
-        };
-        this.settings = { ...this.normalizeSettings(saved), ...local };
-        this.syncService.updateSettings(this.settings);
-        this.updateConnectionState(this.settings.apiKey
-            ? (this.localState.credentialInvalid ? 'invalid' : 'configured') : 'unconfigured');
-        this.updateRibbonState();
-    }
-
-    async onExternalSettingsChange(): Promise<void> {
-        await this.loadSettings();
-        this.refreshSettingTab();
-    }
-
-    async saveSettings() {
-        this.getCredentialGeneration();
-        this.settings = this.normalizeSettings(this.settings);
-        if (this.syncService) {
-            this.syncService.updateSettings(this.settings);
-        }
-        if (this.app.secretStorage.getSecret(API_SECRET_ID) !== this.settings.apiKey) {
-            this.localState.credentialInvalid = false;
-            this.updateConnectionState(this.settings.apiKey ? 'configured' : 'unconfigured');
-            if (this.localState.subscriptions) {
-                this.localState.subscriptions.unverified = true;
-                this.subscriptionNotes = [];
-            }
-        }
-        await this.persistPluginState(true);
-        this.startSyncInterval();
-        this.startAckRetryInterval();
-        // 不在这里刷新设置页面，避免每次保存都重建 UI
-        // 需要刷新时由调用方显式调用 refreshSettingTab()
-    }
-
-    async setPreventReimportAfterLocalRemoval(value: boolean): Promise<void> {
-        if (this.settings.preventReimportAfterLocalRemoval && !value) {
-            this.restoreMissingMappedTasksOnNextSync = true;
-        }
-        this.settings.preventReimportAfterLocalRemoval = value;
-        await this.saveSettings();
-    }
-
-    getMigrationUnresolvedTasks(): number[] {
-        return [...this.localState.unresolvedTaskIds];
-    }
-
-    hasLegacySharedState(): boolean {
-        return Object.keys(this.legacySharedData).length > 0;
-    }
-
-    async resolveMigrationTask(taskId: number, action: 'ignore' | 'reimport'): Promise<void> {
-        if (!this.localState.unresolvedTaskIds.includes(taskId)) return;
-        this.localState.unresolvedTaskIds = this.localState.unresolvedTaskIds.filter(id => id !== taskId);
-        if (action === 'ignore') {
-            this.syncService.markIgnored(taskId);
-            this.syncService.removePending(taskId);
-        } else {
-            this.syncService.removeIgnored(taskId);
-            this.syncService.markPending(taskId);
-        }
-        await this.persistSyncState();
-        this.refreshSettingTab();
-    }
-
-    async clearLegacySharedState(): Promise<void> {
-        const write = async () => {
-            const shared: StoredPluginData = { ...this.settings };
-            for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId',
-                'lastSyncSummary']) delete shared[key];
-            await this.saveData(shared);
-            this.legacySharedData = {};
-            await this.backupConfig();
-            this.refreshSettingTab();
-        };
-        const next = this.persistenceQueue.catch(() => undefined).then(write);
-        this.persistenceQueue = next;
-        await next;
-    }
-
-    getDeviceBindingSession(): DeviceBindingSession | null {
-        const pending = this.localState.pendingBinding;
-        if (!pending) return null;
-        return {
-            device_code: pending.deviceCode, user_code: pending.userCode,
-            expires_in: Math.max(0, Math.ceil((pending.expiresAt - Date.now()) / 1000)),
-            interval: pending.interval,
-        };
-    }
-
-    getDeviceBindingMessage(): string {
-        return this.bindingMessage || (this.localState.pendingBinding?.phase === 'prepared'
-            ? '正在完成本机绑定…' : '等待手机端授权…');
-    }
-
-    async cancelDeviceBinding(): Promise<void> {
-        if (this.bindingStarting) throw new Error('绑定请求正在保存，请稍后重试');
-        if (this.localState.pendingBinding?.phase === 'prepared') {
-            throw new Error('正在完成 Key 替换，请等待结果或绑定码到期');
-        }
-        this.bindingEpoch = (this.bindingEpoch || 0) + 1;
-        this.bindingPollInFlight = false;
-        this.timers.clearTimeout(this.bindingTimer);
-        this.bindingTimer = null;
-        try {
-            await this.persistBindingState(undefined);
-        } catch (error) {
-            this.scheduleDeviceBindingPoll(5);
-            throw error;
-        }
-    }
-
-    async beginDeviceBinding(session: DeviceBindingSession): Promise<void> {
-        if (this.bindingStarting) throw new Error('绑定请求正在保存，请稍后重试');
-        if (this.localState.pendingBinding?.phase === 'prepared') {
-            throw new Error('上次绑定正在完成，请等待结果后重试');
-        }
-        const pending: PendingBinding = {
-            deviceCode: session.device_code,
-            userCode: session.user_code,
-            expiresAt: Date.now() + session.expires_in * 1000,
-            interval: session.interval,
-            phase: 'polling',
-        };
-        this.bindingStarting = true;
-        const epoch = this.bindingEpoch = (this.bindingEpoch || 0) + 1;
-        this.bindingPollInFlight = false;
-        this.timers.clearTimeout(this.bindingTimer);
-        this.bindingTimer = null;
-        try {
-            // Publish the session only after its local write has been verified.
-            await this.persistBindingState(pending);
-            if (epoch !== this.bindingEpoch) return;
-            this.bindingMessage = '等待手机端授权…';
-        } catch (error) {
-            this.bindingMessage = error instanceof Error ? error.message : '本机绑定状态保存失败，请重试';
-            throw error;
-        } finally {
-            this.bindingStarting = false;
-            if (epoch === this.bindingEpoch) this.scheduleDeviceBindingPoll(session.interval);
-        }
-    }
-
-    resumeDeviceBinding(): void {
-        this.scheduleDeviceBindingPoll(0);
-    }
-
-    private persistBindingState(pendingBinding: PendingBinding | undefined): Promise<void> {
-        const next = this.persistenceQueue.catch(() => undefined)
-            .then(() => this.writePluginState(false, { pendingBinding }));
-        this.persistenceQueue = next;
-        return next;
-    }
-
-    private isCurrentBinding(pending: PendingBinding, epoch: number): boolean {
-        return epoch === (this.bindingEpoch || 0) && !this.bindingStarting
-            && this.localState.pendingBinding?.deviceCode === pending.deviceCode;
-    }
-
-    private async withBindingTimeout<T>(request: Promise<T>, expiresAt?: number): Promise<T> {
-        const delay = Math.min(15_000, expiresAt === undefined ? 15_000 : Math.max(1, expiresAt - Date.now()));
-        let timer: number | null = null;
-        try {
-            return await Promise.race([request, new Promise<never>((_resolve, reject) => {
-                timer = this.timers.setTimeout(() => reject(new DeviceBindingError(
-                    '绑定请求超时，正在重试', 408, 'binding_request_timeout',
-                )), delay, 'binding');
-            })]);
-        } finally {
-            this.timers.clearTimeout(timer);
-        }
-    }
-
-    private scheduleDeviceBindingPoll(seconds: number): void {
-        this.timers.clearTimeout(this.bindingTimer);
-        this.bindingTimer = null;
-        if (!this.appVisible || this.bindingStarting || !this.localState?.pendingBinding) return;
-        const pending = this.localState.pendingBinding;
-        const delay = pending.phase === 'polling' && pending.expiresAt > Date.now()
-            ? Math.min(Math.max(0, seconds) * 1000, Math.max(0, pending.expiresAt - Date.now()))
-            : Math.max(0, seconds) * 1000;
-        const timer = this.timers.setTimeout(() => {
-            if (this.bindingTimer === timer) this.bindingTimer = null;
-            void this.pollDeviceBinding();
-        }, delay, 'binding');
-        this.bindingTimer = timer;
-    }
-
-    private async probeCandidateKey(apiKey: string): Promise<boolean | null> {
-        const response = await requestUrl({
-            url: `${CLIP2MD_API_BASE_URL}/sync/tasks?limit=1`,
-            headers: { 'X-API-Key': apiKey },
-            throw: false,
-        });
-        if (response.status === 401) return false;
-        if (response.status >= 200 && response.status < 300) return true;
-        return null;
-    }
-
-    private async promotePendingCredential(credentialId?: number, credentialName?: string): Promise<void> {
-        const pendingKey = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
-        if (!pendingKey) throw new Error('待领取 Key 的本机草稿丢失，请重新扫码');
-        if (pendingKey !== this.settings.apiKey && this.localState.subscriptions) {
-            this.localState.subscriptions.unverified = true;
-            this.subscriptionNotes = [];
-        }
-        setLocalSecret(this.app, API_SECRET_ID, pendingKey);
-        this.settings.apiKey = pendingKey;
-        this.getCredentialGeneration();
-        this.settings.credentialId = credentialId;
-        this.settings.credentialName = credentialName || this.localState.pendingBinding?.credentialName;
-        this.localState.legacyKeyMigrated = false;
-        this.localState.credentialInvalid = false;
-        await this.persistBindingState(undefined);
-        setLocalSecret(this.app, PENDING_SECRET_ID, '');
-        this.updateConnectionState('connected', '已验证连接');
-        this.startSyncInterval();
-        this.startAckRetryInterval();
-        this.bindingMessage = '绑定成功';
-        this.settingTab?.onDeviceBindingFinished();
-        new Notice('Clip2MD: 本机绑定成功，可以开始同步。', 6000);
-        this.refreshSettingTab();
-    }
-
-    private async pollDeviceBinding(): Promise<void> {
-        const pending = this.localState?.pendingBinding;
-        if (!pending || !this.appVisible || this.bindingStarting || this.bindingPollInFlight) return;
-        const epoch = this.bindingEpoch || 0;
-        this.bindingPollInFlight = true;
-        try {
-            const candidate = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
-            if (pending.phase === 'prepared' && candidate) {
-                // A completed server transaction may need recovery even after expiry.
-                const active = await this.withBindingTimeout(this.probeCandidateKey(candidate));
-                if (!this.isCurrentBinding(pending, epoch)) return;
-                if (active === null) throw new Error('暂时无法验证本机绑定草稿，稍后重试');
-                if (active === true) {
-                    await this.promotePendingCredential(undefined, pending.credentialName);
-                    return;
-                }
-                if (Date.now() >= pending.expiresAt) {
-                    this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
-                    await this.persistBindingState(undefined);
-                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
-                    this.refreshSettingTab();
-                    return;
-                }
-                const completed = await this.withBindingTimeout(
-                    this.bindingClient.complete(pending.deviceCode, candidate), pending.expiresAt,
-                );
-                if (!this.isCurrentBinding(pending, epoch)) return;
-                await this.promotePendingCredential(completed.credential_id, completed.credential_name);
-                return;
-            }
-            if (Date.now() >= pending.expiresAt) {
-                this.bindingMessage = '绑定码已过期，旧 Key 保持原样；请重新扫码。';
-                try {
-                    await this.persistBindingState(undefined);
-                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
-                } catch (storageError) {
-                    this.bindingMessage = storageError instanceof Error ? storageError.message : '本机绑定状态保存失败，请重试';
-                }
-                this.refreshSettingTab();
-                return;
-            }
-            const result = await this.withBindingTimeout(this.bindingClient.credential(pending.deviceCode), pending.expiresAt);
-            if (!this.isCurrentBinding(pending, epoch)) return;
-            if (result.status === 'prepared') {
-                setLocalSecret(this.app, PENDING_SECRET_ID, result.api_key);
-                const before = this.localState.pendingBinding;
-                this.localState.pendingBinding = { ...pending, phase: 'prepared', credentialName: result.credential_name };
-                try {
-                    await this.persistSyncState();
-                } catch (error) {
-                    this.localState.pendingBinding = before;
-                    throw error;
-                }
-                if (!this.isCurrentBinding(pending, epoch)) return;
-                this.bindingMessage = '手机已授权，正在完成本机绑定…';
-                this.scheduleDeviceBindingPoll(0);
-            } else if (result.status === 'completed') {
-                const draft = this.app.secretStorage.getSecret(PENDING_SECRET_ID);
-                const active = draft ? await this.withBindingTimeout(this.probeCandidateKey(draft)) : false;
-                if (!this.isCurrentBinding(pending, epoch)) return;
-                if (active === null) throw new Error('暂时无法验证本机绑定草稿，稍后重试');
-                if (active) {
-                    await this.promotePendingCredential(result.credential_id);
-                } else {
-                    this.bindingMessage = '绑定结果无法恢复，请重新扫码。';
-                    await this.persistBindingState(undefined);
-                }
-            } else if (result.status === 'pending_approval' || result.status === 'approving') {
-                this.bindingMessage = result.status === 'approving' ? '手机已授权，正在准备 Key…' : '等待手机端授权…';
-                this.scheduleDeviceBindingPoll(result.retry_after);
-            } else {
-                throw new Error('绑定协议版本不匹配，请重新扫码');
-            }
-            this.refreshSettingTab();
-        } catch (error) {
-            if (!this.isCurrentBinding(pending, epoch)) return;
-            if (error instanceof DeviceBindingError && [
-                'access_denied', 'expired_token', 'replacement_credential_unavailable',
-                'credential_limit_reached_v2', 'candidate_mismatch', 'credential_revoked',
-            ].includes(error.code)) {
-                this.bindingMessage = ['replacement_credential_unavailable', 'credential_limit_reached_v2'].includes(error.code)
-                    ? '所选旧 Key 已被其他操作替换或 Key 数量已满；请重新扫码并选择当前有效 Key。'
-                    : '绑定已拒绝、过期或草稿不匹配，旧 Key 保持原样；请重新扫码。';
-                try {
-                    await this.persistBindingState(undefined);
-                    setLocalSecret(this.app, PENDING_SECRET_ID, '');
-                } catch (storageError) {
-                    this.bindingMessage = storageError instanceof Error ? storageError.message : '本机绑定状态保存失败，请重试';
-                }
-            } else {
-                this.bindingMessage = '绑定暂未完成，网络恢复后将重试。';
-                this.scheduleDeviceBindingPoll(pending.phase === 'polling' && pending.expiresAt <= Date.now() ? 0 : 10);
-            }
-            this.refreshSettingTab();
-        } finally {
-            if (epoch === (this.bindingEpoch || 0)) {
-                this.bindingPollInFlight = false;
-                if (this.localState?.pendingBinding && this.bindingTimer === null) {
-                    this.scheduleDeviceBindingPoll(10);
-                }
-            }
-        }
-    }
-
-    async persistSyncState() {
-        await this.persistPluginState(false);
-    }
-
-    private persistPluginState(includeShared: boolean): Promise<void> {
-        const next = this.persistenceQueue.catch(() => undefined).then(() => this.writePluginState(includeShared));
-        this.persistenceQueue = next;
-        return next;
-    }
-
-    /** Queue tasks call the writer directly; it must never enqueue itself. */
-    private async writePluginState(includeShared: boolean, stateUpdates: Partial<LocalDeviceState> = {}): Promise<void> {
-        setLocalSecret(this.app, API_SECRET_ID, this.settings.apiKey);
-        const nextState: LocalDeviceState = {
-            ...this.localState,
-            ...stateUpdates,
-            version: 1,
-            installationId: this.settings.installationId,
-            credentialId: this.settings.credentialId,
-            credentialName: this.settings.credentialName,
-            cursor: this.syncService?.getCursor() ?? null,
-            taskFileMap: { ...(this.syncService?.getTaskFileMap() ?? {}) },
-            pendingTaskIds: [...(this.syncService?.getPendingTaskIds() ?? [])],
-            ignoredTaskIds: [...(this.syncService?.getIgnoredTaskIds() ?? [])],
-            restoreMissingMappedTasksOnNextSync: this.restoreMissingMappedTasksOnNextSync,
-            pendingAcks: this.syncAckQueue?.snapshot() ?? [],
-            lastSyncSummary: this.settings.lastSyncSummary,
-        };
-        saveLocalDeviceState(this.app, nextState);
-        this.localState = nextState;
-        if (includeShared) {
-            const shared: StoredPluginData = { ...this.settings };
-            for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId',
-                'lastSyncSummary']) delete shared[key];
-            await this.saveData({ ...shared, ...this.legacySharedData });
-            await this.backupConfig();
-        }
-    }
-
-    private async loadOrMigrateLocalState(saved: StoredPluginData): Promise<LocalDeviceState> {
-        const existing = readLocalDeviceState(this.app);
-        if (existing) return existing;
-        const legacyMap = isTaskFileMapping(saved.taskFileMap) ? saved.taskFileMap : {};
-        const verifiedMap: Record<number, string> = {};
-        const unresolved: number[] = [];
-        const probe = new SyncService(this.settings, this.app.fileManager);
-        probe.loadTaskFileMap(legacyMap);
-        for (const key of Object.keys(legacyMap)) {
-            const id = Number(key);
-            if (!Number.isSafeInteger(id) || id <= 0) continue;
-            if (await probe.verifyTaskFile(this.app.vault, id)) verifiedMap[id] = legacyMap[id];
-        }
-        // Rebuild mappings from this Vault's actual task markers. A copied
-        // data.json may describe another device, and notes may have moved.
-        for (const file of this.app.vault.getMarkdownFiles()) {
-            const content = await this.app.vault.read(file);
-            const markers = /(?:^|\n)task_id:\s*(\d+)\b|biji-task-id:(\d+)\b|clip2md-task-start:(\d+)\b/g;
-            let match: RegExpExecArray | null;
-            while ((match = markers.exec(content)) !== null) {
-                const id = Number(match[1] || match[2] || match[3]);
-                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id]) verifiedMap[id] = file.path;
-            }
-        }
-        if (this.settings.preventReimportAfterLocalRemoval) {
-            for (const key of Object.keys(legacyMap)) {
-                const id = Number(key);
-                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id]) unresolved.push(id);
-            }
-        }
-        if (this.settings.preventReimportAfterLocalRemoval && isNumberArray(saved.ignoredTaskIds)) {
-            for (const id of saved.ignoredTaskIds) {
-                if (Number.isSafeInteger(id) && id > 0 && !verifiedMap[id] && !unresolved.includes(id)) unresolved.push(id);
-            }
-        }
-        const oldKey = typeof saved.apiKey === 'string' ? saved.apiKey : '';
-        const existingLocalKey = this.app.secretStorage.getSecret(API_SECRET_ID);
-        if (oldKey && !existingLocalKey) setLocalSecret(this.app, API_SECRET_ID, oldKey);
-        this.justMigratedLegacyKey = Boolean(oldKey && !existingLocalKey);
-        const state: LocalDeviceState = {
-            version: 1,
-            installationId: this.createInstallationId(),
-            credentialId: typeof saved.credentialId === 'number' ? saved.credentialId : undefined,
-            credentialName: typeof saved.credentialName === 'string' ? saved.credentialName : undefined,
-            cursor: null,
-            taskFileMap: verifiedMap,
-            pendingTaskIds: [],
-            ignoredTaskIds: [],
-            pendingAcks: [],
-            restoreMissingMappedTasksOnNextSync: false,
-            unresolvedTaskIds: unresolved,
-            legacyKeyMigrated: Boolean(oldKey && !existingLocalKey),
-            credentialInvalid: false,
-        };
-        saveLocalDeviceState(this.app, state);
-        return state;
-    }
-
-    async verifyConnection(): Promise<void> {
-        try {
-            await this.syncService.probeConnection();
-            this.updateConnectionState('connected', '已验证连接');
-            this.startSyncInterval();
-            this.startAckRetryInterval();
-            this.refreshSettingTab();
-        } catch (error) {
-            this.handleConnectionError(error);
-            throw error;
-        }
-    }
-
-    handleConnectionError(error: unknown) {
-        const message = this.getFriendlyErrorMessage(error);
-        this.updateConnectionState(isInvalidApiKeyError(error) ? 'invalid' : 'error', message);
-        new Notice(`Clip2MD: ${message}`, 8000);
-        this.refreshSettingTab();
-    }
-
-    getStatusSnapshot(): StatusSnapshot {
-        if (!this.settings.apiKey) {
-            return {
-                kind: 'unconfigured',
-                label: '○ 未配置',
-                description: '请填写 API Key 开始使用',
-                runtimeState: this.runtimeState,
-            };
-        }
-
-        if (this.runtimeState === 'syncing') {
-            const progress = this.syncProgress;
-            if (progress.phase === 'discovering') {
-                return {
-                    kind: 'syncing',
-                    label: '◌ 同步中',
-                    description: '正在获取待同步任务…',
-                    runtimeState: this.runtimeState,
-                };
-            }
-            return {
-                kind: 'syncing',
-                label: '◌ 同步中',
-                description: `本轮已同步 ${progress.succeeded} / ${progress.total}，已处理 ${progress.processed} 项`,
-                runtimeState: this.runtimeState,
-            };
-        }
-
-        const summary = this.settings.lastSyncSummary;
-        const summaryText = summary
-            ? `上次同步：${this.formatRelativeTime(summary.finishedAt)}，${summary.succeeded} 成功、${summary.pending} 待重试、${summary.ignored ?? 0} 主动忽略${this.describeBlockedAcks(summary)}`
-            : '尚未执行同步';
-
-        if (this.connectionState === 'connected') {
-            return {
-                kind: 'connected',
-                label: '● 已连接',
-                description: summaryText,
-                runtimeState: this.runtimeState,
-            };
-        }
-
-        if (this.connectionState === 'invalid') {
-            return {
-                kind: 'invalid',
-                label: '● API Key 已失效',
-                description: '当前 API Key 已失效，请重新扫码绑定或填写新的 Key',
-                runtimeState: this.runtimeState,
-            };
-        }
-
-        if (this.connectionState === 'error') {
-            return {
-                kind: 'error',
-                label: '● 连接异常',
-                description: this.connectionMessage || summaryText,
-                runtimeState: this.runtimeState,
-            };
-        }
-
-        return {
-            kind: 'configured',
-            label: '● 已配置',
-            description: summary ? `本次 Obsidian 会话尚未验证；${summaryText}` : '本次 Obsidian 会话尚未验证',
-            runtimeState: this.runtimeState,
-        };
-    }
-
-    validateTargetFolder(folder: string): boolean {
-        return this.syncService.validateTargetFolder(folder);
-    }
-
-    getTemplatePreview() {
-        return this.syncService.getTemplatePreviewData();
-    }
-
-    renderTemplatePreview(target?: 'single' | 'daily') {
-        return this.syncService.renderTemplatePreview(this.settings.template, target);
-    }
-
-    renderDailyMergeFrontmatterPreview() {
-        return this.syncService.renderDailyMergeFrontmatterPreview();
-    }
-
-    validateTemplate(template: string) {
-        return this.syncService.validateTemplate(template);
-    }
-
-    async applyOnboardingSettings(input: { apiKey: string; targetFolder: string }) {
-        this.settings.apiKey = input.apiKey.trim();
-        this.settings.targetFolder = input.targetFolder.trim() || 'Clip2MD';
-        this.settings.credentialId = undefined;
-        this.settings.credentialName = undefined;
-        await this.saveSettings();
-        await this.verifyConnection();
-    }
-
-    async applyDeviceCredential(result: Extract<DeviceCredentialStatus, { status: 'approved' }>): Promise<void> {
-        this.settings.apiKey = result.api_key;
-        this.settings.credentialId = result.credential_id;
-        this.settings.credentialName = result.credential_name;
-        if (!this.settings.targetFolder) {
-            this.settings.targetFolder = 'Clip2MD';
-        }
-        await this.saveSettings();
-        try {
-            await this.verifyConnection();
-            new Notice('Clip2MD: 绑定成功，点击“立即同步”开始使用。', 6000);
-        } catch {
-            new Notice('Clip2MD: API Key 已保存，但连接验证失败，请稍后重试。', 8000);
-        }
-    }
-
-    getBindingClientName(): string {
-        const vaultName = this.app.vault.getName().trim() || 'Vault';
-        const suffix = this.settings.installationId.slice(0, 4).toUpperCase();
-        return `Obsidian · ${vaultName} (${suffix})`.slice(0, 100);
-    }
-
-    openCredentialPage() {
-        const query = this.settings.credentialId ? `?credential_id=${this.settings.credentialId}` : '';
-        window.open(`${CLIP2MD_APP_URL}/app/sync${query}#api-credentials`, '_blank');
-    }
-
-    getCredentialGeneration(): number {
-        const key = this.settings.apiKey;
-        if (this.observedCredential !== undefined && this.observedCredential !== key) {
-            this.credentialGeneration = (this.credentialGeneration || 0) + 1;
-            if (this.localState?.subscriptions) this.localState.subscriptions.unverified = true;
-            this.subscriptionNotes = [];
-            this.observedCredential = key;
-            this.subscriptionError = '';
-            this.subscriptionErrorKind = null;
-            this.subscriptionLoading = false;
-            this.emitSubscriptionChange();
-        }
-        this.observedCredential = key;
-        return this.credentialGeneration || 0;
-    }
-
-    subscribeSubscriptionChanges(listener: () => void): () => void {
-        this.subscriptionListeners ??= new Set();
-        this.subscriptionListeners.add(listener);
-        return () => this.subscriptionListeners.delete(listener);
-    }
-
-    private emitSubscriptionChange(): void {
-        for (const listener of this.subscriptionListeners || []) {
-            try { listener(); } catch (error) { console.error('Clip2MD: 订阅页面刷新失败，基础同步继续运行', error); }
-        }
-    }
-
-    getSubscriptionState() {
-        this.getCredentialGeneration();
-        return this.localState.subscriptions ??= newSubscriptionState();
-    }
-
-    getSubscriptionConfig(accountId = this.getSubscriptionState().accountId || ''): ArchiveConfig {
-        return archiveConfig(this.settings.subscriptionAccounts?.[accountId]);
-    }
-
-    getSubscriptionNotes(): LocalSubscriptionNote[] { return this.getSubscriptionState().unverified ? [] : this.subscriptionNotes; }
-
-    previewSubscriptionFolders(config: ArchiveConfig): string {
-        const state = this.getSubscriptionState();
-        const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(sub => ({
-            kind: 'work', account_id: state.accountId!, subscription_id: sub.id, platform: sub.platform,
-            blogger_id: sub.blogger_id, nickname: sub.profile?.nickname, remark: sub.name, work_id: '',
-        }));
-        const writer = new SyncService({ ...this.settings, subscriptionAccounts: {
-            ...this.settings.subscriptionAccounts, [state.accountId!]: config,
-        } });
-        writer.configureArchive(collidingSubscriptions(contexts, config));
-        return contexts.map(c => `${bloggerName(c)} → ${writer.folderForTask({ ...writer.createPreviewTask(), subscription_context: c })}`).join('\n')
-            || `示例目录：${config.folderTemplate}`;
-    }
-
-    async updateSubscriptionConfig(config: ArchiveConfig, expectedAccount = this.getSubscriptionState().accountId,
-        expectedGeneration = this.getCredentialGeneration()): Promise<void> {
-        const submitted = archiveConfig(config);
-        const guard = () => {
-            const generation = this.getCredentialGeneration();
-            const state = this.getSubscriptionState();
-            if (!expectedAccount || state.accountId !== expectedAccount || state.unverified || generation !== expectedGeneration) {
-                throw new Error('账号或凭证已变化，请重新验证后保存');
-            }
-        };
-        guard();
-        const write = async () => {
-            guard();
-            const previous: unknown = await this.loadData();
-            guard();
-            const shared: StoredPluginData = { ...this.settings,
-                subscriptionAccounts: { ...this.settings.subscriptionAccounts, [expectedAccount!]: submitted } };
-            for (const key of ['apiKey', 'credentialId', 'credentialName', 'installationId', 'lastSyncSummary']) delete shared[key];
-            const previousConfig = this.settings.subscriptionAccounts;
-            try {
-                await this.saveData({ ...shared, ...this.legacySharedData });
-                guard();
-                this.settings.subscriptionAccounts = { ...this.settings.subscriptionAccounts, [expectedAccount!]: submitted };
-                this.syncService.updateSettings(this.settings);
-                await this.configureSubscriptionRouting();
-                guard();
-                for (const id of this.getSubscriptionState().excludedTaskIds) this.syncService.markPending(id);
-                await this.writePluginState(false);
-                guard();
-            } catch (error) {
-                // Already inside the queue: use raw writes rather than enqueueing
-                // saveSettings()/persistSyncState() and waiting for ourselves.
-                this.settings.subscriptionAccounts = previousConfig;
-                this.syncService.updateSettings(this.settings);
-                try { await this.saveData(previous); } catch {
-                    this.getSubscriptionState().unverified = true;
-                    this.subscriptionError = '订阅配置恢复失败，请重新验证账号后重试';
-                }
-                if (!this.getSubscriptionState().unverified) await this.configureSubscriptionRouting();
-                throw error;
-            }
-        };
-        const next = this.persistenceQueue.catch(() => undefined).then(write);
-        this.persistenceQueue = next;
-        try { await next; } finally { this.refreshSubscriptionViews(); }
-    }
-
-    private async configureSubscriptionRouting() {
-        const state = this.getSubscriptionState();
-        const contexts: SubscriptionContext[] = (state.snapshot?.items || []).map(s => ({
-            kind: 'work', account_id: state.accountId!, subscription_id: s.id, platform: s.platform,
-            blogger_id: s.blogger_id, remark: s.name, nickname: s.profile?.nickname, work_id: '',
-        }));
-        this.syncService.configureArchive(collidingSubscriptions(contexts, this.getSubscriptionConfig()), state.legacyProofs);
-    }
-
-    async refreshSubscriptionSnapshot(): Promise<void> {
-        const generation = this.getCredentialGeneration();
-        if (this.subscriptionRefresh && this.subscriptionLoading) return this.subscriptionRefresh;
-        if (!this.settings.apiKey) { this.subscriptionError = '请先绑定当前设备'; this.emitSubscriptionChange(); return; }
-        const key = this.settings.apiKey;
-        const current = () => generation === this.getCredentialGeneration() && key === this.settings.apiKey;
-        this.subscriptionLoading = true;
-        this.emitSubscriptionChange();
-        this.subscriptionRefresh = (async () => {
-            try {
-                const snapshot = await fetchArchiveSnapshot(key);
-                if (!current()) return;
-                const fingerprint = await sha256(key);
-                if (!current()) return;
-                let state = this.getSubscriptionState();
-                if (state.accountId && state.accountId !== snapshot.account_id) {
-                    state = newSubscriptionState(); this.localState.subscriptions = state;
-                    this.syncService.setCursor(null);
-                    this.syncService.loadTaskFileMap({}); this.syncService.loadPendingTaskIds([]);
-                    this.syncService.loadIgnoredTaskIds([]); this.syncAckQueue.load([]);
-                    this.subscriptionNotes = [];
-                }
-                state.accountId = snapshot.account_id;
-                state.credentialFingerprint = fingerprint;
-                state.unverified = false;
-                state.snapshot = snapshot;
-                this.subscriptionError = '';
-                this.subscriptionErrorKind = null;
-                await this.configureSubscriptionRouting();
-                if (!current()) return;
-                const successfulIds = [
-                    ...snapshot.works.filter(w => w.clip_status === 'SUCCESS' && w.task_id).map(w => w.task_id!),
-                    ...snapshot.works.filter(w => w.supplement_status === 'SUCCESS' && w.supplement_task_id).map(w => w.supplement_task_id!),
-                    ...snapshot.reports.filter(r => r.status === 'SUCCESS' && r.task_id).map(r => r.task_id!),
-                ];
-                for (const id of successfulIds) {
-                    if (!current()) return;
-                    if (state.keptLocalTaskIds.includes(id) || state.excludedTaskIds.includes(id)
-                        || this.syncService.getIgnoredTaskIds().includes(id)) continue;
-                    const path = this.syncService.getTaskFileMap()[id];
-                    const file = path ? this.app.vault.getFileByPath(path) : null;
-                    const metadata = file ? documentMetadata(await this.app.vault.read(file)) : null;
-                    if (!current()) return;
-                    if (!metadata) {
-                        this.syncService.markPending(id);
-                        // Older full-file receipts must not erase identity before the note is upgraded.
-                        await this.syncAckQueue.remove(id);
-                    }
-                }
-                if (!current()) return;
-                await this.persistSyncState();
-            } catch (error) {
-                if (!current()) return;
-                this.subscriptionErrorKind = error instanceof ArchiveRequestError || error instanceof ArchiveFormatError ? error.kind : 'network';
-                this.subscriptionError = error instanceof Error ? error.message : '订阅刷新失败';
-                if (this.subscriptionErrorKind === 'authentication') this.getSubscriptionState().unverified = true;
-                if (error instanceof ArchiveRequestError && error.status === 401) {
-                    this.updateConnectionState('invalid', 'API Key 已失效');
-                }
-            } finally { if (current()) { this.subscriptionLoading = false; this.refreshSubscriptionViews(); } }
-        })();
-        const request = this.subscriptionRefresh;
-        try { await request; } finally { if (this.subscriptionRefresh === request) this.subscriptionRefresh = null; }
-    }
-
-    async rebuildSubscriptions(): Promise<void> {
-        if (this.subscriptionRebuild) return this.subscriptionRebuild;
-        const state = this.getSubscriptionState();
-        const generation = this.getCredentialGeneration();
-        const account = state.accountId;
-        const current = () => generation === this.getCredentialGeneration() && account === this.getSubscriptionState().accountId && !this.getSubscriptionState().unverified;
-        if (!state.accountId || state.unverified) return;
-        this.subscriptionRebuild = (async () => {
-            try {
-                const result = await rebuildSubscriptionArchive(this.app, state.accountId!, this.getSubscriptionConfig(),
-                    state, this.syncService.getTaskFileMap(), this.indexReplacements);
-                if (!current()) return;
-                this.subscriptionNotes = result.notes;
-                this.subscriptionArchiveErrors = result.errors;
-                this.subscriptionIndexConflicts = result.indexConflicts;
-                await this.persistSyncState();
-            } catch (error) { if (current()) this.subscriptionArchiveErrors = [String(error)]; }
-            this.refreshSubscriptionViews();
-        })();
-        try { await this.subscriptionRebuild; } finally { this.subscriptionRebuild = null; }
-    }
-
-    private refreshSubscriptionViews() {
-        this.emitSubscriptionChange();
-        for (const leaf of this.app.workspace?.getLeavesOfType?.(SUBSCRIPTION_VIEW_TYPE) || []) {
-            if (leaf.view instanceof SubscriptionView) leaf.view.render();
-        }
-    }
-
-    async openSubscriptionPanel() {
-        const existing = this.app.workspace.getLeavesOfType(SUBSCRIPTION_VIEW_TYPE)[0];
-        const leaf = existing || this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf(true);
-        if (!existing) await leaf.setViewState({ type: SUBSCRIPTION_VIEW_TYPE, active: true });
-        await this.app.workspace.revealLeaf(leaf);
-    }
-
-    async retrySubscriptionTask(id: number) {
-        if (this.syncService.getIgnoredTaskIds().includes(id)) {
-            new Notice('此笔记已主动删除，请使用现有重新导入设置恢复'); return;
-        }
-        const state = this.getSubscriptionState();
-        state.keptLocalTaskIds = state.keptLocalTaskIds.filter(item => item !== id);
-        this.syncService.markPending(id);
-        await this.persistSyncState();
-        await this.syncNow();
-    }
-
-    async keepLocalSubscription(id: number) {
-        const state = this.getSubscriptionState();
-        if (!state.keptLocalTaskIds.includes(id)) state.keptLocalTaskIds.push(id);
-        await this.syncAckQueue.remove(id);
-        await this.persistSyncState();
-        this.refreshSubscriptionViews();
-    }
-
-    async replaceSubscription(id: number, reviewedContent: string) {
-        this.syncService.authorizeSubscriptionReplacement(id, reviewedContent);
-        await this.retrySubscriptionTask(id);
-        await this.rebuildSubscriptions();
-    }
-
-    async resolveSubscriptionIndex(conflict: IndexConflict, replace: boolean) {
-        const state = this.getSubscriptionState();
-        state.keptIndexIds ??= [];
-        if (replace) {
-            state.keptIndexIds = state.keptIndexIds.filter(id => id !== conflict.id);
-            this.indexReplacements.set(conflict.id, conflict.current);
-        } else if (!state.keptIndexIds.includes(conflict.id)) state.keptIndexIds.push(conflict.id);
-        await this.persistSyncState();
-        await this.rebuildSubscriptions();
-    }
-
-    openSettingsTab() {
-        const setting = (this.app as App & {
-            setting?: {
-                open: () => void;
-                openTabById: (id: string) => void;
-            };
-        }).setting;
-        if (setting) {
-            setting.open();
-            setting.openTabById(this.manifest.id);
-        }
-    }
-
-    startSyncInterval() {
-        this.timers.clearInterval(this.syncIntervalId);
-        this.syncIntervalId = null;
-
-        if (!this.appVisible || !this.settings.apiKey || this.connectionState === 'invalid' || this.settings.syncInterval === 0) {
-            return;
-        }
-
-        const intervalMinutes = Math.max(5, this.settings.syncInterval);
-        const intervalMs = intervalMinutes * 60 * 1000;
-        this.syncIntervalId = this.timers.setInterval(() => {
-            void this.syncNow('scheduled');
-        }, intervalMs, 'network');
-    }
-
-    private startAckRetryInterval(): void {
-        this.timers.clearInterval(this.ackRetryIntervalId);
-        this.ackRetryIntervalId = null;
-        if (!this.appVisible || !this.settings.apiKey || this.connectionState === 'invalid') return;
-        this.ackRetryIntervalId = this.timers.setInterval(
-            () => this.retryPendingAcks(), 5 * 60 * 1000, 'network',
+      }
+      this.updateRibbonState();
+      this.updateViewActions();
+      this.refreshSettingTab();
+      if (typeof this.app.vault.getMarkdownFiles === "function") {
+        await refreshCommentLinks(
+          this.app.vault,
+          this.syncService.getTaskFileMap(),
         );
+        await this.rebuildSubscriptions();
+        await this.refreshSubscriptionSnapshot();
+      }
+    }
+  }
+
+
+  isConfigCorrupted(data: unknown): boolean {
+    if (data === null || data === undefined) return false;
+    if (!isRecord(data)) return true;
+
+    try {
+      const jsonStr = JSON.stringify(data);
+      const jsonLength = jsonStr?.length ?? 0;
+      if (!jsonStr || jsonLength > CONFIG_CORRUPTION_THRESHOLD) {
+        console.warn(`Clip2MD: 配置文件过大 (${jsonLength} bytes)，视为损坏`);
+        return true;
+      }
+    } catch {
+      return true;
     }
 
-    private retryPendingAcks(): void {
-        if (!this.syncing && this.appVisible && this.settings.apiKey && this.connectionState !== 'invalid' && this.syncAckQueue.snapshot().length > 0) {
-            void this.syncAckQueue.flush();
-        }
+    if (data.apiKey !== undefined && typeof data.apiKey !== "string")
+      return true;
+    if (
+      data.targetFolder !== undefined &&
+      typeof data.targetFolder !== "string"
+    )
+      return true;
+    if (data.imageFolder !== undefined && typeof data.imageFolder !== "string")
+      return true;
+    if (data.commentFolder !== undefined && typeof data.commentFolder !== "string")
+      return true;
+    if (
+      data.syncInterval !== undefined &&
+      typeof data.syncInterval !== "number"
+    )
+      return true;
+    for (const key of [
+      "template",
+      "filenameTemplate",
+      "filenameDateFormat",
+      "frontmatterTemplate",
+      "dailyMergeFrontmatterTemplate",
+      "customTitleTemplate",
+    ]) {
+      if (data[key] !== undefined && typeof data[key] !== "string") return true;
     }
-
-    private async deliverSyncAck(ack: PendingSyncAck): Promise<'accepted' | 'discard'> {
-        if (this.syncWriteInProgress) throw new Error('Vault 写入期间暂缓回执');
-        if (ack.savedProof?.scope === 'subscription-v1') {
-            const file = this.app.vault.getFileByPath(ack.savedProof.filepath);
-            const content = file ? await this.app.vault.read(file) : '';
-            const context = documentMetadata(content);
-            const state = this.getSubscriptionState();
-            if (!context || context.task_id !== ack.taskId || state.unverified || context.account_id !== state.accountId) {
-                this.syncService.markPending(ack.taskId);
-                state.statuses[ack.taskId] = { status: 'conflict', message: '账号或笔记身份尚未核对，已暂缓回执' };
-                await this.persistSyncState(); return 'discard';
-            }
-            if (isExcluded(context, this.getSubscriptionConfig(context.account_id))) {
-                if (!state.excludedTaskIds.includes(ack.taskId)) state.excludedTaskIds.push(ack.taskId);
-                state.statuses[ack.taskId] = { status: 'excluded' };
-                this.syncService.removePending(ack.taskId);
-                await this.persistSyncState(); return 'discard';
-            }
-            if (state.keptLocalTaskIds.includes(ack.taskId)) return 'discard';
-            if ((await scanSubscriptionNotes(this.app, context.account_id)).filter(n => n.metadata.task_id === ack.taskId).length !== 1) {
-                this.syncService.markPending(ack.taskId);
-                state.statuses[ack.taskId] = { status: 'conflict', message: '本地任务身份重复，已暂缓回执' };
-                await this.persistSyncState(); return 'discard';
-            }
-            try { await verifiedRegion(content, 'links', ack.taskId); } catch {
-                this.syncService.markPending(ack.taskId); await this.persistSyncState(); return 'discard';
-            }
-        }
-        if (ack.scopeVersion === 2 && (ack.contentMode !== this.settings.syncContentMode
-            || (ack.imageMode ?? 'local') !== this.settings.imageMode
-            || !ack.savedProof || !await verifySavedSyncProof(this.app.vault, ack.taskId, ack.savedProof))) {
-            this.syncService.markPending(ack.taskId);
-            await this.persistSyncState();
-            return 'discard';
-        }
-        if (this.settings.preventReimportAfterLocalRemoval
-            && this.syncService.getIgnoredTaskIds().includes(ack.taskId)) {
-            return 'discard';
-        }
-        if (!await this.syncService.verifyTaskFile(this.app.vault, ack.taskId)) {
-            if (this.settings.preventReimportAfterLocalRemoval) {
-                this.syncService.markIgnored(ack.taskId);
-            } else {
-                this.syncService.markPending(ack.taskId);
-            }
-            await this.persistSyncState();
-            return 'discard';
-        }
-        // Settings can change while the readback checks await Vault I/O.
-        if (ack.scopeVersion === 2 && (ack.contentMode !== this.settings.syncContentMode || (ack.imageMode ?? 'local') !== this.settings.imageMode)) {
-            this.syncService.markPending(ack.taskId);
-            await this.persistSyncState();
-            return 'discard';
-        }
-        try {
-            return await postSyncAck(ack, this.settings.apiKey);
-        } catch (error) {
-            if (error instanceof SyncAckHttpError && error.status === 401) {
-                this.updateConnectionState('invalid', '回执请求返回 401；请为本机重新绑定 Key');
-                new Notice('Clip2MD: 本机 API Key 已失效，请重新绑定；待发回执已保留。', 8000);
-                this.refreshSettingTab();
-            }
-            throw error;
-        }
-    }
-
-    scheduleStartupSync() {
-        if (!this.settings.syncOnStart || !this.settings.apiKey || this.connectionState === 'invalid') {
-            return;
-        }
-        this.app.workspace.onLayoutReady(() => {
-            if (this.startupSyncTriggered) {
-                return;
-            }
-            this.startupSyncTriggered = true;
-            this.timers.setTimeout(() => {
-                if (!this.appVisible) {
-                    this.startupSyncTriggered = false;
-                    return;
-                }
-                if (!this.settings.apiKey) {
-                    return;
-                }
-                void this.syncNow('startup');
-            }, 3000, 'network');
-        });
-    }
-
-    private handleAppVisibility(visible: boolean): void {
-        if (this.appVisible === visible) {
-            if (visible) {
-                this.retryPendingAcks();
-                this.scheduleDeviceBindingPoll(0);
-                this.settingTab?.onAppVisibilityChange(true);
-            }
-            return;
-        }
-        this.appVisible = visible;
-        if (visible) {
-            this.startSyncInterval();
-            this.startAckRetryInterval();
-            this.retryPendingAcks();
-            this.scheduleDeviceBindingPoll(0);
-            if (!this.startupSyncTriggered) this.scheduleStartupSync();
-            this.settingTab?.onAppVisibilityChange(true);
-        } else {
-            this.timers.clearGroup('network');
-            this.timers.clearTimeout(this.bindingTimer);
-            this.bindingTimer = null;
-            this.syncIntervalId = null;
-            this.ackRetryIntervalId = null;
-            this.settingTab?.onAppVisibilityChange(false);
-        }
-    }
-
-    async syncNow(trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary | undefined> {
-        if (!this.settings.apiKey) {
-            if (trigger === 'manual') {
-                this.openSettingsTab();
-            }
-            return undefined;
-        }
-
-        if (!this.settings.targetFolder) {
-            // A completed Vault write may already have a durable receipt even
-            // when the folder setting is later cleared.
-            await this.syncAckQueue.flush();
-            if (trigger === 'manual') {
-                new Notice('Clip2MD: 请先在设置中配置目标文件夹', 5000);
-                this.openSettingsTab();
-            }
-            return undefined;
-        }
-
-        if (this.syncing) {
-            if (trigger === 'manual') {
-                new Notice('Clip2MD: 同步正在进行中', 4000);
-            }
-            return this.settings.lastSyncSummary;
-        }
-
-        const templateValidation = validateMarkdownBodyTemplate(this.settings.template);
-        if (!templateValidation.valid) {
-            await this.syncAckQueue.flush();
-            if (trigger === 'manual') {
-                new Notice(`Clip2MD: ${templateValidation.message}`, 8000);
-                this.openSettingsTab();
-            }
-            console.warn(`Clip2MD: ${templateValidation.message}`);
-            return undefined;
-        }
-
-        this.syncing = true;
-        this.runtimeState = 'syncing';
-        this.processedCount = 0;
-        this.syncProgress = {
-            phase: 'discovering',
-            total: 0,
-            processed: 0,
-            succeeded: 0,
-            pending: 0,
-            ignored: 0,
-            skipped: 0,
-            failed: 0,
-        };
-        this.updateRibbonState();
-        this.updateViewActions();
-        this.refreshSettingTab();
-        this.startSyncProgressNotice();
-
-        const startedAt = new Date().toISOString();
-        const counters: SyncCounters = {
-            total: 0, pages: 0, processed: 0, succeeded: 0, pending: 0, ignored: 0, skipped: 0, failed: 0,
-            ackBlockedCount: 0, ackBlockedReasons: new Set(),
-        };
-        const processedTaskIds = new Set<number>();
-        this.subsetDeleteDecisions = new Map();
-
-        try {
-            if (typeof this.app.vault.getMarkdownFiles === 'function') {
-                await this.refreshSubscriptionSnapshot();
-                await this.rebuildSubscriptions();
-                for (const id of this.getSubscriptionState().excludedTaskIds) this.syncService.markPending(id);
-            }
-            await this.syncAckQueue.flush();
-            if (!this.settings.preventReimportAfterLocalRemoval && this.restoreMissingMappedTasksOnNextSync) {
-                const missing = await this.syncService.findMissingMappedTaskIds(this.app.vault);
-                missing.forEach(id => this.syncService.markIgnored(id));
-                this.restoreMissingMappedTasksOnNextSync = false;
-                try {
-                    await this.persistSyncState();
-                } catch (error) {
-                    this.restoreMissingMappedTasksOnNextSync = true;
-                    throw error;
-                }
-            }
-            const restoreTasks = this.settings.preventReimportAfterLocalRemoval
-                ? [] : await this.syncService.fetchIgnoredTasks();
-            const restoreIds = new Set(restoreTasks.map(item => item.taskId));
-            const pendingTasks = (await this.syncService.fetchPendingTasks())
-                .filter(item => !restoreIds.has(item.taskId));
-            let cursor = this.syncService.getCursor();
-            let batch = await this.syncService.fetchNextPage(cursor);
-            counters.total = [...restoreTasks, ...pendingTasks]
-                .reduce((count, item) => count + (item.task ? 1 : 0), 0) + batch.total;
-            this.updateSyncProgress(counters, 'syncing');
-            this.refreshSettingTab();
-
-            await this.processPendingQueue(restoreTasks, processedTaskIds, counters, true);
-            await this.processPendingQueue(pendingTasks, processedTaskIds, counters);
-
-            let hasMore = true;
-            while (hasMore) {
-                counters.pages += 1;
-                const deduped = batch.tasks.filter(task => {
-                    if (processedTaskIds.has(task.id)) {
-                        return false;
-                    }
-                    processedTaskIds.add(task.id);
-                    return true;
-                });
-                const duplicateCount = batch.tasks.length - deduped.length;
-                if (duplicateCount > 0) {
-                    counters.total = Math.max(counters.processed, counters.total - duplicateCount);
-                    this.updateSyncProgress(counters, 'syncing');
-                }
-
-                await this.processTasks(deduped, counters);
-                this.processedCount = counters.processed;
-
-                const previousCursor = this.syncService.getCursor();
-                const nextCursor = batch.nextCursor;
-                if (batch.hasMore && (!nextCursor || nextCursor === cursor)) {
-                    throw new Error('同步游标未推进，已停止以避免无限循环');
-                }
-
-                this.syncService.setCursor(nextCursor);
-                try {
-                    await this.persistSyncState();
-                } catch (error) {
-                    this.syncService.setCursor(previousCursor);
-                    throw error;
-                }
-
-                cursor = nextCursor;
-                hasMore = batch.hasMore;
-                if (hasMore) {
-                    batch = await this.syncService.fetchNextPage(cursor);
-                }
-            }
-
-            counters.pending += this.syncAckQueue.snapshot().length;
-            const outcome = counters.failed > 0
-                ? 'failed'
-                : (counters.pending > 0 || counters.skipped > 0 || counters.ackBlockedCount > 0 ? 'partial' : 'success');
-            const summary = this.finishSyncRun({
-                startedAt,
-                finishedAt: new Date().toISOString(),
-                trigger,
-                outcome,
-                pages: counters.pages,
-                processed: counters.processed,
-                succeeded: counters.succeeded,
-                pending: counters.pending,
-                ignored: counters.ignored,
-                skipped: counters.skipped,
-                failed: counters.failed,
-                ackBlockedCount: counters.ackBlockedCount,
-                ackBlockedReasons: [...counters.ackBlockedReasons],
-            });
-
-            this.updateConnectionState('connected', '已验证连接');
-            this.completeSyncProgressNotice(summary);
-            return summary;
-        } catch (error) {
-            const message = this.getFriendlyErrorMessage(error);
-            console.error('Clip2MD 同步出错:', error);
-            this.updateConnectionState(isInvalidApiKeyError(error) ? 'invalid' : 'error', message);
-            const summary = this.finishSyncRun({
-                startedAt,
-                finishedAt: new Date().toISOString(),
-                trigger,
-                outcome: 'failed',
-                pages: counters.pages,
-                processed: counters.processed,
-                succeeded: counters.succeeded,
-                pending: counters.pending,
-                ignored: counters.ignored,
-                skipped: counters.skipped,
-                failed: counters.failed + 1,
-                ackBlockedCount: counters.ackBlockedCount,
-                ackBlockedReasons: [...counters.ackBlockedReasons],
-                errorMessage: message,
-            });
-
-            this.failSyncProgressNotice(message);
-            return summary;
-        } finally {
-            this.syncing = false;
-            this.processedCount = 0;
-            this.syncProgress = {
-                phase: 'idle',
-                total: 0,
-                processed: 0,
-                succeeded: 0,
-                pending: 0,
-                ignored: 0,
-                skipped: 0,
-                failed: 0,
-            };
-            if (this.runtimeState === 'syncing') {
-                this.runtimeState = this.connectionState === 'error' || this.connectionState === 'invalid' ? 'error' : 'idle';
-            }
-            if (this.syncNotice) {
-                this.syncNotice.hide();
-                this.syncNotice = null;
-            }
-            this.updateRibbonState();
-            this.updateViewActions();
-            this.refreshSettingTab();
-            if (typeof this.app.vault.getMarkdownFiles === 'function') {
-                await refreshCommentLinks(this.app.vault, this.syncService.getTaskFileMap());
-                await this.rebuildSubscriptions();
-                await this.refreshSubscriptionSnapshot();
-            }
-        }
-    }
-
-    isConfigCorrupted(data: unknown): boolean {
-        if (data === null || data === undefined) return false;
-        if (!isRecord(data)) return true;
-
-        try {
-            const jsonStr = JSON.stringify(data);
-            const jsonLength = jsonStr?.length ?? 0;
-            if (!jsonStr || jsonLength > CONFIG_CORRUPTION_THRESHOLD) {
-                console.warn(`Clip2MD: 配置文件过大 (${jsonLength} bytes)，视为损坏`);
-                return true;
-            }
-        } catch {
-            return true;
-        }
-
-        if (data.apiKey !== undefined && typeof data.apiKey !== 'string') return true;
-        if (data.targetFolder !== undefined && typeof data.targetFolder !== 'string') return true;
-        if (data.imageFolder !== undefined && typeof data.imageFolder !== 'string') return true;
-        if (data.syncInterval !== undefined && typeof data.syncInterval !== 'number') return true;
-
-        return false;
-    }
-
-    async backupConfig(): Promise<void> {
-        try {
-            const data = await this.loadStoredData();
-
-            const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const backupPath = `${backupBaseDir}/config-${timestamp}.json`;
-
-            try {
-                await this.app.vault.adapter.mkdir(backupBaseDir);
-            } catch {
-                // ignore
-            }
-
-            await this.app.vault.adapter.write(backupPath, JSON.stringify(sanitizeConfigForBackup(data), null, 2));
-            await this.cleanupOldConfigBackups(backupBaseDir);
-        } catch (error) {
-            console.warn('Clip2MD: 配置备份失败', error);
-        }
-    }
-
-    async restoreConfigFromBackup(): Promise<StoredPluginData | null> {
-        try {
-            const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
-            const listing = await this.app.vault.adapter.list(backupBaseDir);
-            const files = listing.files
-                .map(f => f.split('/').pop() || '')
-                .filter(f => f.startsWith('config-') && f.endsWith('.json'))
-                .sort();
-
-            if (files.length === 0) return null;
-
-            const latestBackup = files[files.length - 1];
-            const content = await this.app.vault.adapter.read(`${backupBaseDir}/${latestBackup}`);
-            const restored: unknown = JSON.parse(content);
-            return isRecord(restored) ? restored : null;
-        } catch (error) {
-            console.warn('Clip2MD: 从备份恢复配置失败', error);
-            return null;
-        }
-    }
-
-    async cleanupOldConfigBackups(backupBaseDir: string): Promise<void> {
-        try {
-            const listing = await this.app.vault.adapter.list(backupBaseDir);
-            const files = listing.files
-                .map(f => f.split('/').pop() || '')
-                .filter(f => f.startsWith('config-') && f.endsWith('.json'))
-                .sort();
-
-            if (files.length > MAX_CONFIG_BACKUPS) {
-                const toDelete = files.slice(0, files.length - MAX_CONFIG_BACKUPS);
-                for (const file of toDelete) {
-                    await this.app.vault.adapter.remove(`${backupBaseDir}/${file}`);
-                }
-            }
-        } catch (error) {
-            console.warn('Clip2MD: 清理旧配置备份失败', error);
-        }
-    }
-
-    private async processPendingQueue(
-        pendingTasks: PendingTaskFetchResult[],
-        processedTaskIds: Set<number>,
-        counters: SyncCounters,
-        restoring = false,
-    ) {
-        for (const item of pendingTasks) {
-            if (item.missing || (!item.task && restoring)) {
-                if (this.localState?.subscriptions) this.localState.subscriptions.excludedTaskIds =
-                    this.localState.subscriptions.excludedTaskIds.filter(id => id !== item.taskId);
-                this.syncService.removePending(item.taskId);
-                this.syncService.removeIgnored(item.taskId);
-                delete this.syncService.getTaskFileMap()[item.taskId];
-                await this.persistSyncState();
-                continue;
-            }
-            if (!item.task) {
-                continue;
-            }
-            if (processedTaskIds.has(item.task.id)) {
-                continue;
-            }
-            processedTaskIds.add(item.task.id);
-            await this.processTasks([item.task], counters);
-        }
-    }
-
-    private async processTasks(tasks: SyncTask[], counters: SyncCounters) {
-        for (const task of tasks) {
-            if (this.localState?.unresolvedTaskIds?.includes(task.id)) {
-                counters.skipped += 1;
-                continue;
-            }
-            counters.processed += 1;
-            this.processedCount = counters.processed;
-
-            const existingContext = this.subscriptionNotes?.find(n => n.metadata.task_id === task.id)?.metadata;
-            if (!task.subscription_context && existingContext) task.subscription_context = existingContext;
-            if (task.subscription_context) {
-                const state = this.getSubscriptionState();
-                if (state.unverified) throw new Error('账号尚未确认，订阅同步已暂停');
-                if (state.accountId && state.accountId !== task.subscription_context.account_id) throw new Error('订阅任务账号不匹配');
-                if (this.subscriptionNotes.filter(n => n.metadata.task_id === task.id).length > 1) {
-                    state.statuses[task.id] = { status: 'conflict', message: '同一任务存在多个本地文件，已暂停更新' };
-                    this.syncService.markPending(task.id); counters.skipped += 1; continue;
-                }
-                if (isExcluded(task.subscription_context, this.getSubscriptionConfig(task.subscription_context.account_id))) {
-                    if (!state.excludedTaskIds.includes(task.id)) state.excludedTaskIds.push(task.id);
-                    state.statuses[task.id] = { status: 'excluded' };
-                    this.syncService.removePending(task.id);
-                    await this.syncAckQueue.remove(task.id);
-                    await this.persistSyncState();
-                    counters.skipped += 1;
-                    continue;
-                }
-                state.excludedTaskIds = state.excludedTaskIds.filter(id => id !== task.id);
-                if (state.keptLocalTaskIds.includes(task.id)) { counters.skipped += 1; continue; }
-                state.statuses[task.id] = { status: 'pending' };
-            }
-
-            let result: SyncResult;
-            try {
-                this.syncWriteInProgress = true;
-                result = await this.syncService.renderToVault(
-                    this.app.vault,
-                    task,
-                    this.settings.targetFolder,
-                    this.settings.template,
-                );
-            } catch (error) {
-                if (task.subscription_context) this.getSubscriptionState().statuses[task.id] = { status: 'error', message: String(error) };
-                this.syncService.markPending(task.id);
-                counters.pending += 1;
-                this.recordBlockedAck(task, { filepath: null, skipped: false }, counters);
-                console.error(`Clip2MD: 任务 ${task.id} 同步失败`, error);
-                this.updateSyncProgress(counters, 'syncing');
-                continue;
-            } finally {
-                this.syncWriteInProgress = false;
-            }
-
-            if (result.ignoredLocally) {
-                this.syncService.markIgnored(task.id);
-                await this.syncAckQueue.remove(task.id);
-                await this.persistSyncState();
-                counters.ignored += 1;
-                this.updateSyncProgress(counters, 'syncing');
-                continue;
-            }
-            if (task.subscription_context) {
-                this.getSubscriptionState().statuses[task.id] = {
-                    status: result.subscriptionConflict ? 'conflict' : result.pendingAssets || result.failedAssets ? 'images'
-                        : result.skipped ? 'error' : 'synced', message: result.reason,
-                };
-                // Identity lives in the note; persist path/status before any receipt can delete the cloud source.
-                await this.persistSyncState();
-            }
-            if (result.warning) {
-                console.warn(`Clip2MD: ${result.warning}`);
-                new Notice(`Clip2MD: ${result.warning}`, 8000);
-            }
-            this.recordBlockedAck(task, result, counters);
-            if (result.skipped) {
-                this.syncService.markPending(task.id);
-                counters.skipped += 1;
-                console.warn(`Clip2MD: 任务 ${task.id} 已跳过: ${result.reason}`);
-            } else if (result.pendingAssets || result.failedAssets) {
-                this.syncService.markPending(task.id);
-                counters.pending += 1;
-            } else {
-                this.syncService.markComplete(task.id);
-                let subsetDecision = false;
-                if (task.ack_scope && (this.settings.syncContentMode !== 'full' || this.settings.imageMode === 'disabled')
-                    && !getSyncAckBlockedReason(task, result, this.settings)) {
-                    const key = this.settings.apiKey;
-                    const mode = this.settings.syncContentMode;
-                    const imageMode = this.settings.imageMode;
-                    subsetDecision = await this.confirmSubsetDelete(this.settings.syncContentMode);
-                    if (key !== this.settings.apiKey || mode !== this.settings.syncContentMode || imageMode !== this.settings.imageMode) {
-                        this.syncService.markPending(task.id);
-                        counters.pending += 1;
-                        counters.ackBlockedCount += 1;
-                        counters.ackBlockedReasons.add('同步设置或账号已变化，请重新同步');
-                        this.updateSyncProgress(counters, 'syncing');
-                        continue;
-                    }
-                }
-                const ack = buildSyncAck(task, result, this.settings, subsetDecision === true);
-                if (task.ack_scope && (this.settings.syncContentMode !== 'full' || this.settings.imageMode === 'disabled')
-                    && !getSyncAckBlockedReason(task, result, this.settings) && !subsetDecision) {
-                    counters.ackBlockedCount += 1;
-                    counters.ackBlockedReasons.add(this.settings.imageMode === 'disabled'
-                        ? '未确认删除未保存图片，已保留云端任务' : '未确认删除未同步内容，已保留云端任务');
-                }
-                if (ack) {
-                    // The same saved record contains the Vault path and receipt.
-                    // Never contact the server before the receipt is durable.
-                    try {
-                        await this.syncAckQueue.enqueue(ack);
-                    } catch (error) {
-                        this.syncService.markPending(task.id);
-                        throw error;
-                    }
-                    await this.syncAckQueue.flush();
-                }
-                counters.succeeded += 1;
-            }
-            this.updateSyncProgress(counters, 'syncing');
-        }
-    }
-
-    private async confirmSubsetDelete(mode: SyncContentMode): Promise<boolean> {
-        const credentialFingerprint = await sha256(this.settings.apiKey);
-        const imageMode = this.settings.imageMode;
-        const key = `${credentialFingerprint}:${mode}:${imageMode}`;
-        const priorDecision = this.subsetDeleteDecisions?.get(key);
-        if (priorDecision !== undefined) return priorDecision;
-        const consent = imageMode === 'disabled' ? this.localState.imageOmissionDeleteConsent : this.localState.subsetDeleteConsent;
-        if (consent?.credentialFingerprint === credentialFingerprint && consent.modes.some(item => item === mode)) return true;
-        const accepted = await new Promise<boolean>(resolve => new SubsetDeleteModal(this.app, mode, resolve, imageMode).open());
-        if (!accepted || this.settings.syncContentMode !== mode || this.settings.imageMode !== imageMode || await sha256(this.settings.apiKey) !== credentialFingerprint) {
-            this.subsetDeleteDecisions?.set(key, false);
-            return false;
-        }
-        const modes = [...new Set([...(consent?.credentialFingerprint === credentialFingerprint ? consent.modes : []), mode])];
-        if (imageMode === 'disabled') this.localState.imageOmissionDeleteConsent = {
-            credentialFingerprint,
-            modes,
-        };
-        else if (mode !== 'full') this.localState.subsetDeleteConsent = {
-            credentialFingerprint, modes: modes.filter((item): item is 'note' | 'source' => item !== 'full'),
-        };
-        await this.persistSyncState();
-        this.subsetDeleteDecisions?.set(key, true);
+    for (const key of ["syncOnStart", "preventReimportAfterLocalRemoval"]) {
+      if (data[key] !== undefined && typeof data[key] !== "boolean")
         return true;
     }
+    if (
+      data.subscriptionAccounts !== undefined &&
+      !isRecord(data.subscriptionAccounts)
+    )
+      return true;
 
-    private recordBlockedAck(task: SyncTask, result: SyncResult, counters: SyncCounters) {
-        const reason = getSyncAckBlockedReason(task, result, this.settings);
-        if (reason) {
-            counters.ackBlockedCount += 1;
-            counters.ackBlockedReasons.add(reason);
+    return false;
+  }
+
+  async backupConfig(): Promise<void> {
+    try {
+      const data = await this.loadStoredData();
+
+      const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupPath = `${backupBaseDir}/config-${timestamp}.json`;
+
+      try {
+        await this.app.vault.adapter.mkdir(backupBaseDir);
+      } catch {
+        // ignore
+      }
+
+      await this.app.vault.adapter.write(
+        backupPath,
+        JSON.stringify(sanitizeConfigForBackup(data), null, 2),
+      );
+      await this.cleanupOldConfigBackups(backupBaseDir);
+    } catch (error) {
+      console.warn("Clip2MD: 配置备份失败", error);
+    }
+  }
+
+  async restoreConfigFromBackup(): Promise<StoredPluginData | null> {
+    try {
+      const backupBaseDir = `${this.app.vault.configDir}/${CONFIG_BACKUP_DIR}`;
+      const listing = await this.app.vault.adapter.list(backupBaseDir);
+      const files = listing.files
+        .map((f) => f.split("/").pop() || "")
+        .filter((f) => f.startsWith("config-") && f.endsWith(".json"))
+        .sort();
+
+      if (files.length === 0) return null;
+
+      const latestBackup = files[files.length - 1];
+      const content = await this.app.vault.adapter.read(
+        `${backupBaseDir}/${latestBackup}`,
+      );
+      const restored: unknown = JSON.parse(content);
+      return isRecord(restored) ? restored : null;
+    } catch (error) {
+      console.warn("Clip2MD: 从备份恢复配置失败", error);
+      return null;
+    }
+  }
+
+  async cleanupOldConfigBackups(backupBaseDir: string): Promise<void> {
+    try {
+      const listing = await this.app.vault.adapter.list(backupBaseDir);
+      const files = listing.files
+        .map((f) => f.split("/").pop() || "")
+        .filter((f) => f.startsWith("config-") && f.endsWith(".json"))
+        .sort();
+
+      if (files.length > MAX_CONFIG_BACKUPS) {
+        const toDelete = files.slice(0, files.length - MAX_CONFIG_BACKUPS);
+        for (const file of toDelete) {
+          await this.app.vault.adapter.remove(`${backupBaseDir}/${file}`);
         }
+      }
+    } catch (error) {
+      console.warn("Clip2MD: 清理旧配置备份失败", error);
     }
+  }
 
-    private describeBlockedAcks(summary: SyncRunSummary): string {
-        if (!summary.ackBlockedCount) return '';
-        const reasons = summary.ackBlockedReasons?.join('；');
-        return `，${summary.ackBlockedCount} 篇未发送删除回执${reasons ? `：${reasons}` : ''}`;
+  private async processPendingQueue(
+    pendingTasks: PendingTaskFetchResult[],
+    processedTaskIds: Set<number>,
+    counters: SyncCounters,
+    restoring = false,
+  ) {
+    for (const item of pendingTasks) {
+      if (item.missing || (!item.task && restoring)) {
+        if (this.localState?.subscriptions)
+          this.localState.subscriptions.excludedTaskIds =
+            this.localState.subscriptions.excludedTaskIds.filter(
+              (id) => id !== item.taskId,
+            );
+        this.syncService.removePending(item.taskId);
+        this.syncService.removeIgnored(item.taskId);
+        delete this.syncService.getTaskFileMap()[item.taskId];
+        await this.persistSyncState();
+        continue;
+      }
+      if (!item.task) {
+        continue;
+      }
+      if (processedTaskIds.has(item.task.id)) {
+        continue;
+      }
+      processedTaskIds.add(item.task.id);
+      await this.processTasks([item.task], counters);
     }
+  }
 
-    private finishSyncRun(summary: SyncRunSummary): SyncRunSummary {
-        this.settings.lastSyncSummary = summary;
-        this.runtimeState = summary.outcome === 'failed'
-            ? 'error'
-            : summary.outcome === 'partial'
-                ? 'partial'
-                : 'success';
-        void this.persistSyncState();
-        return summary;
-    }
+  async getRecoveryTargetFolder(taskId:number):Promise<string> {
+    const mapped=this.syncService.getTaskFileMap()[taskId];
+    if(mapped&&this.app.vault.getFileByPath(mapped))return mapped.split('/').slice(0,-1).join('/');
+    const template=this.settings.targetFolder.trim()||'Clip2MD';
+    if(!template.includes('{{'))return template.replace(/^\/+|\/+$/g,'');
+    const key=this.settings.apiKey;
+    const response=await requestUrl({url:`${CLIP2MD_API_BASE_URL}/tasks/${taskId}`,headers:{'X-API-Key':key},throw:false});
+    if(key!==this.settings.apiKey)throw new Error('绑定已变化');
+    const data:unknown=response.json;
+    if(response.status!==200||!isRecord(data)||data.id!==taskId||typeof data.url!=='string'||typeof data.created_at!=='string')
+      throw new Error('无法取得任务资料以确定主笔记目录，请稍后重试');
+    const text=(name:string)=>typeof data[name]==='string'?String(data[name]):null;
+    return this.syncService.folderForTask({id:taskId,url:data.url,status:typeof data.status==='string'?data.status:'',
+      created_at:data.created_at,updated_at:data.created_at,title:text('title'),display_title:text('display_title'),
+      source_title:text('source_title'),source_date:text('source_date'),source_description:null,summary:null,
+      note_markdown_content:text('note_markdown_content'),source_markdown_content:text('source_markdown_content'),
+      content_source:text('source')||'web',content_type:text('content_type'),duration_seconds:null,
+      note_content_version:0,source_content_version:0,asset_count:0,asset_ready_count:0,asset_pending_count:0,asset_failed_count:0,assets_updated_at:null});
+  }
 
-    private updateConnectionState(state: ConnectionState, message?: string) {
-        this.connectionState = state;
-        if (state === 'invalid') {
-            this.timers.clearInterval(this.syncIntervalId);
-            this.timers.clearInterval(this.ackRetryIntervalId);
-            this.syncIntervalId = null;
-            this.ackRetryIntervalId = null;
-            if (this.localState && !this.localState.credentialInvalid) {
-                this.localState.credentialInvalid = true;
-                void this.persistSyncState().catch(error => {
-                    console.warn('Clip2MD: 本机无效 Key 标记暂未保存', error);
-                });
-            }
+  private async processTasks(tasks: SyncTask[], counters: SyncCounters) {
+    for (const task of tasks) {
+      if (this.localState?.unresolvedTaskIds?.includes(task.id)) {
+        counters.skipped += 1;
+        continue;
+      }
+      counters.processed += 1;
+      this.processedCount = counters.processed;
+
+      const existingContext = this.subscriptionNotes?.find(
+        (n) => n.metadata.task_id === task.id,
+      )?.metadata;
+      if (!task.subscription_context && existingContext)
+        task.subscription_context = existingContext;
+      if (task.subscription_context) {
+        const state = this.getSubscriptionState();
+        if (state.unverified) throw new Error("账号尚未确认，订阅同步已暂停");
+        if (
+          state.accountId &&
+          state.accountId !== task.subscription_context.account_id
+        )
+          throw new Error("订阅任务账号不匹配");
+        if (
+          this.subscriptionNotes.filter((n) => n.metadata.task_id === task.id)
+            .length > 1
+        ) {
+          state.statuses[task.id] = {
+            status: "conflict",
+            message: "同一任务存在多个本地文件，已暂停更新",
+          };
+          this.syncService.markPending(task.id);
+          counters.skipped += 1;
+          continue;
         }
-        if (state === 'unconfigured') {
-            this.connectionMessage = '请填写 API Key 开始使用';
-        } else if (state === 'configured') {
-            this.connectionMessage = '本次 Obsidian 会话尚未验证';
-        } else if (message) {
-            this.connectionMessage = message;
-        } else if (state === 'connected') {
-            this.connectionMessage = '已验证连接';
+        if (
+          isExcluded(
+            task.subscription_context,
+            this.getSubscriptionConfig(task.subscription_context.account_id),
+          )
+        ) {
+          if (!state.excludedTaskIds.includes(task.id))
+            state.excludedTaskIds.push(task.id);
+          state.statuses[task.id] = { status: "excluded" };
+          this.syncService.removePending(task.id);
+          await this.syncAckQueue.remove(task.id);
+          await this.persistSyncState();
+          counters.skipped += 1;
+          continue;
         }
-    }
-
-    private updateRibbonState() {
-        if (!this.ribbonEl) {
-            return;
-        }
-        this.ribbonEl.removeClass('clip2md-ribbon-loading');
-        const label = this.syncing
-            ? this.syncProgress.phase === 'discovering'
-                ? 'Clip2MD：正在获取同步任务'
-                : `Clip2MD：已同步 ${this.syncProgress.succeeded} / ${this.syncProgress.total}`
-            : 'Clip2MD 同步';
-        this.ribbonEl.setAttr('aria-label', label);
-        this.ribbonEl.setAttr('title', label);
-        if (this.syncing) {
-            this.ribbonEl.addClass('clip2md-ribbon-loading');
-        }
-    }
-
-    private attachViewAction(leaf: WorkspaceLeaf) {
-        const view = leaf.view;
-        if (!this.isMarkdownView(view) || this.viewActions.has(view)) {
-            return;
-        }
-
-        const action = view.addAction(CLIP2MD_ICON_ID, 'Clip2MD 同步', () => {
-            if (!this.settings.apiKey) {
-                this.openSettingsTab();
-                return;
-            }
-            void this.syncNow('manual');
-        });
-        action.addClass('clip2md-view-action');
-        const progress = action.createSpan({ cls: 'clip2md-view-action-progress' });
-        const label = action.createSpan({ cls: 'clip2md-view-action-label' });
-        this.viewActions.set(view, { element: action, progress, label });
-        this.updateViewAction(view, action, progress, label);
-    }
-
-    private isMarkdownView(view: unknown): view is MarkdownView {
-        if (view instanceof MarkdownView) {
-            return true;
-        }
-        // Views created in a pop-out window can come from a different
-        // JavaScript realm, so `instanceof MarkdownView` is not reliable.
-        return typeof (view as { getViewType?: unknown } | null)?.getViewType === 'function'
-            && (view as { getViewType: () => string }).getViewType() === 'markdown'
-            && typeof (view as { addAction?: unknown }).addAction === 'function';
-    }
-
-    private pruneViewActions() {
-        this.viewActions.forEach(({ element }, view) => {
-            if (!element.isConnected) {
-                this.viewActions.delete(view);
-            }
-        });
-    }
-
-    private updateViewAction(_view: object, action: HTMLElement, progress: HTMLElement, label: HTMLElement) {
-        action.toggleClass('is-syncing', this.syncing);
-        const text = !this.syncing
-            ? ''
-            : this.syncProgress.phase === 'discovering'
-                ? '获取中…'
-                : `${this.syncProgress.succeeded}/${this.syncProgress.total}`;
-        label.setText(text);
-        progress.setText(this.syncing ? this.renderProgressBlocks() : '');
-        const tooltip = !this.syncing
-            ? 'Clip2MD 同步'
-            : this.syncProgress.phase === 'discovering'
-                ? 'Clip2MD：正在获取待同步任务'
-                : `Clip2MD：已同步 ${this.syncProgress.succeeded}/${this.syncProgress.total}，已处理 ${this.syncProgress.processed} 项，${this.syncProgress.pending} 待重试，${this.syncProgress.ignored} 主动忽略，${this.syncProgress.skipped} 跳过，${this.syncProgress.failed} 失败`;
-        action.setAttr('aria-label', tooltip);
-        action.setAttr('title', tooltip);
-    }
-
-    private updateViewActions() {
-        this.viewActions.forEach(({ element, progress, label }, view) => this.updateViewAction(view, element, progress, label));
-    }
-
-    private startSyncProgressNotice() {
-        this.syncNotice?.hide();
-        this.syncNotice = new Notice('', 0);
-        this.updateSyncProgressNotice('正在获取任务…');
-    }
-
-    private completeSyncProgressNotice(summary: SyncRunSummary) {
-        if (!this.syncNotice) {
-            return;
-        }
-        this.syncNotice.setMessage(`${'■ '.repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章${summary.ignored ? `，${summary.ignored} 篇主动忽略` : ''}${this.describeBlockedAcks(summary)}`);
-        const notice = this.syncNotice;
-        this.timers.setTimeout(() => notice.hide(), summary.ackBlockedCount ? 8000 : 3000, 'notice');
-        this.syncNotice = null;
-    }
-
-    private failSyncProgressNotice(message: string) {
-        if (!this.syncNotice) {
-            return;
-        }
-        this.syncNotice.setMessage(`${'□ '.repeat(5).trim()}  ${message}`);
-        const notice = this.syncNotice;
-        this.timers.setTimeout(() => notice.hide(), 5000, 'notice');
-        this.syncNotice = null;
-    }
-
-    private updateSyncProgressNotice(message: string) {
-        if (!this.syncNotice) {
-            return;
-        }
-        this.syncNotice.setMessage(`${this.renderProgressBlocks()}  ${message}`);
-    }
-
-    private renderProgressBlocks(): string {
-        const blocks = 5;
-        if (this.syncProgress.phase === 'discovering') {
-            return `■${' □'.repeat(blocks - 1)}`;
-        }
-
-        const total = Math.max(this.syncProgress.total, 1);
-        const processed = Math.min(
-            total,
-            this.syncProgress.succeeded
-                + this.syncProgress.pending
-                + this.syncProgress.ignored
-                + this.syncProgress.skipped
-                + this.syncProgress.failed,
+        state.excludedTaskIds = state.excludedTaskIds.filter(
+          (id) => id !== task.id,
         );
-        const filled = Math.min(blocks, Math.max(0, Math.round((processed / total) * blocks)));
-        return `${'■ '.repeat(filled)}${'□ '.repeat(blocks - filled)}`.trim();
-    }
-
-    private updateSyncProgress(counters: SyncCounters, phase: SyncProgress['phase']) {
-        this.syncProgress = {
-            phase,
-            total: counters.total,
-            processed: counters.processed,
-            succeeded: counters.succeeded,
-            pending: counters.pending,
-            ignored: counters.ignored,
-            skipped: counters.skipped,
-            failed: counters.failed,
-        };
-        this.processedCount = counters.processed;
-        this.updateRibbonState();
-        this.updateViewActions();
-        this.updateSyncProgressNotice(`已处理 ${counters.processed}/${Math.max(counters.total, 0)} 项`);
-    }
-
-    private refreshSettingTab() {
-        this.settingTab?.refresh();
-        this.emitSubscriptionChange();
-    }
-
-    private async loadStoredData(): Promise<StoredPluginData> {
-        const data = await this.loadData() as unknown;
-        return isRecord(data) ? data : {};
-    }
-
-    private normalizeSettings(settings: BijiSyncSettings | StoredPluginData): BijiSyncSettings {
-        const rawInterval = typeof settings.syncInterval === 'number' ? settings.syncInterval : 60;
-        const normalizedInterval = rawInterval === 0 ? 0 : Math.max(5, rawInterval || 60);
-        const frontmatterTemplate = typeof settings.frontmatterTemplate === 'string'
-            ? settings.frontmatterTemplate
-            : NEW_DEFAULT_FRONTMATTER_TEMPLATE;
-        const knownFilenameDefaults = ['{{created_date}}-{{title}}', '{{created_date}}-{{source_title_or_title}}'];
-        const migrateTitleDefaults = settings.titleMode === undefined;
-        const oldNewFrontmatter = NEW_DEFAULT_FRONTMATTER_TEMPLATE.replace('{{note_title}}', '{{source_title_or_title}}');
-        const knownFrontmatterDefaults = [DEFAULT_FRONTMATTER_TEMPLATE, LEGACY_TAGGED_FRONTMATTER_TEMPLATE, LEGACY_DEFAULT_FRONTMATTER_TEMPLATE, oldNewFrontmatter];
-        return {
-            subscriptionAccounts: Object.fromEntries(Object.entries(
-                settings.subscriptionAccounts && typeof settings.subscriptionAccounts === 'object' ? settings.subscriptionAccounts : {},
-            ).filter(([id]) => /^[a-zA-Z0-9_-]+$/.test(id)).map(([id, config]) => [id, archiveConfig(config)])),
-            titleMode: ['website', 'source', 'task', 'custom'].includes(String(settings.titleMode)) ? settings.titleMode as BijiSyncSettings['titleMode'] : 'website',
-            customTitleTemplate: typeof settings.customTitleTemplate === 'string' && !validateCustomTitle(settings.customTitleTemplate) ? settings.customTitleTemplate : '',
-            apiKey: typeof settings.apiKey === 'string' ? settings.apiKey : '',
-            credentialId: typeof settings.credentialId === 'number' ? settings.credentialId : undefined,
-            credentialName: typeof settings.credentialName === 'string' ? settings.credentialName : undefined,
-            installationId: typeof settings.installationId === 'string' ? settings.installationId : '',
-            settingsSchemaVersion: 4,
-            syncInterval: normalizedInterval,
-            syncOnStart: settings.syncOnStart !== false,
-            preventReimportAfterLocalRemoval: settings.preventReimportAfterLocalRemoval === true,
-            targetFolder: typeof settings.targetFolder === 'string' ? settings.targetFolder : '',
-            filenameTemplate: typeof settings.filenameTemplate === 'string' && settings.filenameTemplate
-                ? (migrateTitleDefaults && knownFilenameDefaults.includes(settings.filenameTemplate) ? NEW_DEFAULT_FILENAME_TEMPLATE : settings.filenameTemplate)
-                : NEW_DEFAULT_FILENAME_TEMPLATE,
-            filenameDateFormat: typeof settings.filenameDateFormat === 'string' && settings.filenameDateFormat
-                ? settings.filenameDateFormat
-                : 'yyyy-MM-dd',
-            template: typeof settings.template === 'string' ? settings.template : '{{content}}',
-            frontmatterTemplate: migrateTitleDefaults && knownFrontmatterDefaults.includes(frontmatterTemplate)
-                ? NEW_DEFAULT_FRONTMATTER_TEMPLATE
-                : [LEGACY_TAGGED_FRONTMATTER_TEMPLATE, LEGACY_DEFAULT_FRONTMATTER_TEMPLATE].includes(frontmatterTemplate)
-                    ? DEFAULT_FRONTMATTER_TEMPLATE
-                    : frontmatterTemplate,
-            dailyMergeFrontmatterTemplate: typeof settings.dailyMergeFrontmatterTemplate === 'string'
-                && settings.dailyMergeFrontmatterTemplate.trim()
-                ? settings.dailyMergeFrontmatterTemplate
-                : DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE,
-            syncContentMode: isSyncContentMode(settings.syncContentMode) ? settings.syncContentMode : 'full',
-            imageMode: isImageMode(settings.imageMode) ? settings.imageMode : 'local',
-            imageFolder: typeof settings.imageFolder === 'string' ? settings.imageFolder : '',
-            mergeMode: isMergeMode(settings.mergeMode) ? settings.mergeMode : 'none',
-            lastSyncSummary: isSyncRunSummary(settings.lastSyncSummary)
-                ? settings.lastSyncSummary
-                : undefined,
-        };
-    }
-
-    private createInstallationId(): string {
-        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-            return crypto.randomUUID().replace(/-/g, '');
+        if (state.keptLocalTaskIds.includes(task.id)) {
+          counters.skipped += 1;
+          continue;
         }
-        return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
-    }
+        state.statuses[task.id] = { status: "pending" };
+      }
 
-    private getFriendlyErrorMessage(error: unknown): string {
-        if (error instanceof Error) {
-            if (error.message.includes('fetch') || error.message.includes('network')) {
-                return '无法连接 Clip2MD 官方服务，请检查网络';
-            }
-            return error.message;
+      let result: SyncResult;
+      try {
+        const localNames=Platform.isDesktopApp ? [...new Set([this.settings.template,this.settings.frontmatterTemplate].flatMap(desktopTokens))] : [];
+        if(localNames.length) {
+          const state=this.companion?.snapshot(), scope=await this.companion?.bindingScope();
+          if(state?.enabled && state.prepareTemplateValues && scope) {
+            try {task.local_values=await state.prepareTemplateValues({bindingScope:scope,taskId:task.id,sourceUrl:task.url,revision:`${task.note_content_version}:${task.source_content_version}`,targetFolder:this.syncService.folderForTask(task)},localNames);}
+            catch { this.warnDesktopVariables("桌面字段暂不可用，请检查该平台开关、工具和授权；云端内容继续同步。"); }
+          } else { this.warnDesktopVariables("模板包含桌面变量，但扩展未开启或不可用；云端内容继续同步。"); }
+          }
+        this.syncWriteInProgress = true;
+        result = await this.syncService.renderToVault(
+          this.app.vault,
+          task,
+          this.settings.targetFolder,
+          this.settings.template,
+        );
+      } catch (error) {
+        if (task.subscription_context)
+          this.getSubscriptionState().statuses[task.id] = {
+            status: "error",
+            message: String(error),
+          };
+        this.syncService.markPending(task.id);
+        counters.pending += 1;
+        this.recordBlockedAck(
+          task,
+          { filepath: null, skipped: false },
+          counters,
+        );
+        console.error(`Clip2MD: 任务 ${task.id} 同步失败`, error);
+        this.updateSyncProgress(counters, "syncing");
+        continue;
+      } finally {
+        this.syncWriteInProgress = false;
+      }
+
+      if(result.desktopConflict) {
+        const migration=this.syncService.desktopMigration(task.id);
+        if(migration) {
+          const modal=new Modal(this.app);modal.titleEl.setText(`任务 #${task.id}：确认智能内容迁移`);
+          modal.contentEl.createEl("p",{text:"现有笔记无法安全局部更新。确认后保留现有正文，追加独立智能笔记区；之后只更新该区域。"});
+          for(const [label,text] of [["现有内容",migration.before],["云端智能内容",task.note_markdown_content||""]]) {modal.contentEl.createEl("h3",{text:label});const area=modal.contentEl.createEl("textarea");area.value=text;area.readOnly=true;area.rows=7;}
+          new Setting(modal.contentEl).addButton(b=>b.setButtonText("保留并暂缓").onClick(()=>modal.close())).addButton(b=>b.setButtonText("确认迁移，下次同步应用").onClick(()=>{this.syncService.authorizeDesktopMigration(task.id,migration.before);modal.close();}));
+          modal.open();
         }
-        return String(error);
+      }
+      if (result.ignoredLocally) {
+        this.syncService.markIgnored(task.id);
+        await this.syncAckQueue.remove(task.id);
+        await this.persistSyncState();
+        counters.ignored += 1;
+        this.updateSyncProgress(counters, "syncing");
+        continue;
+      }
+      if (task.subscription_context) {
+        this.getSubscriptionState().statuses[task.id] = {
+          status: result.subscriptionConflict
+            ? "conflict"
+            : result.pendingAssets || result.failedAssets
+              ? "images"
+              : result.skipped
+                ? "error"
+                : "synced",
+          message: result.reason,
+        };
+        // Identity lives in the note; persist path/status before any receipt can delete the cloud source.
+        await this.persistSyncState();
+      }
+      if (result.warning) {
+        console.warn(`Clip2MD: ${result.warning}`);
+        new Notice(`Clip2MD: ${result.warning}`, 8000);
+      }
+      this.recordBlockedAck(task, result, counters);
+      if (result.skipped) {
+        this.syncService.markPending(task.id);
+        counters.skipped += 1;
+        console.warn(`Clip2MD: 任务 ${task.id} 已跳过: ${result.reason}`);
+      } else if (result.pendingAssets || result.failedAssets) {
+        this.syncService.markPending(task.id);
+        counters.pending += 1;
+      } else {
+        this.syncService.markComplete(task.id);
+        let subsetDecision = false;
+        if (
+          task.ack_scope &&
+          (this.settings.syncContentMode !== "full" ||
+            this.settings.imageMode === "disabled") &&
+          !getSyncAckBlockedReason(task, result, this.settings)
+        ) {
+          const key = this.settings.apiKey;
+          const mode = this.settings.syncContentMode;
+          const imageMode = this.settings.imageMode;
+          subsetDecision = await this.confirmSubsetDelete(
+            this.settings.syncContentMode,
+          );
+          if (
+            key !== this.settings.apiKey ||
+            mode !== this.settings.syncContentMode ||
+            imageMode !== this.settings.imageMode
+          ) {
+            this.syncService.markPending(task.id);
+            counters.pending += 1;
+            counters.ackBlockedCount += 1;
+            counters.ackBlockedReasons.add("同步设置或账号已变化，请重新同步");
+            this.updateSyncProgress(counters, "syncing");
+            continue;
+          }
+        }
+        const ack = buildSyncAck(
+          task,
+          result,
+          this.settings,
+          subsetDecision === true,
+        );
+        if (
+          task.ack_scope &&
+          (this.settings.syncContentMode !== "full" ||
+            this.settings.imageMode === "disabled") &&
+          !getSyncAckBlockedReason(task, result, this.settings) &&
+          !subsetDecision
+        ) {
+          counters.ackBlockedCount += 1;
+          counters.ackBlockedReasons.add(
+            this.settings.imageMode === "disabled"
+              ? "未确认删除未保存图片，已保留云端任务"
+              : "未确认删除未同步内容，已保留云端任务",
+          );
+        }
+        if (ack) {
+          // The same saved record contains the Vault path and receipt.
+          // Never contact the server before the receipt is durable.
+          try {
+            await this.syncAckQueue.enqueue(ack);
+          } catch (error) {
+            this.syncService.markPending(task.id);
+            throw error;
+          }
+          await this.syncAckQueue.flush();
+        }
+        if (result.filepath) {
+          try {
+            await this.companion?.taskSaved(task, result.filepath);
+          } catch {
+            console.warn("Clip2MD: 素材补充通知失败，已保留同步结果");
+          }
+        }
+        counters.succeeded += 1;
+      }
+      this.updateSyncProgress(counters, "syncing");
+    }
+  }
+
+  private async confirmSubsetDelete(mode: SyncContentMode): Promise<boolean> {
+    const credentialFingerprint = await sha256(this.settings.apiKey);
+    const imageMode = this.settings.imageMode;
+    const key = `${credentialFingerprint}:${mode}:${imageMode}`;
+    const priorDecision = this.subsetDeleteDecisions?.get(key);
+    if (priorDecision !== undefined) return priorDecision;
+    const consent =
+      imageMode === "disabled"
+        ? this.localState.imageOmissionDeleteConsent
+        : this.localState.subsetDeleteConsent;
+    if (
+      consent?.credentialFingerprint === credentialFingerprint &&
+      consent.modes.some((item) => item === mode)
+    )
+      return true;
+    const accepted = await new Promise<boolean>((resolve) =>
+      new SubsetDeleteModal(this.app, mode, resolve, imageMode).open(),
+    );
+    if (
+      !accepted ||
+      this.settings.syncContentMode !== mode ||
+      this.settings.imageMode !== imageMode ||
+      (await sha256(this.settings.apiKey)) !== credentialFingerprint
+    ) {
+      this.subsetDeleteDecisions?.set(key, false);
+      return false;
+    }
+    const modes = [
+      ...new Set([
+        ...(consent?.credentialFingerprint === credentialFingerprint
+          ? consent.modes
+          : []),
+        mode,
+      ]),
+    ];
+    if (imageMode === "disabled")
+      this.localState.imageOmissionDeleteConsent = {
+        credentialFingerprint,
+        modes,
+      };
+    else if (mode !== "full")
+      this.localState.subsetDeleteConsent = {
+        credentialFingerprint,
+        modes: modes.filter(
+          (item): item is "note" | "source" => item !== "full",
+        ),
+      };
+    await this.persistSyncState();
+    this.subsetDeleteDecisions?.set(key, true);
+    return true;
+  }
+
+  private recordBlockedAck(
+    task: SyncTask,
+    result: SyncResult,
+    counters: SyncCounters,
+  ) {
+    const reason = getSyncAckBlockedReason(task, result, this.settings);
+    if (reason) {
+      counters.ackBlockedCount += 1;
+      counters.ackBlockedReasons.add(reason);
+    }
+  }
+
+  private describeBlockedAcks(summary: SyncRunSummary): string {
+    if (!summary.ackBlockedCount) return "";
+    const reasons = summary.ackBlockedReasons?.join("；");
+    return `，${summary.ackBlockedCount} 篇未发送删除回执${reasons ? `：${reasons}` : ""}`;
+  }
+
+  private finishSyncRun(summary: SyncRunSummary): SyncRunSummary {
+    this.logger?.log("sync.finished", {
+      status: summary.outcome,
+      count: summary.processed,
+    });
+    this.settings.lastSyncSummary = summary;
+    this.runtimeState =
+      summary.outcome === "failed"
+        ? "error"
+        : summary.outcome === "partial"
+          ? "partial"
+          : "success";
+    void this.persistSyncState();
+    return summary;
+  }
+
+  private updateConnectionState(state: ConnectionState, message?: string) {
+    if (state !== this.connectionState)
+      this.logger?.log("binding.state", { status: state });
+    this.connectionState = state;
+    this.cloudAccount?.changed();
+    if (state === "invalid") {
+      this.timers.clearInterval(this.syncIntervalId);
+      this.timers.clearInterval(this.ackRetryIntervalId);
+      this.syncIntervalId = null;
+      this.ackRetryIntervalId = null;
+      if (this.localState && !this.localState.credentialInvalid) {
+        this.localState.credentialInvalid = true;
+        void this.persistSyncState().catch((error) => {
+          console.warn("Clip2MD: 本机无效 Key 标记暂未保存", error);
+        });
+      }
+    }
+    if (state === "unconfigured") {
+      this.connectionMessage = "请填写 API Key 开始使用";
+    } else if (state === "configured") {
+      this.connectionMessage = "本次 Obsidian 会话尚未验证";
+    } else if (message) {
+      this.connectionMessage = message;
+    } else if (state === "connected") {
+      this.connectionMessage = "已验证连接";
+    }
+  }
+
+  private updateRibbonState() {
+    if (!this.ribbonEl) {
+      return;
+    }
+    this.ribbonEl.removeClass("clip2md-ribbon-loading");
+    const label = this.syncing
+      ? this.syncProgress.phase === "discovering"
+        ? "Clip2MD：正在获取同步任务"
+        : `Clip2MD：已同步 ${this.syncProgress.succeeded} / ${this.syncProgress.total}`
+      : "Clip2MD 同步";
+    this.ribbonEl.setAttr("aria-label", label);
+    this.ribbonEl.setAttr("title", label);
+    if (this.syncing) {
+      this.ribbonEl.addClass("clip2md-ribbon-loading");
+    }
+  }
+
+  private attachViewAction(leaf: WorkspaceLeaf) {
+    const view = leaf.view;
+    if (!this.isMarkdownView(view) || this.viewActions.has(view)) {
+      return;
     }
 
-    private formatRelativeTime(dateInput: string): string {
-        const diffMs = Date.now() - new Date(dateInput).getTime();
-        const diffMinutes = Math.round(diffMs / 60000);
-        if (diffMinutes < 1) return '刚刚';
-        if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
-        const diffHours = Math.round(diffMinutes / 60);
-        if (diffHours < 24) return `${diffHours} 小时前`;
-        const diffDays = Math.round(diffHours / 24);
-        return `${diffDays} 天前`;
+    const action = view.addAction(CLIP2MD_ICON_ID, "Clip2MD 同步", () => {
+      if (!this.settings.apiKey) {
+        this.openSettingsTab();
+        return;
+      }
+      void this.syncNow("manual");
+    });
+    action.addClass("clip2md-view-action");
+    const progress = action.createSpan({ cls: "clip2md-view-action-progress" });
+    const label = action.createSpan({ cls: "clip2md-view-action-label" });
+    this.viewActions.set(view, { element: action, progress, label });
+    this.updateViewAction(view, action, progress, label);
+  }
+
+  private isMarkdownView(view: unknown): view is MarkdownView {
+    if (view instanceof MarkdownView) {
+      return true;
     }
+    // Views created in a pop-out window can come from a different
+    // JavaScript realm, so `instanceof MarkdownView` is not reliable.
+    return (
+      typeof (view as { getViewType?: unknown } | null)?.getViewType ===
+        "function" &&
+      (view as { getViewType: () => string }).getViewType() === "markdown" &&
+      typeof (view as { addAction?: unknown }).addAction === "function"
+    );
+  }
+
+  private pruneViewActions() {
+    this.viewActions.forEach(({ element }, view) => {
+      if (!element.isConnected) {
+        this.viewActions.delete(view);
+      }
+    });
+  }
+
+  private updateViewAction(
+    _view: object,
+    action: HTMLElement,
+    progress: HTMLElement,
+    label: HTMLElement,
+  ) {
+    action.toggleClass("is-syncing", this.syncing);
+    const text = !this.syncing
+      ? ""
+      : this.syncProgress.phase === "discovering"
+        ? "获取中…"
+        : `${this.syncProgress.succeeded}/${this.syncProgress.total}`;
+    label.setText(text);
+    progress.setText(this.syncing ? this.renderProgressBlocks() : "");
+    const tooltip = !this.syncing
+      ? "Clip2MD 同步"
+      : this.syncProgress.phase === "discovering"
+        ? "Clip2MD：正在获取待同步任务"
+        : `Clip2MD：已同步 ${this.syncProgress.succeeded}/${this.syncProgress.total}，已处理 ${this.syncProgress.processed} 项，${this.syncProgress.pending} 待重试，${this.syncProgress.ignored} 主动忽略，${this.syncProgress.skipped} 跳过，${this.syncProgress.failed} 失败`;
+    action.setAttr("aria-label", tooltip);
+    action.setAttr("title", tooltip);
+  }
+
+  private updateViewActions() {
+    this.viewActions.forEach(({ element, progress, label }, view) =>
+      this.updateViewAction(view, element, progress, label),
+    );
+  }
+
+  private startSyncProgressNotice() {
+    this.syncNotice?.hide();
+    this.syncNotice = new Notice("", 0);
+    this.updateSyncProgressNotice("正在获取任务…");
+  }
+
+  private completeSyncProgressNotice(summary: SyncRunSummary) {
+    if (!this.syncNotice) {
+      return;
+    }
+    this.syncNotice.setMessage(
+      `${"■ ".repeat(5).trim()}  同步完成！${summary.succeeded} 篇文章${summary.ignored ? `，${summary.ignored} 篇主动忽略` : ""}${this.describeBlockedAcks(summary)}`,
+    );
+    const notice = this.syncNotice;
+    this.timers.setTimeout(
+      () => notice.hide(),
+      summary.ackBlockedCount ? 8000 : 3000,
+      "notice",
+    );
+    this.syncNotice = null;
+  }
+
+  private failSyncProgressNotice(message: string) {
+    if (!this.syncNotice) {
+      return;
+    }
+    this.syncNotice.setMessage(`${"□ ".repeat(5).trim()}  ${message}`);
+    const notice = this.syncNotice;
+    this.timers.setTimeout(() => notice.hide(), 5000, "notice");
+    this.syncNotice = null;
+  }
+
+  private updateSyncProgressNotice(message: string) {
+    if (!this.syncNotice) {
+      return;
+    }
+    this.syncNotice.setMessage(`${this.renderProgressBlocks()}  ${message}`);
+  }
+
+  private renderProgressBlocks(): string {
+    const blocks = 5;
+    if (this.syncProgress.phase === "discovering") {
+      return `■${" □".repeat(blocks - 1)}`;
+    }
+
+    const total = Math.max(this.syncProgress.total, 1);
+    const processed = Math.min(
+      total,
+      this.syncProgress.succeeded +
+        this.syncProgress.pending +
+        this.syncProgress.ignored +
+        this.syncProgress.skipped +
+        this.syncProgress.failed,
+    );
+    const filled = Math.min(
+      blocks,
+      Math.max(0, Math.round((processed / total) * blocks)),
+    );
+    return `${"■ ".repeat(filled)}${"□ ".repeat(blocks - filled)}`.trim();
+  }
+
+  private updateSyncProgress(
+    counters: SyncCounters,
+    phase: SyncProgress["phase"],
+  ) {
+    this.syncProgress = {
+      phase,
+      total: counters.total,
+      processed: counters.processed,
+      succeeded: counters.succeeded,
+      pending: counters.pending,
+      ignored: counters.ignored,
+      skipped: counters.skipped,
+      failed: counters.failed,
+    };
+    this.processedCount = counters.processed;
+    this.updateRibbonState();
+    this.updateViewActions();
+    this.updateSyncProgressNotice(
+      `已处理 ${counters.processed}/${Math.max(counters.total, 0)} 项`,
+    );
+  }
+
+  private refreshSettingTab() {
+    this.settingTab?.refresh();
+    this.emitSubscriptionChange();
+  }
+
+  private async loadStoredData(): Promise<StoredPluginData> {
+    const data = (await this.loadData()) as unknown;
+    return isRecord(data) ? data : {};
+  }
+
+  private normalizeSettings(
+    settings: BijiSyncSettings | StoredPluginData,
+  ): BijiSyncSettings {
+    const rawInterval =
+      typeof settings.syncInterval === "number" ? settings.syncInterval : 60;
+    const normalizedInterval =
+      rawInterval === 0 ? 0 : Math.max(5, rawInterval || 60);
+    const frontmatterTemplate =
+      typeof settings.frontmatterTemplate === "string"
+        ? settings.frontmatterTemplate
+        : NEW_DEFAULT_FRONTMATTER_TEMPLATE;
+    const knownFilenameDefaults = [
+      "{{created_date}}-{{title}}",
+      "{{created_date}}-{{source_title_or_title}}",
+    ];
+    const migrateTitleDefaults = settings.titleMode === undefined;
+    const oldNewFrontmatter = NEW_DEFAULT_FRONTMATTER_TEMPLATE.replace(
+      "{{note_title}}",
+      "{{source_title_or_title}}",
+    );
+    const knownFrontmatterDefaults = [
+      DEFAULT_FRONTMATTER_TEMPLATE,
+      LEGACY_TAGGED_FRONTMATTER_TEMPLATE,
+      LEGACY_DEFAULT_FRONTMATTER_TEMPLATE,
+      oldNewFrontmatter,
+    ];
+    return {
+      subscriptionAccounts: Object.fromEntries(
+        Object.entries(
+          settings.subscriptionAccounts &&
+            typeof settings.subscriptionAccounts === "object"
+            ? settings.subscriptionAccounts
+            : {},
+        )
+          .filter(([id]) => /^[a-zA-Z0-9_-]+$/.test(id))
+          .map(([id, config]) => [id, archiveConfig(config)]),
+      ),
+      titleMode: ["website", "source", "task", "custom"].includes(
+        String(settings.titleMode),
+      )
+        ? (settings.titleMode as BijiSyncSettings["titleMode"])
+        : "website",
+      customTitleTemplate:
+        typeof settings.customTitleTemplate === "string" &&
+        !validateCustomTitle(settings.customTitleTemplate)
+          ? settings.customTitleTemplate
+          : "",
+      apiKey: typeof settings.apiKey === "string" ? settings.apiKey : "",
+      credentialId:
+        typeof settings.credentialId === "number"
+          ? settings.credentialId
+          : undefined,
+      credentialName:
+        typeof settings.credentialName === "string"
+          ? settings.credentialName
+          : undefined,
+      installationId:
+        typeof settings.installationId === "string"
+          ? settings.installationId
+          : "",
+      settingsSchemaVersion: 3,
+      syncInterval: normalizedInterval,
+      syncOnStart: settings.syncOnStart !== false,
+      sourcePropertiesTemplateInitialized: settings.sourcePropertiesTemplateInitialized === true,
+      preventReimportAfterLocalRemoval:
+        settings.preventReimportAfterLocalRemoval === true,
+      targetFolder:
+        typeof settings.targetFolder === "string" ? settings.targetFolder : "",
+      commentFolder:
+        typeof settings.commentFolder === "string" ? settings.commentFolder.trim() : "",
+      filenameTemplate:
+        typeof settings.filenameTemplate === "string" &&
+        settings.filenameTemplate
+          ? migrateTitleDefaults &&
+            knownFilenameDefaults.includes(settings.filenameTemplate)
+            ? NEW_DEFAULT_FILENAME_TEMPLATE
+            : settings.filenameTemplate
+          : NEW_DEFAULT_FILENAME_TEMPLATE,
+      filenameDateFormat:
+        typeof settings.filenameDateFormat === "string" &&
+        settings.filenameDateFormat
+          ? settings.filenameDateFormat
+          : "yyyy-MM-dd",
+      template:
+        typeof settings.template === "string"
+          ? settings.template
+          : "{{content}}",
+      frontmatterTemplate:
+        migrateTitleDefaults &&
+        knownFrontmatterDefaults.includes(frontmatterTemplate)
+          ? NEW_DEFAULT_FRONTMATTER_TEMPLATE
+          : [
+                LEGACY_TAGGED_FRONTMATTER_TEMPLATE,
+                LEGACY_DEFAULT_FRONTMATTER_TEMPLATE,
+              ].includes(frontmatterTemplate)
+            ? DEFAULT_FRONTMATTER_TEMPLATE
+            : frontmatterTemplate,
+      dailyMergeFrontmatterTemplate:
+        typeof settings.dailyMergeFrontmatterTemplate === "string" &&
+        settings.dailyMergeFrontmatterTemplate.trim()
+          ? settings.dailyMergeFrontmatterTemplate
+          : DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE,
+      syncContentMode: isSyncContentMode(settings.syncContentMode)
+        ? settings.syncContentMode
+        : "full",
+      imageMode: isImageMode(settings.imageMode) ? settings.imageMode : "local",
+      imageFolder:
+        typeof settings.imageFolder === "string" ? settings.imageFolder : "",
+      mergeMode: isMergeMode(settings.mergeMode) ? settings.mergeMode : "none",
+      lastSyncSummary: isSyncRunSummary(settings.lastSyncSummary)
+        ? settings.lastSyncSummary
+        : undefined,
+    };
+  }
+
+  private createInstallationId(): string {
+    if (
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+    ) {
+      return crypto.randomUUID().replace(/-/g, "");
+    }
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+  }
+
+  private getFriendlyErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      if (
+        error.message.includes("fetch") ||
+        error.message.includes("network")
+      ) {
+        return "无法连接 Clip2MD 官方服务，请检查网络";
+      }
+      return error.message;
+    }
+    return String(error);
+  }
+
+  private formatRelativeTime(dateInput: string): string {
+    const diffMs = Date.now() - new Date(dateInput).getTime();
+    const diffMinutes = Math.round(diffMs / 60000);
+    if (diffMinutes < 1) return "刚刚";
+    if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+    const diffHours = Math.round(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours} 小时前`;
+    const diffDays = Math.round(diffHours / 24);
+    return `${diffDays} 天前`;
+  }
 }

@@ -5,7 +5,7 @@ import path from 'node:path';
 const root = path.resolve(process.argv[2] || process.cwd());
 const requiredFiles = ['main.js', 'manifest.json', 'styles.css', 'package.json', 'esbuild.config.mjs'];
 const sourceFiles = ['src/main.ts', 'src/settings.ts', 'src/sync.ts', 'src/sync.test.ts', 'src/config-backup.ts', 'src/config-backup.test.ts'];
-const forbidden = /from ['"]\.\/updater['"]|src\/updater\.ts|check-for-updates|checkForUpdates|triggerManualUpdateCheck|performUpdate|initAutoUpdate|startUpdateInterval|autoUpdateEnabled|updateChannel|lastUpdateCheckAt|ignoredUpdateVersion|latest\.json|\.update-backup|CLIP2MD_STATIC_BASE_URL|sourceMappingURL=/i;
+const forbidden = /from ['"]\.\/updater['"]|src\/updater\.ts|check-for-updates|checkForUpdates|triggerManualUpdateCheck|performUpdate|initAutoUpdate|startUpdateInterval|autoUpdateEnabled|updateChannel|lastUpdateCheckAt|ignoredUpdateVersion|latest\.json|\.update-backup|CLIP2MD_STATIC_BASE_URL|clip2mdIntegratedDesktop|sourceMappingURL=/i;
 
 function fail(message) {
   throw new Error(`官方市场构建校验失败：${message}`);
@@ -67,6 +67,9 @@ if (fs.existsSync(path.join(root, 'src/updater.ts'))) {
   fail('市场源码仍包含 src/updater.ts');
 }
 const mainSource = read('src/main.ts');
+if (/\b(?:BUILD_CHANNEL|startIntegratedDesktop|integratedDesktop)\b|website-integration/.test(mainSource)) {
+  fail('主插件入口仍包含网站版桌面运行时引用');
+}
 const settingsSource = read('src/settings.ts');
 const backupSource = read('src/config-backup.ts');
 if (!/getSettingDefinitions\s*\(\)\s*:\s*SettingDefinitionItem\[\]/.test(settingsSource)
@@ -85,8 +88,8 @@ if (!/sanitizeConfigForBackup\(data\)/.test(mainSource)
     || /['"](?:apiKey|pendingAcks|cursor|taskFileMap)['"]/.test(backupSource)) {
   fail('配置备份未确认剔除 API Key');
 }
-if (!/CONFIG_BACKUP_DIR\s*=\s*'\.clip2md-config-backup'/.test(mainSource)
-    || !/restoreConfigFromBackup/.test(mainSource)) {
+if (!/CONFIG_BACKUP_DIR\s*=\s*[\"']\.clip2md-config-backup[\"']/.test(mainSource)
+    || !/restoreConfigFromBackup|PersistentConfig/.test(mainSource)) {
   fail('配置备份/恢复逻辑不完整');
 }
 

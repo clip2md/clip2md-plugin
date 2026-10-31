@@ -58,6 +58,24 @@ class TestVault {
 beforeEach(() => { vi.stubGlobal('crypto', webcrypto); request.mockReset(); });
 
 describe('subscription archive integration', () => {
+    it('follows the main target for new default archive and report folders and preserves custom directories',async()=>{
+        const config=settings();config.targetFolder='我的资料';
+        const sync=new SyncService(config),vault=new TestVault();
+        const work=await sync.renderToVault(vault as never,task(),config.targetFolder,config.template);
+        expect(work.filepath).toBe('我的资料/博主订阅/youtube/产品设计/作品.md');
+        const report=await sync.renderToVault(vault as never,task(90,{kind:'daily_report',account_id:'account-a',report_date:'2026-10-24'}),config.targetFolder,config.template);
+        expect(report.filepath).toBe('我的资料/博主订阅/日报/2026-10-24-博主订阅日报.md');
+        config.subscriptionAccounts!['account-a'].folderTemplate='自定义/{{blogger_name}}';
+        config.subscriptionAccounts!['account-a'].reportFolder='自定义日报';sync.updateSettings(config);
+        const custom=await sync.renderToVault(vault as never,task(91),config.targetFolder,config.template);
+        expect(custom.filepath).toBe('自定义/产品设计/作品.md');
+        const customReport=await sync.renderToVault(vault as never,task(92,{kind:'daily_report',account_id:'account-a',report_date:'2026-10-25'}),config.targetFolder,config.template);
+        expect(customReport.filepath).toBe('自定义日报/2026-10-25-博主订阅日报.md');
+    });
+    it('migrates the previous hardcoded default paths to follow-main preferences without changing custom paths',()=>{
+        expect(archiveConfig({folderTemplate:'Clip2MD/博主订阅/{{platform}}/{{blogger_name}}',reportFolder:'Clip2MD/博主订阅/日报'})).toMatchObject({folderTemplate:'',reportFolder:''});
+        expect(archiveConfig({folderTemplate:'资料/订阅',reportFolder:'资料/日报'})).toMatchObject({folderTemplate:'资料/订阅',reportFolder:'资料/日报'});
+    });
     it('creates per-blogger notes and keeps path, user properties and annotations across cloud updates', async () => {
         const vault = new TestVault(), config = settings(), sync = new SyncService(config), t = task();
         const first = await sync.renderToVault(vault as never, t, config.targetFolder, config.template);
@@ -296,6 +314,36 @@ describe('read-only subscription client', () => {
 const commentSource: CommentSource = { platform: 'youtube', title: '原帖 [标题]: "示例"', author: '作者',
     url: 'https://youtube.com/watch?v=abcdefghijk', work_id: 'abcdefghijk', collected_at: '2026-10-15T10:59:00Z',
     main_task_id: 12, main_task_title: '作品', work_record_id: 2, header_markdown: '# 评论 · 作品\n\n- **原作品**：作品\n' };
+
+it.each([true, false])('routes new comments to a custom folder or their main note folder (subscription=%s)', async subscription => {
+    for (const commentFolder of ['', '  ', '评论/{{created_date}}']) {
+        const vault = new TestVault(), config = settings({ mergeMode: 'none', commentFolder }), sync = new SyncService(config);
+        const original = { ...task(), subscription_context: subscription ? context : undefined };
+        const main = await sync.renderToVault(vault as never, original, config.targetFolder, config.template);
+        const comment = { ...task(13), title: '评论', content_source: 'comment_supplement',
+            subscription_context: subscription ? { ...context, kind: 'comment_supplement' as const, original_task_id: 12 } : undefined,
+            comment_source: commentSource };
+        const result = await sync.renderToVault(vault as never, comment, config.targetFolder, config.template);
+        const folder = commentFolder.trim() ? '评论/2026-10-14' : main.filepath!.split('/').slice(0, -1).join('/');
+        expect(result.filepath).toBe(`${folder}/评论.md`);
+        expect(String(vault.files.get(result.filepath!))).toContain(`[[${main.filepath!.replace(/\.md$/, '')}]]`);
+        config.commentFolder = '另一个评论目录';
+        const updated = await sync.renderToVault(vault as never, comment, config.targetFolder, config.template);
+        expect(updated.filepath).toBe(result.filepath);
+    }
+});
+
+it('falls back to the target folder for comments arriving before their main note', async () => {
+    const config = settings({ targetFolder: '资料/{{created_date}}', commentFolder: '' }), sync = new SyncService(config);
+    const comment = { ...task(13), subscription_context: undefined, comment_source: commentSource };
+    expect(sync.folderForTask(comment)).toBe('资料/2026-10-14');
+    sync.loadTaskFileMap({ 12: '已移动的主目录/主笔记.md' });
+    expect(sync.folderForTask(comment)).toBe('已移动的主目录');
+    sync.loadTaskFileMap({ 12: '根目录笔记.md' });
+    const vault = new TestVault();
+    const result = await sync.renderToVault(vault as never, comment, config.targetFolder, config.template);
+    expect(result.filepath).toBe('作品.md');
+});
 
 it.each([true, false])('stores comment properties and a local backlink with safe receipts (subscription=%s)', async subscription => {
     const vault = new TestVault(), config = settings({ mergeMode: 'none' }), sync = new SyncService(config);

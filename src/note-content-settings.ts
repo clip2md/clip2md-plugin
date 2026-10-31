@@ -1,4 +1,6 @@
-import { Component, MarkdownRenderer, parseYaml, Setting } from 'obsidian';
+import { withSourcePropertyTemplate } from './property-template';
+import { LOCAL_VARIABLES, LOCAL_VARIABLE_DESCRIPTIONS, LOCAL_BODY_VARIABLES, desktopTokens } from './desktop-variables';
+import { Platform, Notice, Component, MarkdownRenderer, parseYaml, Setting, type EventRef, type Events } from 'obsidian';
 import type BijiSyncPlugin from './main';
 import { DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE, NEW_DEFAULT_FRONTMATTER_TEMPLATE } from './settings';
 
@@ -37,6 +39,7 @@ export class NoteContentSettings {
     private saveRevision = 0;
     private timer: number | null = null;
     private disposed = false;
+    private sourceTemplateEvent?:EventRef;
 
     constructor(private plugin: BijiSyncPlugin, container: HTMLElement, private state: NoteContentViewState) {
         this.root = this.el(container, 'div', '', 'clip2md-note-content');
@@ -96,6 +99,13 @@ export class NoteContentSettings {
         this.el(this.root, 'p', '示例数据；模板修改在后续同步时生效。', 'setting-item-description');
         this.preview = this.el(this.root, 'div', '', 'clip2md-content-preview');
         this.refresh();
+        const events=plugin.app?.workspace as Events|undefined;
+        if(events?.on)this.sourceTemplateEvent=events.on('clip2md:source-property-template-changed',()=>{
+            if(this.disposed)return;
+            const editor=this.editors.get('frontmatterTemplate');
+            if(editor)editor.value=this.plugin.settings.frontmatterTemplate;
+            this.refresh();
+        });
     }
 
     private el<K extends keyof HTMLElementTagNameMap>(parent: HTMLElement, tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {
@@ -130,9 +140,12 @@ export class NoteContentSettings {
         const tools = this.el(section, 'details', '', 'clip2md-content-variables');
         this.el(tools, 'summary', '插入变量');
         const list = this.el(tools, 'div', '', 'clip2md-template-toolbar');
-        for (const name of variables) {
+        if (Platform.isDesktopApp) this.el(tools, 'p', '本地字段由本地剪藏扩展采集，未取得的字段会留空；互动数量是采集时的快照。', 'setting-item-description');
+        for (const name of [...variables, ...(Platform.isDesktopApp && key !== "dailyMergeFrontmatterTemplate" ? Object.keys(LOCAL_VARIABLES).filter(name => key === "template" || !LOCAL_BODY_VARIABLES.includes(name)) : [])]) {
             const token = `{{${name}}}`;
-            const button = this.button(list, `${VARIABLES[name]} ${token}`, () => {
+            const parent = name in LOCAL_VARIABLES ? this.el(list, 'div', '', 'clip2md-local-variable-row') : list;
+            const button = this.button(parent, `${VARIABLES[name] || LOCAL_VARIABLES[name]} ${token}`, () => {
+                if (name in LOCAL_VARIABLES && (!this.plugin.companion?.enabled() || !(this.plugin.companion.snapshot()?.readyFeatures || []).includes(name.startsWith("local_transcript") || name === "local_transcribed_at" ? "transcription" : "metadata"))) { new Notice("桌面扩展未开启或能力未准备好，请打开桌面扩展设置完成检查"); return; }
                 const start = input.selectionStart;
                 const end = input.selectionEnd;
                 input.value = input.value.slice(0, start) + token + input.value.slice(end);
@@ -143,19 +156,21 @@ export class NoteContentSettings {
                 this.changed();
             });
             button.className = 'clip2md-chip-button';
+            if (name in LOCAL_VARIABLES) this.el(parent, 'small', LOCAL_VARIABLE_DESCRIPTIONS[name], 'setting-item-description');
             button.title = name === 'content' ? '根据上方选择插入完整内容、智能笔记或原文'
                 : name === 'tasks' ? '含任务 ID、标题和已知链接的 YAML 清单'
-                    : `插入${VARIABLES[name]}`;
+                    : name in LOCAL_VARIABLES ? LOCAL_VARIABLE_DESCRIPTIONS[name] : `插入${VARIABLES[name]}`;
         }
         this.button(section, key === 'template' ? '恢复标准正文' : '恢复默认属性', () => {
             if (key === 'template') this.state.undoBody = this.plugin.settings.template;
             this.setTemplate(key, key === 'template' ? '{{content}}'
-                : key === 'frontmatterTemplate' ? NEW_DEFAULT_FRONTMATTER_TEMPLATE : DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE);
+                : key === 'frontmatterTemplate' ? this.plugin.companion?.enabled() ? withSourcePropertyTemplate(NEW_DEFAULT_FRONTMATTER_TEMPLATE) : NEW_DEFAULT_FRONTMATTER_TEMPLATE : DEFAULT_DAILY_MERGE_FRONTMATTER_TEMPLATE);
         });
     }
 
     private setTemplate(key: TemplateKey, value: string) {
         this.plugin.settings[key] = value;
+        if(key==='frontmatterTemplate'&&this.plugin.companion?.enabled())this.plugin.settings.sourcePropertiesTemplateInitialized=true;
         const editor = this.editors.get(key);
         if (editor) editor.value = value;
         this.changed();
@@ -179,6 +194,8 @@ export class NoteContentSettings {
     }
 
     private updateControls() {
+        const local = [...this.editors.values()].flatMap(input => desktopTokens(input.value));
+        if (Platform.isDesktopApp && local.length && !this.plugin.companion?.enabled()) this.saveStatus && (this.saveStatus.textContent = '模板含桌面变量，但扩展未开启或不可用；相关字段暂不可使用，请打开桌面扩展设置。');
         const custom = !this.plugin.settings.template.includes('{{content}}');
         this.modeControl.disabled = custom;
         this.modeControl.value = this.plugin.settings.syncContentMode;
@@ -254,6 +271,7 @@ export class NoteContentSettings {
     }
 
     dispose() {
+        if(this.sourceTemplateEvent)this.plugin.app.workspace.offref(this.sourceTemplateEvent);
         this.disposed = true;
         this.revision++;
         this.plugin.timers.clearTimeout(this.timer);

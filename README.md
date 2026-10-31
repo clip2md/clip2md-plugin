@@ -1,190 +1,135 @@
 # Clip2MD
 
-> **1.0.21**：修复扫码授权后插件持续等待的问题；本机保存失败会显示错误并允许重试，领取超时后自动恢复。
+[中文](#中文) | [English](#english)
 
-> **安装前请检查 Obsidian 版本：需要 1.13.1 或更高版本。**
-> 若安装提示 “No appropriate version found.”，请先在 **设置 → 关于** 查看 Obsidian 版本；版本低于 1.13.1 时，请升级 Obsidian 后重试。移动端请通过应用商店或官方安装渠道更新。
->
-> **Requires Obsidian 1.13.1 or later.** If installation shows “No appropriate version found.”, check your Obsidian version in **Settings → About**. If it is older than 1.13.1, update Obsidian and try again. On mobile, update through your app store or official installation channel.
+## 中文
 
-Clip2MD is an Obsidian plugin that turns captured web content into clean
-Markdown and syncs completed clipping tasks to your knowledge base. It can
-save images locally, preserve task metadata, update previously synchronized
-notes, and organize files with customizable folder and filename templates.
+### Clip2MD 是什么
 
-## Features
+[Clip2MD 官网](https://clip2.md)把网页、微信分享、图片和文档等内容整理为可检索的 Markdown 知识。你可以从浏览器插件、微信服务号和企业微信剪藏助手提交内容，在网页或小程序查看任务，再同步到 Obsidian。
 
-- Sync completed Clip2MD clipping tasks as Markdown notes in your vault.
-- Download images locally and keep links and task metadata in the note.
-- Update the same note when a task is synchronized again.
-- Choose manual, startup, or scheduled synchronization.
-- Bind each device by scanning a WeChat QR code or entering an API Key.
-- Customize note titles, folders, filenames, YAML properties, and body templates.
-- Preview the resulting note or Markdown before synchronizing.
-- Archive subscribed creators into configurable folders, maintain creator indexes,
-  link comment supplements and daily reports, and preserve annotations outside
-  managed content regions. The subscription panel requires the compatible server API.
-- Optionally delete the cloud task after the selected content and local images
-  have been verified. Source-only or note-only deletion requires confirmation
-  and also removes the unsynchronized content from the cloud. Disabling image
-  sync permits verified text-only deletion after a separate confirmation that
-  unsaved images will be permanently deleted.
-
-## Requirements and setup
-
-Requires Obsidian **1.13.1 or later** on desktop or mobile, a Clip2MD account
-or valid API Key, and an internet connection. The plugin connects to the
-Clip2MD service to bind your device, fetch completed tasks, and download images.
-
-Install **Clip2MD** from Community plugins, enable it, and open its settings.
-Bind the current device, choose a destination folder, then run the sync command.
-Credentials and sync progress are stored separately on each device; bind each
-device individually even when they share a vault. Community-market updates
-are managed through Obsidian's plugin updater.
-
-For a manual installation, download `main.js`, `manifest.json`, and `styles.css`
-from the same release and place them in `.obsidian/plugins/clipmd/`.
-
-## 中文说明
-
-将网页剪藏内容转换为 Markdown，并同步到 Obsidian。Clip2MD 负责网页内容的提取与整理，Obsidian 插件负责把已完成的剪藏任务写入你的 Vault。
-
-### 博主订阅归档
-
-在设置中加载当前账号的博主订阅，或使用“打开博主订阅”命令。可配置统一目录模板、单博主目录、同步范围、索引和日报目录；保存后点击“立即同步”。分目录默认关闭，目录变更仅影响新文件。已有订阅笔记保持原路径，并保护“我的批注”和管理区域外文字。评论补充、日报和索引提供本地关联链接。
-
-受管理正文被修改时暂停覆盖，面板可比较内容、保留本地修改或确认备份后更新。旧笔记无法确认是否包含用户编辑时必须确认升级，原正文会保留；备份在知识库 `.clip2md-subscription-backups/`。仅同步现有任务，购买、续订和云端重试使用网页管理入口。此功能需要兼容后端；不提供未读、稍后读或收藏状态。
-
-## 功能
-
-- 将 Clip2MD 中已完成的剪藏任务同步为 Obsidian Markdown 文件。
-- 支持标题、来源、日期、标签和任务 ID 等 Frontmatter 字段。
-- 支持本地保存图片，并在笔记中更新图片链接。
-- 已同步的任务会被记录，重复同步时更新原文件，减少重复笔记。
-- 支持手动同步、启动后同步和定时同步。
-- 支持微信扫码绑定，也支持在设置中手动填写 API Key。
-- 支持自定义目标文件夹、文件名模板、Frontmatter 模板和合并模式。
-- 支持在正文、Frontmatter、文件名和目标文件夹模板中使用 `{{source_title}}` 引用原文标题；原文标题为空时输出空字符串，默认模板不变。
-- 可在高级设置中开启“本地删除或改名后不再补回”，避免被删除、改名或移动的笔记再次按原路径生成。
-- 可在 Clip2MD 网页按需开启“同步成功后删除”；1.0.15 起配合新版服务端，插件核验所选正文及图片的实际落盘结果。仅原文或仅笔记模式需确认：删除整个云端任务也会删除未同步内容。主动关闭图片同步时，可在另行确认丢弃图片后按去图正文删除；开启图片同步但下载失败仍保留原任务。去图后正文为空或其他条件不满足时保留原任务。
-
-## 使用要求
-
-- Obsidian 1.13.1 或更高版本。
-- 桌面版或移动版 Obsidian。
-- Clip2MD 账号或有效的 API Key。
-- 网络连接。插件需要访问 Clip2MD 服务才能绑定账号、获取任务和下载图片。
-
-## 安装
-
-### 从 Obsidian 社区插件安装
-
-插件通过 Obsidian 社区插件目录审核后，可以在 Obsidian 中打开：
-
-1. **设置 → 社区插件**。
-2. 搜索 **Clip2MD**。
-3. 安装并启用插件。
-
-### 手动安装
-
-从 GitHub Releases 下载与版本号对应的以下文件，并放入 Vault 的 `.obsidian/plugins/clipmd/` 目录：
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-
-然后在 Obsidian 的 **设置 → 社区插件** 中启用 Clip2MD。
-
-## 配置
-
-1. 打开 **设置 → 社区插件 → Clip2MD**。
-2. 使用微信扫码绑定，或切换到手动模式填写 API Key。
-3. 设置目标文件夹；留空时不会把任务同步到 Vault。
-4. 根据需要配置同步间隔、文件名模板、Frontmatter 模板和图片模式。
-5. 点击 **立即同步**，或启用启动后同步和定时同步。
-
-默认情况下，笔记会保存到 Vault 根目录下的 `Clip2MD` 文件夹，文件名格式为 `{{created_date}}-{{title}}`。
-
-“本地删除或改名后不再补回”默认关闭，仅对当前 Vault 生效。开启后，插件按任务 ID 记住原同步文件已删除、改名或移动的任务，后续同步会单独统计并忽略它们；原文件还在的任务继续更新，同一网址重新剪藏的新任务继续同步。关闭开关后的下一次同步会尝试恢复这些任务；网络或写入失败时保留恢复资格，原路径被其他文件占用时不会覆盖已有文件。此设置与网页上的“同步成功后删除原任务”相互独立。
-
-插件会在配置异常恢复前创建 `.obsidian/.clip2md-config-backup/` 配置备份。备份包含同步设置和状态，但会主动移除 API Key；如果从备份恢复，需重新填写 API Key。该目录属于运行数据，不应提交到 GitHub。
-
-点击“复制绑定码”时，插件只会把当前一次性绑定码写入系统剪贴板；插件不会读取剪贴板中原有的内容，也不会上传剪贴板内容。若系统剪贴板不可用，绑定码会改为显示在 Obsidian 提示中。
-
-## 构建与验证
-
-本仓库是官方 Obsidian 社区插件市场的独立源码仓库。安装依赖并执行完整校验：
-
-```bash
-npm ci
-npm run verify
+```text
+浏览器插件 / 微信分享 / 文件上传
+               ↓
+Clip2MD 云端：提取内容、生成智能笔记、管理任务
+               ↓
+网页 / 小程序管理 → Clip2MD 主插件 → Obsidian 知识库
+                                      ↑
+                       本地剪藏扩展：正文、图片、媒体、字幕、评论
 ```
 
-本插件的 manifest ID 为 `clipmd`；`Clip2MD` 是展示名称，手动安装目录必须使用
-`.obsidian/plugins/clipmd/`。
+| 入口 | 用途 |
+| --- | --- |
+| [官网](https://clip2.md) | 了解产品、网页剪藏及任务管理 |
+| [微信服务号与企业微信助手](https://clip2.md/mobile#mobile-guide) | 关注服务号，按欢迎指引添加助手，向助手发送支持的分享内容 |
+| [打开小程序](https://clip2.md/mobile#miniapp-launch) | 在微信内启动或扫码，查看任务、账号和设置 |
+| [用户群](https://clip2.md/mobile#community) | 产品交流与反馈；剪藏内容应发送给助手 |
 
-## Installation (English)
+| 关注 Clip2MD 服务号 | 加入用户群 |
+| --- | --- |
+| ![Clip2MD 服务号二维码](https://static.clip2md.cn/wechat/service-account-follow.jpg) | ![Clip2MD 用户群二维码](https://static.clip2md.cn/wecom/contact_group_qr.png) |
 
-Install Clip2MD from the Obsidian Community Plugins browser after the plugin is
-approved. For manual installation, download `main.js`, `manifest.json`, and
-`styles.css` from the matching GitHub Release and place them in
-`.obsidian/plugins/clipmd/` inside your vault. Then enable the plugin in
-**Settings → Community plugins**.
+二维码无法显示或失效时，请打开对应的[官网微信入口](https://clip2.md/mobile)。小程序入口使用官网启动页，不是插件绑定码；GitHub 页面无需执行微信脚本。
 
-## Usage (English)
+### 两个插件与分发渠道
 
-Open **Settings → Community plugins → Clip2MD**, connect your account with the
-QR code or API key, choose a target folder, and click **Sync now**. The plugin
-downloads completed clipping tasks as Markdown files and can also save images
-locally. The ribbon button and command palette provide the same sync action.
-The optional advanced setting to keep locally deleted, renamed, or moved notes
-from reappearing applies only to the current vault and is off by default.
+- [Clip2MD 主插件](https://github.com/clip2md/clip2md-plugin)：ID `clipmd`，支持桌面和移动端，负责账号绑定、云端任务同步、模板、图片本地化与博主订阅归档。
+- [本地剪藏扩展](https://github.com/clip2md/clip2md-desktop-tools)：ID `clipmd-desktop-tools`，仅桌面端，依赖主插件，补充原站正文、来源属性、音视频、字幕、图片和评论。原站权限与工具条件会影响可用能力。
+- 市场渠道分别安装两个插件，安装和更新由 Obsidian 管理；两个入口共用本地剪藏设置和状态。手机端仅使用主插件，不显示本地剪藏入口。
+- 网站渠道将桌面能力整合进一个主插件，桌面使用相同功能界面；手机保留云端同步。网站整合版无需再启用独立扩展。
 
-`npm run verify` 会执行类型检查、测试、压缩生产构建和市场合规扫描。主仓库的 `scripts/build-obsidian-local.sh` 负责从包含本地版本功能的源码生成市场变体，不复制到本仓库；主仓库的 `scripts/build-prod.sh` 负责整个 Clip2MD 产品发布，也不属于本仓库。
+### 账号、收费和额度
 
-本仓库没有 `deploy` 命令；`main.js` 是构建产物，不提交到 Git，发布时作为与 `manifest.json` 版本一致的 GitHub Release 附件上传。发布前应执行 `npm ci && npm run verify`。
+两个插件免费安装，无独立插件费用。云端功能需要 Clip2MD 账号或有效 API Key、网络连接。免费账号有额度和内容类型限制，完整云端权益需要付费：Plus / Pro 会员提供相应权益，也可购买永久额度。收藏导入创建云端任务、本地失败恢复提交按账号规则使用额度；博主订阅需要有效 Pro 并另扣永久额度。具体价格、权益及扣额规则见[方案与价格](https://clip2.md/pricing)，以当前账号和功能页为准。
 
-兼容性审计确认运行时未使用 Node.js 或 Electron API，因此 manifest 声明支持移动端；当前已在 macOS 的 Obsidian 1.13.7 窗口完成加载和设置页 UI 冒烟测试，移动端仍需在真实环境中补充验证。
+### 隐私、网络与文件访问
 
-## 网络与数据说明
+- 主插件通过 `https://api.clip2md.cn/api/v1` 绑定设备、验证凭据、获取任务与图片、同步回执、提交收藏链接、协调失败恢复及用户反馈。官网入口为 `https://clip2.md`；使用说明与公开资源来自 `https://static.clip2md.cn`。
+- 普通同步把云端内容写入知识库，更新时保护用户批注。普通本地素材补充访问用户选择的原站、登录页面、接口及媒体 CDN，将结果保存在本地。短链接可能重定向到原站。
+- 在 Web 端开启自动本地解析、且本机扩展已启用并授权、工具就绪时，云端失败恢复会上传来源标题、提取或转写的 Markdown、提取方式及任务版本，用于云端生成智能笔记。版本、执行实例、可用/忙碌状态用于任务分配和恢复。原始媒体文件、原站 Cookie 不上传；关闭 Web 自动本地解析或本机扩展可停止后续自动处理。
+- 收藏清单及导入进度保存在本地；用户点击导入后，主插件提交选中的作品链接。它不上传原站 Cookie 或原始页面响应。
+- 云端 API Key 和原站授权保存在本机 Obsidian SecretStorage，扩展不接收云端 API Key。普通配置保留在 `<configDir>/clip2md/settings/`，同步进度按设备隔离。历史版本遗留凭据应在各设备迁移后清理。
+- 本地工具从用户安装路径读取并运行，工具和固定 Whisper 模型可位于 Vault 外的系统 PATH 或本机 `Clip2MD/tools/v1/<平台-架构>/`。传给 yt-dlp 的临时 Cookie 文件位于 Vault 外的系统临时目录，权限为 0600，正常结束会删除。强制退出后可能残留，重新启用时清理可确认归属且进程已退出的缓存。
+- 素材位于知识库内配置的目录；缓存、转写检查点及插件配置目录可能被用户的同步工具同步。卸载插件不会清除保留的偏好或素材；设置中的显式清除操作仅清理对应配置。
+- 插件没有客户端遥测或广告。诊断日志默认保留 72 小时、每插件最多 10 MiB，不记录凭据或正文。反馈仅在用户提交时上传，可预览或取消诊断附件；没有后台日志上传。导出报告、失败附件缓存保存在知识库配置目录。
+- 服务端账号、任务内容和反馈数据处理见[隐私政策](https://clip2.md/privacy)。请勿在 Issue、日志或截图中公开 API Key、Cookie 或私人内容。
 
-插件会通过 HTTPS 访问以下 Clip2MD 官方服务：
+### 使用限制
 
-- `https://api.clip2md.cn/api/v1`：账号绑定、API Key 认证、获取同步任务和下载任务图片。
-- `https://clip2.md`：打开 Clip2MD 网页和 API 凭据管理页面。
+需要 Obsidian 1.13.1 或更高版本。本地能力主要面向 macOS 与 Windows x64；真实站点、账号权限和跨平台宿主需分别验收。完整媒体可能受原站权限、DRM 或播放方式限制，不能取得时明确失败。评论是原站可获取的样本，不承诺全量。市场版不安装或更新自身、另一个插件或外部依赖。
+### 安装与使用
 
-同步时，插件使用 API Key 作为 `X-API-Key` 请求头向 Clip2MD 服务认证，并读取属于当前账号的剪藏任务内容，然后在本地 Vault 中创建或更新 Markdown 文件及图片。API Key 保存在当前设备的 Obsidian SecretStorage 中；游标、任务路径和待发回执保存在本机存储。Vault 的 `data.json` 只保存可共享偏好及按账号隔离的归档配置；升级前遗留的凭证字段需在所有设备完成迁移后清理。配置备份排除凭证，不应把旧设置文件或任何运行时凭据提交到 GitHub。
+1. 在 Obsidian 社区插件中安装并启用 **Clip2MD**，进入设置，微信扫码绑定或输入 API Key。各设备分别绑定。
+2. 选择保存目录、文件名、正文及属性模板，点击“立即同步”，或按需开启启动同步和定时同步。
+3. 桌面端可从“本地剪藏扩展”点击安装 **Clip2MD Desktop Tools**，启用后使用统一设置；手机端不显示这些入口。
+4. 可配置博主订阅的同步范围、归档目录和日报。更新已同步笔记时保护批注；检测到用户修改时提示比较、保留或确认替换。
+5. “本地删除或改名后不再补回”默认关闭。云端“同步成功后删除”仅在所选内容和图片校验完成后执行；丢弃未同步内容或未保存图片需要明确确认。
 
-插件会读取带 Clip2MD 稳定身份的本地笔记以重建索引和关联链接，更新已有文件时保留用户批注；同步操作不上传这些本地笔记或批注，也不包含客户端遥测。使用前请确认你信任 Clip2MD 服务及其数据处理方式。
+手动安装时，从同一个 Release 下载 `main.js`、`manifest.json`、`styles.css`，放入 `<configDir>/plugins/clipmd/` 后启用。普通配置可以保留和恢复，配置备份排除 API Key。使用桌面扩展前手动准备 FFmpeg、yt-dlp、whisper-cli 和固定模型，详见[扩展说明](https://github.com/clip2md/clip2md-desktop-tools)。
 
-## 隐私与安全建议
+### 开发、验证与反馈
 
-- 不要把 API Key、`data.json` 或其他凭据提交到 Git 仓库。
-- 不要把 API Key 粘贴到 GitHub Issue、公开日志或截图中。
-- 如果 API Key 泄露，请立即在 Clip2MD 凭据管理页面撤销并重新生成。
+使用 Node.js 24（最低 20.19），运行 `npm ci && npm run verify`，包括类型检查、测试、Lint、构建和产物验证。产物为 `main.js`, `manifest.json`, `styles.css`。源码不提交构建文件、凭据或运行数据。Release tag 必须与 manifest 版本完全一致，并上传三个安装文件。版本发布与市场审核是独立步骤；构建通过不代表已经上架。
 
-## 发布说明
+许可证：[MIT](LICENSE)，依赖许可随源码依赖维护。通过[GitHub Issues](https://github.com/clip2md/clip2md-plugin/issues)反馈问题，或在插件内预览并提交诊断。
 
-本仓库用于构建和发布 Clip2MD Obsidian 社区插件。发布新版本时，请确保：
+## English
 
-1. `manifest.json` 中的 `version` 使用 `x.y.z` 格式。
-2. GitHub Release 的 Tag 与 `manifest.json` 中的版本号完全一致。
-3. Release 附件包含 `main.js`、`manifest.json` 和 `styles.css`。
-4. `README.md`、`LICENSE` 和 `manifest.json` 位于仓库根目录。
-5. 不提交 `data.json`、API Key 或其他运行时凭据。
-6. `releases/<version>.md` 存在且包含面向用户的变更说明；Tag 推送后由 GitHub Actions 写入 Release 描述。
-7. GitHub Actions 为每个发布文件生成 artifact attestation，可用 `gh attestation verify <file> -R clip2md/clip2md-plugin` 校验。
+### What is Clip2MD?
 
-社区市场会读取 `main` 分支的 `manifest.json`，再按其中的版本号下载同名 Release。准备下一版时，先在本地完成提交并只推送版本 Tag；等待 GitHub Actions 创建正式 Release，确认三个附件均可下载且附件 `manifest.json` 的版本匹配后，才推送 `main`。不要提前把新版本的 manifest 推到 `main`，否则市场安装会失败。
+[Clip2MD](https://clip2.md) turns web pages, WeChat shares, images and documents into searchable Markdown knowledge. Capture through the browser extension, the WeChat service account / WeCom assistant, or file uploads. The cloud extracts content and generates notes; the website and mini program manage tasks; the main Obsidian plugin syncs results to your vault. The desktop companion supplements notes with locally extracted text, metadata, images, media, subtitles and comments.
 
-1.0.20 恢复并重做博主订阅功能。插件设置内的“博主订阅”子页集中管理同步范围、目录、索引和日报；作品面板保留列表与笔记操作。修改后需点击“保存订阅配置”；目录变化仅影响新文件。凭证变化时隐藏旧账号数据，重新验证后才能编辑。最低 Obsidian 版本保持 1.13.1。原 Windows 故障设备、原生移动端及生产自动删除均需单独验收。
+| Entry | Purpose |
+| --- | --- |
+| [Website](https://clip2.md) | Product overview, web clipping and task management |
+| [WeChat service account / WeCom assistant](https://clip2.md/mobile#mobile-guide) | Follow the service account, add the assistant using its welcome instructions, and send supported shares to the assistant |
+| [Open the mini program](https://clip2.md/mobile#miniapp-launch) | Launch inside WeChat or scan the code to manage tasks, your account and settings |
+| [User community](https://clip2.md/mobile#community) | Discussion and feedback; send clipping content to the assistant instead |
 
-提交社区插件目录前，请阅读 [Obsidian 插件提交要求](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins) 和 [开发者政策](https://docs.obsidian.md/community-directory/developer-policies)。
+| Follow the service account | Join the community |
+| --- | --- |
+| ![Clip2MD service account QR code](https://static.clip2md.cn/wechat/service-account-follow.jpg) | ![Clip2MD community QR code](https://static.clip2md.cn/wecom/contact_group_qr.png) |
 
-## 反馈
+If an image is unavailable or expires, use the [official WeChat guide](https://clip2.md/mobile). The mini-program link opens the official launch page, not a plugin binding code; GitHub does not need to execute WeChat scripts.
 
-请在 [GitHub Issues](https://github.com/clip2md/clip2md-plugin/issues) 中反馈问题或提出建议。
+### Plugins and distribution channels
 
-## 许可证
+- [Clip2MD main plugin](https://github.com/clip2md/clip2md-plugin), ID `clipmd`: desktop and mobile cloud synchronization, account binding, templates, local images and creator subscription archives.
+- [Local clipping extension](https://github.com/clip2md/clip2md-desktop-tools), ID `clipmd-desktop-tools`: desktop only, requires the main plugin, and supplements notes with source text, metadata, media, subtitles, images and comments. Source permissions and local tools determine available capabilities.
+- Community-market users install and update the two plugins separately through Obsidian. Their local clipping settings share the same UI and state. Mobile uses only the main plugin and has no local clipping entries.
+- Website downloads integrate the desktop runtime into one main plugin with the same feature UI. Mobile retains cloud sync; website users do not also enable the separate companion.
 
-[MIT License](./LICENSE)
+### Account, payment and quotas
+
+Both plugins are free to install and have no separate plugin fee. Cloud features require a Clip2MD account or valid API Key and an internet connection. Free accounts have usage and content-type limits. Full cloud access requires paid entitlements: Plus/Pro plans provide additional benefits, and permanent credits can be purchased. Favorite imports that create cloud tasks and local-recovery submissions use account quotas. Creator subscriptions require active Pro and permanent credits. See [plans and pricing](https://clip2.md/pricing); current account entitlements and feature pages determine charges.
+
+### Privacy, networking and file access
+
+- The main plugin uses `https://api.clip2md.cn/api/v1` for device binding, authentication, tasks/images, sync acknowledgements, selected favorite links, recovery coordination and user-submitted feedback. Website links use `https://clip2.md`; public documentation and assets use `https://static.clip2md.cn`.
+- Normal synchronization writes cloud content to the vault and protects user annotations. Local supplementation accesses selected source sites, login pages, APIs and media CDNs and saves results locally. Short links may redirect to the source site.
+- When automatic local parsing is enabled on the website and the authorized desktop extension is enabled and ready, recovery uploads source titles, extracted/transcribed Markdown, extraction metadata and task versions for cloud note generation. Version, instance and readiness/busy status coordinate jobs. Original media files and source cookies are not uploaded. Disable website automatic local parsing or the local extension to stop further automatic processing.
+- Favorite lists and progress stay local. Importing sends selected work URLs through the main plugin, without source cookies or raw page responses.
+- API Keys and site authorization use device-local Obsidian SecretStorage. The companion never receives the cloud API Key. Preferences remain in `<configDir>/clip2md/settings/`; sync progress is device-specific. Remove legacy credentials after migrating every device.
+- The extension reads and executes user-installed tools outside the vault, from system PATH or the machine-local `Clip2MD/tools/v1/<platform-architecture>/` directory, which can also contain the fixed Whisper model. Temporary yt-dlp cookie files use a private system temporary directory outside the vault with 0600 permissions and are removed after normal completion. Forced termination can leave files; startup cleans only attributable caches whose owning process has exited.
+- Materials are saved inside the vault. Caches, transcription checkpoints and configuration files may be copied by your vault-sync service. Uninstalling retains preferences and materials; explicit settings-clear actions remove only the corresponding configuration.
+- No client-side telemetry or advertisements. Local diagnostics retain up to 72 hours / 10 MiB per plugin and exclude credentials and content. Feedback uploads only when submitted by the user, with preview and an option to omit diagnostic attachments. Reports and pending attachment caches remain in the vault configuration directory; logs are not uploaded in the background.
+- See the [privacy policy](https://clip2.md/privacy) for server-side handling of account, task and feedback data. Never post API Keys, cookies or private content in issues, logs or screenshots.
+
+### Requirements and limitations
+
+Requires Obsidian 1.13.1 or later. Local capabilities primarily target macOS and Windows x64; live sites, account permissions and platforms need separate acceptance testing. Source permissions, DRM or playback formats may prevent media downloads; failures are reported explicitly. Comments are available samples, not guaranteed complete datasets. Market builds never install or update themselves, another plugin or external dependencies.
+### Installation and usage
+
+1. Install and enable **Clip2MD** in Community plugins. Bind through WeChat QR authorization or an API Key; bind each device separately.
+2. Configure destination folders, filenames, body/property templates and run Sync now, or enable startup/scheduled sync.
+3. On desktop, local clipping settings link to **Clip2MD Desktop Tools** installation. Once enabled, both plugins share the same local settings. Mobile has no desktop entries.
+4. Configure creator subscription scope, archives and daily reports. Existing annotations are protected; conflicting user edits require comparison, retention or explicit replacement.
+5. Preventing deleted/renamed notes from reappearing is off by default. Cloud deletion after sync occurs only after selected content/images are verified; discarding unsynchronized content or unsaved images requires confirmation.
+
+For manual installation, place `main.js`, `manifest.json` and `styles.css` from one Release in `<configDir>/plugins/clipmd/`, then enable it. Preferences can be retained/restored; backups exclude API Keys. Desktop tools require user-installed FFmpeg, yt-dlp, whisper-cli and the fixed model; see the [companion documentation](https://github.com/clip2md/clip2md-desktop-tools).
+
+### Development, verification and support
+
+Use Node.js 24 (minimum 20.19) and run `npm ci && npm run verify` for type checking, tests, lint, build and artifact validation. Outputs: `main.js`, `manifest.json`, `styles.css`. Do not commit build outputs, credentials or runtime data. Release tags must exactly match the manifest version and contain all three installation files. Publishing a Release and community review are separate steps; a successful build does not mean the plugin is listed.
+
+License: [MIT](LICENSE), with dependency license notices supplied with the source dependencies. Report problems through [GitHub Issues](https://github.com/clip2md/clip2md-plugin/issues) or preview and submit diagnostics from plugin settings.

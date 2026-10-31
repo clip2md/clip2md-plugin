@@ -1,7 +1,11 @@
+import { projectLocalProperties } from './local-properties';
 import { savedCommentProperties } from './comment-source';
 import { TFile, type Vault } from 'obsidian';
+import { parseDocument } from 'yaml';
 
 export interface SavedSyncProof {
+    localPropertyKeys?: string[];
+    projection?: 'local-properties-v1';
     scope?: 'subscription-v1';
     commentSourceHash?: string;
     filepath: string;
@@ -13,6 +17,18 @@ export async function sha256(data: string | ArrayBuffer): Promise<string> {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     const hash = await crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+/** Obsidian rewrites YAML formatting while editing a property. Preserve semantic cloud fields and exact body bytes. */
+export function projectProofContent(content:string,localKeys:string[]=[]):string {
+    const clean=projectLocalProperties(content,localKeys);
+    if(!localKeys.length)return clean;
+    const match=/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(clean);
+    if(!match)return clean;
+    const doc=parseDocument(match[1]);
+    if(doc.errors.length)throw new Error('笔记属性 YAML 无效');
+    const stable=(value:unknown):unknown=>Array.isArray(value)?value.map(stable):value&&typeof value==='object'
+        ?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,item])=>[key,stable(item)])):value;
+    return `---\n${JSON.stringify(stable(doc.toJS()))}\n---\n${clean.slice(match[0].length)}`;
 }
 
 export function savedTaskContent(content: string, taskId: number, scope?: 'subscription-v1'): string {
@@ -50,7 +66,10 @@ export async function verifySavedSyncProof(vault: Vault, taskId: number, proof: 
     if (!(file instanceof TFile)) return false;
     const savedFile = await vault.read(file);
     if (proof.commentSourceHash && await sha256(savedCommentProperties(savedFile)) !== proof.commentSourceHash) return false;
-    const content = savedTaskContent(savedFile, taskId, proof.scope);
+    let content = savedTaskContent(savedFile, taskId, proof.scope);
+    if (proof.projection === 'local-properties-v1' && !proof.scope && !savedFile.includes('<!-- clip2md-task-start:')) {
+        try { content = projectProofContent(content,Array.isArray(proof.localPropertyKeys)&&proof.localPropertyKeys.every(key=>typeof key==='string')?proof.localPropertyKeys:[]); } catch { return false; }
+    }
     if (!content || await sha256(content) !== proof.contentHash) return false;
     for (const image of proof.images) {
         const imageFile = vault.getAbstractFileByPath(image.path);

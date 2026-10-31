@@ -6,3 +6,4 @@
 export const CLIP2MD_API_BASE_URL = 'https://api.clip2md.cn/api/v1';
 export const CLIP2MD_APP_URL = 'https://clip2.md';
 export const CLIP2MD_MEDIA_CDN_BASE_URL = 'https://media.clip2md.cn';
+export const CLIP2MD_USAGE_DOC_URL = 'https://static.clip2md.cn/docs/product-guide-for-ai-agents.md';

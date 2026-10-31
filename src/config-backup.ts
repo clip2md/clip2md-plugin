@@ -1,7 +1,7 @@
 const SHAREABLE_KEYS = [
     'subscriptionAccounts',
     'settingsSchemaVersion', 'syncInterval', 'syncOnStart', 'preventReimportAfterLocalRemoval',
-    'targetFolder', 'filenameTemplate', 'filenameDateFormat', 'template', 'frontmatterTemplate',
+    'targetFolder', 'commentFolder', 'sourcePropertiesTemplateInitialized', 'filenameTemplate', 'filenameDateFormat', 'template', 'frontmatterTemplate',
     'dailyMergeFrontmatterTemplate', 'titleMode', 'customTitleTemplate',
     'syncContentMode', 'imageMode', 'imageFolder', 'mergeMode',
 ];
