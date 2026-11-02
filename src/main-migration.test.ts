@@ -60,3 +60,16 @@ describe('legacy shared data migration', () => {
         expect(state.legacyKeyMigrated).toBe(false);
     });
 });
+
+describe('content order configuration', () => {
+    it('defaults missing and invalid order for new and existing settings and restores saved order', () => {
+        const plugin = Object.create(BijiSyncPlugin.prototype) as BijiSyncPlugin;
+        for (const syncContentOrder of [undefined, null, '', 'invalid']) {
+            expect(plugin['normalizeSettings']({ syncContentOrder }).syncContentOrder).toBe('note-first');
+        }
+        expect(plugin['normalizeSettings']({ syncContentOrder: 'source-first' }).syncContentOrder).toBe('source-first');
+        const existing = plugin['normalizeSettings']({ template: '{{source_content}}\n{{note_content}}', syncContentMode: 'source' });
+        expect(existing.template).toBe('{{source_content}}\n{{note_content}}');
+        expect(existing.syncContentMode).toBe('source');
+    });
+});

@@ -17,6 +17,7 @@ export const LOCAL_PLATFORM_LABELS = {
   xiaoyuzhou: "小宇宙",
   lizhi: "荔枝FM",
   applepodcasts: "苹果播客",
+  zsxq: "知识星球",
 } as const;
 export const LOCAL_FIELDS = [
   "source_title",

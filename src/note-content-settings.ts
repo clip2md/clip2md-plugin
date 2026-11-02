@@ -32,6 +32,7 @@ export class NoteContentSettings {
     private undo: HTMLButtonElement;
     private targetControl: HTMLSelectElement;
     private modeControl!: HTMLSelectElement;
+    private orderControl!: HTMLSelectElement;
     private editors = new Map<TemplateKey, HTMLTextAreaElement>();
     private propertySections = new Map<TemplateKey, HTMLElement>();
     private renderer: Component | null = null;
@@ -52,6 +53,16 @@ export class NoteContentSettings {
                         this.changed();
                     });
                 this.modeControl = dropdown.selectEl;
+            });
+        new Setting(this.root).setName('展示顺序').setDesc('完整内容的展示顺序；影响后续新笔记，已有笔记不重排。')
+            .addDropdown(dropdown => {
+                dropdown.addOption('note-first', '智能笔记 → 原文').addOption('source-first', '原文 → 智能笔记')
+                    .setValue(this.plugin.settings.syncContentOrder || 'note-first').onChange(value => {
+                        if (!this.plugin.settings.template.includes('{{content}}') || this.plugin.settings.syncContentMode !== 'full') return;
+                        this.plugin.settings.syncContentOrder = value === 'source-first' ? 'source-first' : 'note-first';
+                        this.changed();
+                    });
+                this.orderControl = dropdown.selectEl;
             });
         this.status = this.el(this.root, 'p', '', 'setting-item-description');
         this.status.setAttribute('aria-live', 'polite');
@@ -199,7 +210,9 @@ export class NoteContentSettings {
         const custom = !this.plugin.settings.template.includes('{{content}}');
         this.modeControl.disabled = custom;
         this.modeControl.value = this.plugin.settings.syncContentMode;
-        this.status.textContent = custom ? '自定义正文：正文由下方模板决定。恢复标准正文后可选择同步内容。'
+        this.orderControl.disabled = custom || this.plugin.settings.syncContentMode !== 'full';
+        this.orderControl.value = this.plugin.settings.syncContentOrder || 'note-first';
+        this.status.textContent = custom ? '自定义正文：正文由下方模板决定。恢复标准正文后可选择同步内容和展示顺序。'
             : '所选内容填入正文中的 {{content}}，笔记属性独立保留。';
         this.restore.hidden = !custom;
         this.undo.hidden = this.state.undoBody === undefined;

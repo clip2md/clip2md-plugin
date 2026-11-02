@@ -57,10 +57,26 @@ esbuild
     logLevel: "info",
     sourcemap: prod ? false : "inline",
     treeShaking: true,
+    metafile: true,
     outfile: path.join(outputDir, "main.js"),
     minify: prod,
   })
-  .then(() => {
+  .then((result) => {
+    if (channel === 'website') {
+      const roots = new Set();
+      for (const input of Object.keys(result.metafile.inputs)) {
+        const absolute = path.resolve(input);
+        const match = [...absolute.matchAll(/[/\\]node_modules[/\\]((?:@[^/\\]+[/\\])?[^/\\]+)/g)].at(-1);
+        if (match) roots.add(absolute.slice(0, match.index + match[0].length));
+      }
+      const notices = [];
+      for (const root of [...roots].sort()) {
+        const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+        for (const file of fs.readdirSync(root).filter(name => /^(license|copying|notice)([.-].*)?$/i.test(name)))
+          notices.push(`${metadata.name} ${metadata.version}\n${fs.readFileSync(path.join(root, file), 'utf8')}`);
+      }
+      fs.appendFileSync(path.join(outputDir, 'main.js'), '\n/* Third-party notices\n' + notices.join('\n\n').replace(/\*\//g, '* /') + '\n*/\n');
+    }
     copyIfExists("manifest.json");
     copyIfExists("styles.css");
   })

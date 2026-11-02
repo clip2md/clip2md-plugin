@@ -3136,6 +3136,7 @@ export default class BijiSyncPlugin extends Plugin {
       syncContentMode: isSyncContentMode(settings.syncContentMode)
         ? settings.syncContentMode
         : "full",
+      syncContentOrder: settings.syncContentOrder === "source-first" ? "source-first" : "note-first",
       imageMode: isImageMode(settings.imageMode) ? settings.imageMode : "local",
       imageFolder:
         typeof settings.imageFolder === "string" ? settings.imageFolder : "",

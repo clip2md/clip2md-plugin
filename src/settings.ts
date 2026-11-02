@@ -11,6 +11,7 @@ import { SubscriptionSettingsPage } from './subscription-settings-page';
 import { CLIP2MD_USAGE_DOC_URL } from './config';
 
 export type SyncContentMode = 'full' | 'note' | 'source';
+export type SyncContentOrder = 'note-first' | 'source-first';
 export type SyncTrigger = 'manual' | 'scheduled' | 'startup' | 'onboarding';
 export type SyncRuntimeState = 'idle' | 'syncing' | 'success' | 'partial' | 'error';
 export type ImageMode = 'local' | 'disabled';
@@ -54,6 +55,7 @@ export interface BijiSyncSettings {
     frontmatterTemplate: string;
     dailyMergeFrontmatterTemplate: string;
     syncContentMode: SyncContentMode;
+    syncContentOrder?: SyncContentOrder;
     imageMode: ImageMode;
     imageFolder: string;
     mergeMode: MergeMode;

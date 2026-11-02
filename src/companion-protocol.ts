@@ -5,7 +5,7 @@ export const LOCAL_PLATFORM_LABELS = {
   csdn: "CSDN", zhihu: "知乎", douban: "豆瓣", weibo: "新浪微博",
   youtube: "YouTube", twitter: "推特 / X", kuaishou: "快手", toutiao: "今日头条",
   bilibili: "B站", douyin: "抖音", xiaohongshu: "小红书",
-  wechat: "微信公众号", "wechat-channel": "微信视频号", web: "通用网页", xiaoyuzhou: "小宇宙", lizhi: "荔枝FM", applepodcasts: "苹果播客",
+  wechat: "微信公众号", "wechat-channel": "微信视频号", web: "通用网页", xiaoyuzhou: "小宇宙", lizhi: "荔枝FM", applepodcasts: "苹果播客", zsxq: "知识星球", taobao: "淘宝/天猫",
 } as const;
 export const BRIDGE_EVENTS = {
   hello: "clip2md:companion-hello",

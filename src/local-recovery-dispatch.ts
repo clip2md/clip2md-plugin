@@ -52,12 +52,12 @@ export class LocalRecoveryDispatch {
         return runtime.getRecoveryReadiness();
     }
     private valid(key:string,epoch:number):boolean { return !this.stopped&&this.epoch===epoch&&this.plugin.isLocalRetryCurrent(key); }
-    private async request(route:string,key:string,epoch:number,body?:unknown,extra:Record<string,string>={}):Promise<Record<string,unknown>> {
+    private async request(route:string,key:string,epoch:number,body?:unknown,extra:Record<string,string>={},binary?:ArrayBuffer):Promise<Record<string,unknown>> {
         for(let attempt=0;attempt<3;attempt++) {
             if(!this.valid(key,epoch))throw new DispatchError(409,'binding_changed');
             if(route.startsWith('/tasks/') && (!this.active || !this.plugin.companion?.snapshot()?.enabled || this.plugin.isUpdatePaused()))throw new DispatchError(409,'lease_expired');
             try {
-                const response=await requestUrl({url:CLIP2MD_API_BASE_URL+route,method:body===undefined?'GET':'POST',headers:{'X-API-Key':key,'Content-Type':'application/json',...extra},body:body===undefined?undefined:JSON.stringify(body),throw:false});
+                const response=await requestUrl({url:CLIP2MD_API_BASE_URL+route,method:body===undefined&&binary===undefined?'GET':'POST',headers:{'X-API-Key':key,'Content-Type':binary===undefined?'application/json':'application/octet-stream',...extra},body:binary??(body===undefined?undefined:JSON.stringify(body)),throw:false});
                 if(!this.valid(key,epoch))throw new DispatchError(409,'binding_changed');
                 if(response.status>=200&&response.status<300)return response.json as Record<string,unknown>;
                 const detail=(response.json as {detail?:{code?:string}})?.detail;
@@ -96,6 +96,7 @@ export class LocalRecoveryDispatch {
         const runtime=this.plugin.companion?.snapshot();
         const valid=()=>this.valid(key,epoch)&&this.active===job&&this.plugin.companion?.snapshot()?.enabled===true&&!this.plugin.isUpdatePaused();
         const check=()=>{if(!valid())throw new DispatchError(409,'lease_expired');};
+        let stage='draft';
         try {
             const scope=await this.plugin.companion?.bindingScope();check();
             if(!scope||!runtime?.prepareLocalRetry)throw new DispatchError(409,'desktop_unready');
@@ -109,11 +110,13 @@ export class LocalRecoveryDispatch {
             }
             let draft:Draft|undefined;
             if(await this.plugin.app.vault.adapter.exists(file))draft=JSON.parse(await this.plugin.app.vault.adapter.read(file)) as Draft;
-            if(draft?.revision!==job.revision)draft=undefined;
+            if(draft?.revision!==job.revision || !draft.result?.markdown?.trim())draft=undefined;
             if(!draft) {
                 draft={taskId:job.task_id,revision:job.revision,key:`dispatch:${job.id}:${job.revision}`,result:{sourceTitle:'',markdown:'',provenance:'',capturedAt:''}};
                 await this.save(file,draft);
+                stage='folder';
                 const targetFolder=await this.plugin.getRecoveryTargetFolder(job.task_id);check();
+                stage='collect';
                 const result=await runtime.prepareLocalRetry({bindingScope:scope,taskId:job.task_id,sourceUrl:job.source_url,revision:job.revision,targetFolder});check();
                 draft.result=result;
                 await this.save(file,draft);
@@ -123,13 +126,19 @@ export class LocalRecoveryDispatch {
             const state=await this.readiness();check();
             if(!state.ready)throw new DispatchError(409,'desktop_unready');
             if(!draft.inputId) {
+                stage='upload';
                 const uploaded=await this.request(`/tasks/${job.task_id}/local-retries`,key,epoch,{revision:job.revision,source_title:draft.result.sourceTitle,markdown:draft.result.markdown,provenance:draft.result.provenance,recovery_job_id:job.id,lease_token:job.lease_token},{'Idempotency-Key':draft.key});
                 check();draft.inputId=String(uploaded.id);await this.save(file,draft);
+            }
+            if (!draft.submitted) {
+                stage='images';
+                await this.uploadImages(job,draft,key,epoch,check);
             }
             // Existing submission monitor can recover even when commit's response is lost.
             const monitor=`${folder}/${job.task_id}.json`;
             if(await this.plugin.app.vault.adapter.exists(monitor+'.status.json'))await this.plugin.app.vault.adapter.remove(monitor+'.status.json');
             await this.save(monitor,draft);check();
+            stage='commit';
             await this.request(`/tasks/${job.task_id}/local-retries/${draft.inputId}/commit`,key,epoch,{}, {'X-Local-Job-Token':job.lease_token});
             check();draft.submitted=true;await this.save(file,draft);await this.save(monitor,draft);
             this.plugin.logger?.log('local_dispatch.submitted',{taskId:job.task_id});
@@ -142,12 +151,29 @@ export class LocalRecoveryDispatch {
                 if(scope)await this.plugin.app.vault.adapter.write(`${this.plugin.app.vault.configDir}/clip2md/recovery/${scope}/dispatch-${job.id}.json.stopped`,JSON.stringify({run:job.run_no||0,reason}));
             } catch { /* The cloud report remains authoritative when local disk is unavailable. */ }
             try {await this.request(ROOT+`/jobs/${job.id}/state`,key,epoch,{instance_id:job.instance_id,lease_token:job.lease_token,status:reason==='authorization_required'?'WAITING_AUTH':'FAILED',reason});} catch { /* Server fencing or persisted input handles uncertain commit results. */ }
-            this.plugin.logger?.log('local_dispatch.stopped',{taskId:job.task_id,code:reason},'warn');
+            this.plugin.logger?.log('local_dispatch.stopped',{taskId:job.task_id,code:reason,stage},'warn');
             new Notice(`任务 #${job.task_id} 本地解析已暂停。${reason==='authorization_required'?'请在桌面扩展设置中完成原站授权后手动继续。':'请查看云端任务进度或在失败任务中重试；已获取的原文保留。'}`,10000);
         }
     }
     private async save(file:string,draft:Draft):Promise<void> {
         await this.plugin.app.vault.adapter.write(file+'.tmp',JSON.stringify(draft));
         await replaceStaged(this.plugin.app.vault.adapter,file+'.tmp',file);
+    }
+    private async uploadImages(job:Job,draft:Draft,key:string,epoch:number,check:()=>void):Promise<void> {
+        const references=[...new Set([...draft.result.markdown.matchAll(/!\[[^\]]*\]\(([^) \t]+)[^)]*\)/g)].map(match=>match[1].replace(/^<|>$/g,'')))];
+        const local=references.filter(ref=>!ref.startsWith('https://')&&!ref.startsWith('http://')&&!ref.startsWith('/api/v1/assets/'));
+        if(local.length>100)throw new Error('本地原文图片超过数量限制');
+        for(const reference of local) {
+            check();
+            let path:string;
+            try {path=decodeURIComponent(reference).replace(/^\//,'');}catch{throw new Error('本地图片路径无效');}
+            const parts=path.split('/'),index=parts.indexOf('_local');
+            if(index<0 || parts[index+1]!==String(job.task_id) || index+2>=parts.length || /[\\?#:]/.test(path) || path.includes('\0') || parts.some(part=>!part||part.startsWith('.')))
+                throw new Error('图片必须来自该任务的本地素材目录');
+            const bytes=new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));check();
+            if(!bytes.length || bytes.length>10*1024*1024)throw new Error('本地原文图片为空或超过 10 MiB');
+            await this.request(`/tasks/${job.task_id}/local-retries/${draft.inputId}/images`,key,epoch,
+                undefined,{'X-Local-Job-Token':job.lease_token,'X-Local-Image-Reference':encodeURIComponent(reference)},bytes.buffer);check();
+        }
     }
 }

@@ -166,6 +166,54 @@ describe('SyncService', () => {
     const scopedTask = (mode: 'full' | 'note' | 'source', overrides: Partial<SyncTask> = {}): SyncTask => makeTask({
         ack_token: 'v2-token', ack_scope: { version: 2, content_mode: mode, required_assets: [] }, ...overrides,
     });
+    it.each(['note-first', 'source-first'] as const)('renders %s consistently in cloud, desktop and daily blocks', async order => {
+        for (const desktop of [false, true]) {
+            buildChannel.website = desktop;
+            const settings = makeSettings({ syncContentOrder: order, imageMode: 'disabled', mergeMode: 'daily' });
+            const service = new SyncService(settings);
+            const task = makeTask({ note_markdown_content: 'unique-ai-body', source_markdown_content: 'unique-source-body',
+                ...(desktop ? { ai_title: 'Test Title', desktop_input: { id: 'd'.repeat(64), sha256: 'a'.repeat(64), source_version: 1, update_policy: 'ai-only' as const } } : {}) });
+            const preview = service.previewTask(task);
+            const first = order === 'note-first' ? 'unique-ai-body' : 'unique-source-body';
+            const second = order === 'note-first' ? 'unique-source-body' : 'unique-ai-body';
+            expect(preview.indexOf(first)).toBeLessThan(preview.indexOf(second));
+            expect(preview).toContain(order === 'note-first' ? '# 原文' : '# 智能笔记');
+            const vault = new FakeVault();
+            const saved = await service.renderToVault(vault as never, task, 'Clippings', '{{content}}');
+            expect(saved.filepath).not.toBeNull();
+            const body = String(vault.content(saved.filepath!));
+            expect(body.indexOf(first)).toBeLessThan(body.indexOf(second));
+            if (desktop) {
+                expect(body).toMatch(/clip2md-ai:v1:101:0:[a-f0-9]{64}/);
+                expect(body).toMatch(/clip2md-source:v1:101:0:[a-f0-9]{64}/);
+            }
+            const original = body;
+            service.updateSettings({ ...settings, syncContentOrder: order === 'note-first' ? 'source-first' : 'note-first' });
+            // A new daily block follows the new order, without reordering the old one.
+            const next = await service.renderToVault(vault as never, makeTask({ id: 102, note_markdown_content: 'second-ai', source_markdown_content: 'second-source' }), 'Clippings', '{{content}}');
+            const updated = String(vault.content(next.filepath!));
+            if (desktop) expect(vault.content(saved.filepath!)).toBe(original);
+            else {
+                const priorBlock = original.match(/<!-- clip2md-task-start:101 -->[\s\S]*?<!-- clip2md-task-end:101 -->/);
+                expect(priorBlock).not.toBeNull();
+                expect(updated).toContain(priorBlock![0]);
+            }
+            expect(updated.indexOf(order === 'note-first' ? 'second-source' : 'second-ai')).toBeLessThan(updated.indexOf(order === 'note-first' ? 'second-ai' : 'second-source'));
+        }
+    });
+    it('preserves explicit templates and omits empty sections regardless of order', () => {
+        const service = new SyncService(makeSettings({ syncContentOrder: 'source-first' }));
+        expect(service.previewTask(makeTask())).toContain('# Source');
+        const render = (task: SyncTask, template = '{{content}}') => service['renderBodyTemplate'](template, task);
+        expect(render(makeTask({ note_markdown_content: 'ai', source_markdown_content: 'source' }), '{{note_content}}|{{source_content}}')).toBe('ai|source');
+        expect(render(makeTask({ note_markdown_content: ' ', source_markdown_content: 'source' }))).toBe('source');
+        expect(render(makeTask({ note_markdown_content: 'ai', source_markdown_content: null }))).toBe('ai');
+        expect(render(makeTask({ note_markdown_content: null, source_markdown_content: null }))).toBe('');
+        service.updateSettings(makeSettings({ syncContentOrder: 'source-first', syncContentMode: 'note' }));
+        expect(render(makeTask({ note_markdown_content: 'ai', source_markdown_content: 'source' }))).toBe('ai');
+        service.updateSettings(makeSettings({ syncContentOrder: 'source-first', syncContentMode: 'source' }));
+        expect(render(makeTask({ note_markdown_content: 'ai', source_markdown_content: 'source' }))).toBe('source');
+    });
     it('protects cloud text in receipts while allowing editable template source properties',async()=>{
         const settings=makeSettings({frontmatterTemplate:'---\ntitle: "{{title}}"\n作者: {{local_author}}\n点赞数: {{local_likes}}\n---'});
         const service=new SyncService(settings),vault=new FakeVault(),task=scopedTask('full',{local_values:{local_author:'原作者',local_likes:0}});

@@ -1513,10 +1513,15 @@ export class SyncService {
             return sourceContent;
         }
 
-        if (noteContent && sourceContent) {
-            return `${noteContent}\n\n# 原文\n\n${sourceContent}`;
-        }
-        return noteContent || sourceContent;
+        return this.combineContent(noteContent, sourceContent);
+    }
+
+    private combineContent(note: string, source: string): string {
+        if (!note.trim()) return source.trim() ? source : '';
+        if (!source.trim()) return note;
+        return this.settings.syncContentOrder === 'source-first'
+            ? `${source}\n\n# 智能笔记\n\n${note}`
+            : `${note}\n\n# 原文\n\n${source}`;
     }
 
     private generateFrontmatter(task: SyncTask, title: string): string {
@@ -1634,9 +1639,9 @@ export class SyncService {
             return template.replace(/\{\{[a-z_]+\}\}/g,token=>{
                 const occurrence=index++;
                 if(token==='{{content}}') {
-                    const ai=this.settings.syncContentMode==='source'?'':slot('ai',task.id,occurrence,noteContent);
-                    const source=this.settings.syncContentMode==='note'?'':slot('source',task.id,occurrence,sourceContent);
-                    return [ai,source].filter(Boolean).join('\n\n');
+                    const ai=this.settings.syncContentMode==='source'||!noteContent.trim()?'':slot('ai',task.id,occurrence,noteContent);
+                    const source=this.settings.syncContentMode==='note'||!sourceContent.trim()?'':slot('source',task.id,occurrence,sourceContent);
+                    return this.combineContent(ai, source);
                 }
                 if(token==='{{note_content}}')return slot('ai',task.id,occurrence,noteContent);
                 if(token==='{{source_content}}')return slot('source',task.id,occurrence,sourceContent);

@@ -3,7 +3,7 @@ const SHAREABLE_KEYS = [
     'settingsSchemaVersion', 'syncInterval', 'syncOnStart', 'preventReimportAfterLocalRemoval',
     'targetFolder', 'commentFolder', 'sourcePropertiesTemplateInitialized', 'filenameTemplate', 'filenameDateFormat', 'template', 'frontmatterTemplate',
     'dailyMergeFrontmatterTemplate', 'titleMode', 'customTitleTemplate',
-    'syncContentMode', 'imageMode', 'imageFolder', 'mergeMode',
+    'syncContentMode', 'syncContentOrder', 'imageMode', 'imageFolder', 'mergeMode',
 ];
 
 export function sanitizeConfigForBackup(data: unknown): Record<string, unknown> {

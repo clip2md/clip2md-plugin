@@ -286,7 +286,7 @@ describe('unified note content settings', () => {
     });
     it('previews two daily tasks and switches editing context without changing merge mode', () => {
         const p = setup();
-        const [, merge, target] = p.container.querySelectorAll('select');
+        const [, , merge, target] = p.container.querySelectorAll('select');
         merge.value = 'daily'; merge.dispatchEvent(new Event('change')); p.flushPreviews();
         expect(target.value).toBe('daily');
         expect(p.container.querySelector('pre')!.textContent).toContain('task_count: 2');
@@ -303,7 +303,7 @@ describe('unified note content settings', () => {
             pending.push(() => { target.textContent = text; resolve(); });
         }));
         const p = setup();
-        const format = p.container.querySelectorAll('select')[3];
+        const format = p.container.querySelectorAll('select')[4];
         format.value = 'note'; format.dispatchEvent(new Event('change'));
         input(p.body, '# newest\n{{content}}'); p.flushPreviews();
         pending[0](); await Promise.resolve();
@@ -411,4 +411,30 @@ describe('unified note content settings', () => {
         expect(container.textContent).toContain('示例文件：示例原文-Clip2MD 使用示例.md');
     });
 
+});
+
+describe('content display order', () => {
+    it('saves the order, updates the preview, and retains it in single-section mode', async () => {
+        const p = setup();
+        const [mode, order] = p.container.querySelectorAll('select');
+        expect(order.value).toBe('note-first');
+        order.value = 'source-first'; order.dispatchEvent(new Event('change')); p.flushPreviews();
+        expect(p.plugin.settings.syncContentOrder).toBe('source-first');
+        expect(p.plugin.saveSettings).toHaveBeenCalled();
+        const preview = p.container.querySelector('pre')!.textContent!;
+        expect(preview.indexOf('这是原文内容示例')).toBeLessThan(preview.indexOf('这是智能笔记示例'));
+        mode.value = 'note'; mode.dispatchEvent(new Event('change')); p.flushPreviews();
+        expect(order.disabled).toBe(true);
+        expect(order.value).toBe('source-first');
+        mode.value = 'full'; mode.dispatchEvent(new Event('change')); p.flushPreviews();
+        expect(order.disabled).toBe(false);
+        expect(order.value).toBe('source-first');
+        p.view.dispose();
+    });
+    it('disables order when the template explicitly controls its sections', () => {
+        const p = setup('{{source_content}}\n{{note_content}}');
+        expect(p.container.querySelectorAll('select')[1].disabled).toBe(true);
+        expect(p.container.textContent).toContain('自定义正文');
+        p.view.dispose();
+    });
 });
