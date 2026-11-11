@@ -54,6 +54,7 @@ export class CompanionHost {
       },
     });
     this.api = {
+      flushLogs: async () => { await plugin.logger?.flush(); },
       enableSourceProperties: () => plugin.enableSourcePropertiesTemplate(),
       version: BRIDGE_VERSION,
       integratedDesktop: BUILD_CHANNEL === 'website',
@@ -118,6 +119,7 @@ export class CompanionHost {
         if(this.companion?.enabled&&!p.settings.sourcePropertiesTemplateInitialized)
           void p.enableSourcePropertiesTemplate?.().catch(()=>p.logger?.log('source_properties.template_failed',{},'warn'));
         p.notifyDesktopVariableAvailability?.();
+        p.clientInfoChanged();
       }),
     );
     p.addCommand({

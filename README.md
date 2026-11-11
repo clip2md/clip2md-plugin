@@ -51,7 +51,8 @@ Clip2MD 云端：提取内容、生成智能笔记、管理任务
 - 云端 API Key 和原站授权保存在本机 Obsidian SecretStorage，扩展不接收云端 API Key。普通配置保留在 `<configDir>/clip2md/settings/`，同步进度按设备隔离。历史版本遗留凭据应在各设备迁移后清理。
 - 本地工具从用户安装路径读取并运行，工具和固定 Whisper 模型可位于 Vault 外的系统 PATH 或本机 `Clip2MD/tools/v1/<平台-架构>/`。传给 yt-dlp 的临时 Cookie 文件位于 Vault 外的系统临时目录，权限为 0600，正常结束会删除。强制退出后可能残留，重新启用时清理可确认归属且进程已退出的缓存。
 - 素材位于知识库内配置的目录；缓存、转写检查点及插件配置目录可能被用户的同步工具同步。卸载插件不会清除保留的偏好或素材；设置中的显式清除操作仅清理对应配置。
-- 插件没有客户端遥测或广告。诊断日志默认保留 72 小时、每插件最多 10 MiB，不记录凭据或正文。反馈仅在用户提交时上传，可预览或取消诊断附件；没有后台日志上传。导出报告、失败附件缓存保存在知识库配置目录。
+- 绑定后，主插件在启动、配置变化及每日活跃时自动更新插件与 Obsidian 版本、系统、架构、语言、功能开关及工具状态，以随机安装标识区分实例。不采集设备名、Vault 名称、路径或模板正文，未绑定时不上报这些基础信息。没有广告。
+- 脱敏日志保留 7 天，每插件当前日志文件最多 10 MiB，不记录凭据或正文。仅主动反馈时可附最近 72 小时日志、环境及已有原站授权状态，可预览或取消附件，没有后台日志上传。报告最多 20 MiB，可能按时间或大小裁剪。导出报告和待补传缓存位于知识库配置目录，可能被 Vault 同步工具同步。
 - 服务端账号、任务内容和反馈数据处理见[隐私政策](https://clip2.md/privacy)。请勿在 Issue、日志或截图中公开 API Key、Cookie 或私人内容。
 
 ### 使用限制
@@ -114,7 +115,8 @@ Both plugins are free to install and have no separate plugin fee. Cloud features
 - API Keys and site authorization use device-local Obsidian SecretStorage. The companion never receives the cloud API Key. Preferences remain in `<configDir>/clip2md/settings/`; sync progress is device-specific. Remove legacy credentials after migrating every device.
 - The extension reads and executes user-installed tools outside the vault, from system PATH or the machine-local `Clip2MD/tools/v1/<platform-architecture>/` directory, which can also contain the fixed Whisper model. Temporary yt-dlp cookie files use a private system temporary directory outside the vault with 0600 permissions and are removed after normal completion. Forced termination can leave files; startup cleans only attributable caches whose owning process has exited.
 - Materials are saved inside the vault. Caches, transcription checkpoints and configuration files may be copied by your vault-sync service. Uninstalling retains preferences and materials; explicit settings-clear actions remove only the corresponding configuration.
-- No client-side telemetry or advertisements. Local diagnostics retain up to 72 hours / 10 MiB per plugin and exclude credentials and content. Feedback uploads only when submitted by the user, with preview and an option to omit diagnostic attachments. Reports and pending attachment caches remain in the vault configuration directory; logs are not uploaded in the background.
+- After binding, the main plugin automatically reports plugin/Obsidian versions, OS, architecture, language, feature switches and tool status at startup, on changes and daily while active. A local random installation ID distinguishes instances; device/vault names, paths and template content are excluded. No basic reports are sent while unbound. There are no advertisements.
+- Redacted diagnostics retain up to 7 days / 10 MiB per current plugin log and exclude credentials/content. Feedback may include the latest 72 hours, environment and locally known authorization states only when submitted, with preview and an option to omit attachments. Reports are capped at 20 MiB and may be trimmed. Reports and pending attachments remain in the vault configuration directory and may be copied by vault-sync services; logs are never uploaded in the background.
 - See the [privacy policy](https://clip2.md/privacy) for server-side handling of account, task and feedback data. Never post API Keys, cookies or private content in issues, logs or screenshots.
 
 ### Requirements and limitations

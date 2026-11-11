@@ -60,6 +60,7 @@ esbuild
     metafile: true,
     outfile: path.join(outputDir, "main.js"),
     minify: prod,
+    keepNames: true,
   })
   .then((result) => {
     if (channel === 'website') {

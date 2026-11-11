@@ -43,6 +43,7 @@ function fixture(Host = CompanionHost, notePath = "Notes/a.md") {
   let pending: unknown[] = [];
   let writing = Promise.resolve();
   const plugin = {
+    clientInfoChanged: vi.fn(),
     settings: { apiKey: "test-key", installationId: "device-1" },
     app: {
       workspace: bus,
@@ -149,6 +150,7 @@ describe("independent plugin bridge", () => {
       "bindingScope",
       "capabilities",
       "enableSourceProperties",
+      "flushLogs",
       "integratedDesktop",
       "listTasks",
       "openFeedback",

@@ -55,6 +55,8 @@ import {
 import { CLIP2MD_API_BASE_URL } from "./config";
 import { sanitizeConfigForBackup } from "./config-backup";
 import { TimerRegistry } from "./timers";
+import { ClientInfoReporter, collectClientInfo } from "./client-info";
+import { diagnosticId } from "./sha256-portable";
 import {
   buildSyncAck,
   getSyncAckBlockedReason,
@@ -215,6 +217,10 @@ const CLIP2MD_ICON_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 3 18 15v6L6 9V3Z" /></svg>';
 
 export default class BijiSyncPlugin extends Plugin {
+  private clientInfoReporter?: ClientInfoReporter;
+  private syncOperation?: string;
+  clientInfoAllowed(): boolean { return !this.unloading && !this.configurationCleared && this.appVisible && !!this.settings?.apiKey && this.connectionState !== "invalid" && this.localState?.credentialInvalid !== true; }
+  clientInfoChanged(delay = 5000): void { this.clientInfoReporter?.changed(delay); }
   companion?: CompanionHost;
   private recoveryDispatch?: LocalRecoveryDispatch;
   private cloudAccount?: CloudAccountDisplay;
@@ -333,6 +339,7 @@ export default class BijiSyncPlugin extends Plugin {
 
   async onload() {
     this.logger = new LocalLogger(this.app, "clipmd", this.manifest.version);
+    this.register(this.logger.captureUnhandled());
     this.logger.log("plugin.start");
     let rawSaved: unknown;
     let rawError: unknown;
@@ -357,7 +364,7 @@ export default class BijiSyncPlugin extends Plugin {
         () => this.restoreConfigFromBackup(),
       )
       .catch((error: unknown) => {
-        this.logger?.log("config.recovery.failed", {}, "error");
+        this.logger?.log("config.recovery.failed", {}, "error", undefined, error);
         new Notice(
           "保留配置无法恢复，已停止启动并保留原文件，请导出备份后检查",
           15000,
@@ -461,6 +468,7 @@ export default class BijiSyncPlugin extends Plugin {
     this.restoreMissingMappedTasksOnNextSync =
       this.localState.restoreMissingMappedTasksOnNextSync;
     this.syncService = new SyncService(this.settings, this.app.fileManager);
+    this.syncService.logger = this.logger;
     this.syncService.setCursor(this.localState.cursor);
     this.syncService.loadTaskFileMap(this.localState.taskFileMap);
     this.syncService.loadIgnoredTaskIds(this.localState.ignoredTaskIds);
@@ -523,6 +531,10 @@ export default class BijiSyncPlugin extends Plugin {
       apiBase: CLIP2MD_API_BASE_URL,
       website: CLIP2MD_APP_URL,
       key: () => this.settings.apiKey,
+      installationId: () => this.settings.installationId,
+      snapshot: () => collectClientInfo(this),
+      companion: () => this.companion?.snapshot() ?? null,
+      summary: () => ({ processed: this.settings.lastSyncSummary?.processed ?? 0, failed: this.settings.lastSyncSummary?.failed ?? 0, pending: this.settings.lastSyncSummary?.pending ?? 0 }),
       enabled: () => ({
         clipmd: true,
         "clipmd-desktop-tools": this.companion?.enabled() ?? false,
@@ -627,6 +639,7 @@ export default class BijiSyncPlugin extends Plugin {
     } catch (error) {
       this.subscriptionError = "订阅面板初始化失败；基础同步仍可使用";
       console.error(`Clip2MD: ${this.subscriptionError}`, error);
+      this.logger?.log("subscription.initialize_failed", {}, "error", undefined, error);
     }
 
     if (Platform.isDesktopApp) this.addCommand({id:"local-retry-failed",name:"查看本地自动处理记录",callback:()=>{void this.openLocalRetries();}});
@@ -653,9 +666,12 @@ export default class BijiSyncPlugin extends Plugin {
     this.notifyDesktopVariableAvailability();
     if(Platform.isDesktopApp){this.registerInterval(window.setInterval(()=>{void this.pollLocalRetries();},15000));void this.pollLocalRetries();}
     this.scheduleStartupSync();
+    this.clientInfoReporter = new ClientInfoReporter(this);
+    this.clientInfoChanged(0);
   }
 
   onunload() {
+    this.clientInfoReporter?.stop();
     this.recoveryDispatch?.stop();
     this.unloading=true;
     this.cloudAccount?.dispose();
@@ -744,6 +760,7 @@ export default class BijiSyncPlugin extends Plugin {
       }
     }
     await this.persistPluginState(true);
+    this.clientInfoChanged();
     this.startSyncInterval();
     this.startAckRetryInterval();
     // 不在这里刷新设置页面，避免每次保存都重建 UI
@@ -1112,6 +1129,7 @@ export default class BijiSyncPlugin extends Plugin {
       this.refreshSettingTab();
     } catch (error) {
       if (!this.isCurrentBinding(pending, epoch)) return;
+      this.logger?.log("binding.failed", {}, "warn", undefined, error);
       if (
         error instanceof DeviceBindingError &&
         [
@@ -1193,6 +1211,7 @@ export default class BijiSyncPlugin extends Plugin {
     };
     saveLocalDeviceState(this.app, nextState);
     this.localState = nextState;
+    this.clientInfoChanged();
     if (includeShared && !this.configurationCleared) {
       const shared: StoredPluginData = { ...this.settings };
       for (const key of [
@@ -1486,6 +1505,7 @@ export default class BijiSyncPlugin extends Plugin {
         listener();
       } catch (error) {
         console.error("Clip2MD: 订阅页面刷新失败，基础同步继续运行", error);
+        this.logger?.log("subscription.refresh_failed", {}, "error", undefined, error);
       }
     }
   }
@@ -1715,6 +1735,7 @@ export default class BijiSyncPlugin extends Plugin {
         await this.persistSyncState();
       } catch (error) {
         if (!current()) return;
+        this.logger?.log("subscription.sync_failed", {}, "error", undefined, error);
         this.subscriptionErrorKind =
           error instanceof ArchiveRequestError ||
           error instanceof ArchiveFormatError
@@ -2021,6 +2042,7 @@ export default class BijiSyncPlugin extends Plugin {
     try {
       return await postSyncAck(ack, this.settings.apiKey);
     } catch (error) {
+      this.logger?.log("receipt.failed", { taskId: ack.taskId }, "error", undefined, error);
       if (error instanceof SyncAckHttpError && error.status === 401) {
         this.updateConnectionState(
           "invalid",
@@ -2069,6 +2091,7 @@ export default class BijiSyncPlugin extends Plugin {
   private handleAppVisibility(visible: boolean): void {
     if (this.appVisible === visible) {
       if (visible) {
+        this.clientInfoChanged(0);
         this.retryPendingAcks();
         this.scheduleDeviceBindingPoll(0);
         this.settingTab?.onAppVisibilityChange(true);
@@ -2076,6 +2099,7 @@ export default class BijiSyncPlugin extends Plugin {
       return;
     }
     this.appVisible = visible;
+    this.clientInfoChanged(0);
     if (visible) {
       this.startSyncInterval();
       this.startAckRetryInterval();
@@ -2137,6 +2161,9 @@ export default class BijiSyncPlugin extends Plugin {
     }
 
     this.syncing = true;
+    this.syncOperation = diagnosticId();
+    this.syncService.operation = this.syncOperation;
+    this.logger?.log("sync.started", { source: trigger }, "info", this.syncOperation);
     this.runtimeState = "syncing";
     this.processedCount = 0;
     this.syncProgress = {
@@ -2293,6 +2320,7 @@ export default class BijiSyncPlugin extends Plugin {
     } catch (error) {
       const message = this.getFriendlyErrorMessage(error);
       console.error("Clip2MD 同步出错:", error);
+      this.logger?.log("sync.failed", {}, "error", this.syncOperation, error);
       this.updateConnectionState(
         isInvalidApiKeyError(error) ? "invalid" : "error",
         message,
@@ -2429,6 +2457,7 @@ export default class BijiSyncPlugin extends Plugin {
       await this.cleanupOldConfigBackups(backupBaseDir);
     } catch (error) {
       console.warn("Clip2MD: 配置备份失败", error);
+      this.logger?.log("config.backup_failed", {}, "error", undefined, error);
     }
   }
 
@@ -2451,6 +2480,7 @@ export default class BijiSyncPlugin extends Plugin {
       return isRecord(restored) ? restored : null;
     } catch (error) {
       console.warn("Clip2MD: 从备份恢复配置失败", error);
+      this.logger?.log("config.restore_failed", {}, "error", undefined, error);
       return null;
     }
   }
@@ -2614,6 +2644,7 @@ export default class BijiSyncPlugin extends Plugin {
           counters,
         );
         console.error(`Clip2MD: 任务 ${task.id} 同步失败`, error);
+        this.logger?.log("sync.task_failed", { taskId: task.id, stage: "write" }, "error", this.syncOperation, error);
         this.updateSyncProgress(counters, "syncing");
         continue;
       } finally {
@@ -2810,7 +2841,8 @@ export default class BijiSyncPlugin extends Plugin {
     this.logger?.log("sync.finished", {
       status: summary.outcome,
       count: summary.processed,
-    });
+      durationMs: Date.parse(summary.finishedAt) - Date.parse(summary.startedAt),
+    }, summary.outcome === "failed" ? "error" : summary.outcome === "partial" ? "warn" : "info", this.syncOperation);
     this.settings.lastSyncSummary = summary;
     this.runtimeState =
       summary.outcome === "failed"
@@ -2826,6 +2858,7 @@ export default class BijiSyncPlugin extends Plugin {
     if (state !== this.connectionState)
       this.logger?.log("binding.state", { status: state });
     this.connectionState = state;
+    this.clientInfoChanged();
     this.cloudAccount?.changed();
     if (state === "invalid") {
       this.timers.clearInterval(this.syncIntervalId);

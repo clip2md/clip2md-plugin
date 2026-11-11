@@ -15,6 +15,7 @@ import { CLIP2MD_API_BASE_URL, CLIP2MD_MEDIA_CDN_BASE_URL } from './config';
 import { resolveImagePath, projectProofContent, savedTaskContent, sha256, type SavedSyncProof } from './saved-sync-proof';
 import { formatBeijingDateTime } from './date-format';
 import { hasTaskId } from './task-id';
+import type { LocalLogger } from './local-diagnostics';
 
 export interface SyncAckScope {
     version: 2;
@@ -296,6 +297,8 @@ function imageExtension(bytes: ArrayBuffer): 'png' | 'jpg' | 'gif' | 'webp' | 'a
 }
 
 export class SyncService {
+    logger?: LocalLogger;
+    operation?: string;
     private settings: BijiSyncSettings;
     private fileManager: FileManager | null;
     private cursor: string | null = null;
@@ -1413,6 +1416,7 @@ export class SyncService {
                     pendingAssets = true;
                     replacements.set(remoteUrl, null);
                     console.warn(`Clip2MD: 图片下载失败 ${remoteUrl}`, error);
+                    this.logger?.log('sync.image_failed', { taskId: task.id, stage: 'image' }, 'error', this.operation, error);
                     imageErrors.push(`图片 ${remoteUrl} → ${imageFolder}：${String(error)}`);
                 }
             }

@@ -64,6 +64,7 @@ export interface MetadataResult {
   preserved: LocalField[];
 }
 export interface HostBridge {
+  flushLogs?: () => Promise<void>;
   enableSourceProperties?: () => Promise<void>;
   renderCloudAccount?: (container:HTMLElement) => () => void;
   version: typeof BRIDGE_VERSION;
@@ -148,6 +149,9 @@ export interface LocalRetryResult {
 }
 export interface RecoveryReadiness { ready: boolean; busy: boolean; reason: "ready" | "disabled" | "unbound" | "tools_unverified" | "updating"; }
 export interface CompanionState {
+  getClientInfo?: () => Promise<DesktopClientSnapshot>;
+  getFeedbackInfo?: () => Promise<DesktopFeedbackSnapshot>;
+  flushLogs?: () => Promise<void>;
   getRecoveryReadiness?: () => Promise<RecoveryReadiness>;
   cancelLocalRetry?: () => void;
   deployment?: "integrated" | "companion";
@@ -166,6 +170,20 @@ export interface CompanionState {
   prepareUpdate?: () => Promise<void>;
   resumeAfterUpdate?: () => void;
   tools?: Record<string, string>;
+}
+export interface DesktopClientSnapshot {
+  supported: boolean;
+  enabled?: boolean;
+  runtimeVersion?: string;
+  deployment?: "integrated" | "companion" | "unknown";
+  platformEnabled?: Record<string, boolean>;
+  platforms?: Record<string, Record<string, boolean>>;
+  tools?: Record<string, string>;
+  toolStates?: Record<string, boolean>;
+}
+export interface DesktopFeedbackSnapshot {
+  authorization: Record<string, "stored" | "not-authorized" | "needs-authorization" | "unknown">;
+  summary: Record<string, number>;
 }
 const isBoundedText = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max &&

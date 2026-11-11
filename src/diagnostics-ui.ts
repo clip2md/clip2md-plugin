@@ -5,9 +5,13 @@ import {
   credentialScope,
   diagnosticReport,
   exportReport,
+  boundedFlush,
+  type FlushState,
   type LocalLogger,
 } from "./local-diagnostics";
 import { directories, record, replaceStaged } from "./persistent-config";
+import { localTimers } from "./local-timers";
+import type { CompanionState, DesktopFeedbackSnapshot } from "./companion-protocol";
 interface PendingReport {
   scope: string;
   ticket: number;
@@ -23,6 +27,12 @@ export interface FeedbackOptions {
   enabled: () => Record<string, boolean>;
   tools?: () => Record<string, string>;
   delegate?: () => boolean;
+  installationId?: () => string;
+  companion?: () => CompanionState | null;
+  snapshot?: () => Promise<unknown>;
+  summary?: () => Record<string, number>;
+  feedbackInfo?: () => Promise<DesktopFeedbackSnapshot>;
+  flushes?: () => Partial<Record<"clipmd" | "clipmd-desktop-tools", () => Promise<void>>>;
 }
 export class DiagnosticsUI {
   private sending = false;
@@ -34,7 +44,18 @@ export class DiagnosticsUI {
   }
   async report() {
     const o = this.options;
-    return diagnosticReport(o.app, o.logger, o.enabled(), o.tools?.());
+    const companion = o.companion?.();
+    const flushStates: Partial<Record<"clipmd" | "clipmd-desktop-tools", FlushState>> = await boundedFlush({ ...o.flushes?.(), [o.logger.plugin]: () => o.logger.flush(), ...(companion?.flushLogs ? { "clipmd-desktop-tools": () => companion.flushLogs!() } : {}) });
+    const feedback = o.feedbackInfo ?? companion?.getFeedbackInfo;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let extra: DesktopFeedbackSnapshot | undefined;
+    try {
+      if (feedback) extra = await Promise.race([Promise.resolve().then(feedback).catch(() => undefined), new Promise<undefined>(resolve => { timer = localTimers.setTimeout(() => resolve(undefined), 2000); })]);
+    } finally { if (timer) localTimers.clearTimeout(timer); }
+    return diagnosticReport(o.app, o.logger, o.enabled(), o.tools?.(), Date.now(), {
+      installationId: o.installationId?.(), flushStates, snapshot: await o.snapshot?.(), authorization: extra?.authorization,
+      summary: { sync: o.summary?.(), local: extra?.summary },
+    });
   }
   async export(): Promise<void> {
     try {
@@ -111,7 +132,7 @@ export class DiagnosticsUI {
     let content = "",
       attach = true;
     const status = modal.contentEl.createEl("p", {
-      text: "主动提交时将附上最近 24 小时可用日志及环境信息；不会自动上传。",
+      text: "主动提交时可附上最近 72 小时可用日志及环境信息。日志仅在提交时上传；绑定后的基础运行信息会自动更新。",
     });
     new Setting(modal.contentEl).setName("问题描述").addTextArea((t) =>
       t
@@ -223,7 +244,7 @@ export class DiagnosticsUI {
     });
     this.guard(key);
     if (response.status < 200 || response.status >= 300)
-      throw new Error("附件上传失败");
+      throw new Error(`附件上传失败 HTTP ${response.status}`);
     try {
       await this.clearPending(pending.scope);
     } catch {
@@ -273,13 +294,14 @@ export class DiagnosticsUI {
       let cached = true;
       try {
         await this.savePending(pending);
-      } catch {
+      } catch (error) {
         cached = false;
-        this.options.logger.log("feedback.cache.failed", {}, "warn");
+        this.options.logger.log("feedback.cache.failed", {}, "warn", undefined, error);
       }
       try {
         await this.upload(pending, key);
-      } catch {
+      } catch (error) {
+        this.options.logger.log("feedback.upload.failed", {}, "error", undefined, error);
         return `反馈 #${pending.ticket} 已创建，附件尚未上传；请点击“仅重试附件”${cached ? "" : "。缓存写入失败，请在关闭插件前重试"}`;
       }
       this.options.logger.log("feedback.submitted");

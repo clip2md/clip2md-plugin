@@ -21,6 +21,8 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
       registrations.push(type);
     }
     registerEvent() {}
+    register() {}
+    registerDomEvent() {}
     registerInterval() {}
     registerObsidianProtocolHandler(action) { registrations.push(`protocol:${action}`); }
   }
@@ -58,8 +60,9 @@ async function loadWith(localState, rejectSubscriptionView = false, noCrypto = f
       if (id !== 'obsidian') throw new Error(`unexpected runtime dependency: ${id}`);
       return obsidian;
     },
-    window: { setTimeout: () => 1, clearTimeout() {}, setInterval: () => 2, clearInterval() {} },
-    console: { ...console, warn() {}, error() {} }, crypto: noCrypto ? undefined : webcrypto, TextEncoder, Uint8Array, URL,
+    window: { setTimeout: () => 1, clearTimeout() {}, setInterval: () => 2, clearInterval() {}, addEventListener() {}, removeEventListener() {} },
+    document: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    console: { ...console, warn() {}, error() {} }, crypto: noCrypto ? undefined : webcrypto, TextEncoder, TextDecoder, Uint8Array, URL,
   };
   vm.runInNewContext(bundle, context, { filename: bundlePath, timeout: 5000 });
   const PluginClass = context.module.exports.default;

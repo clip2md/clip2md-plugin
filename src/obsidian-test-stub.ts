@@ -17,6 +17,7 @@ export class TFile {}
 export class TFolder {}
 export class Vault {}
 export const Platform = { isMobileApp: false, isMobile: false, isIosApp: false, isAndroidApp: false };
+export const apiVersion = '1.13.1';
 export const addIcon = () => undefined;
 export const requestUrl = () => {
     throw new Error('requestUrl must be mocked by the test');
